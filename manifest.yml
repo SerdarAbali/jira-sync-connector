@@ -1,0 +1,50 @@
+modules:
+  jira:adminPage:
+    - key: sync-config
+      title: Sync Connector
+      resource: config-ui
+      resolver:
+        function: resolver-function
+      
+  trigger:
+    - key: issue-created
+      function: sync-issue
+      events:
+        - avi:jira:created:issue
+    - key: issue-updated
+      function: sync-issue
+      events:
+        - avi:jira:updated:issue
+    - key: comment-created
+      function: sync-comment
+      events:
+        - avi:jira:commented:issue
+
+  function:
+    - key: sync-issue
+      handler: index.syncIssue
+    - key: sync-comment
+      handler: index.syncComment
+    - key: resolver-function
+      handler: index.handler
+
+resources:
+  - key: config-ui
+    path: static/admin-page/build
+
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - storage:app
+  external:
+    fetch:
+      backend:
+        - '*.atlassian.net'
+
+app:
+  runtime:
+    name: nodejs22.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/362d8e6b-b68c-4403-8020-d32ddcc02716
