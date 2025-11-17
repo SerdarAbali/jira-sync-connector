@@ -1,359 +1,216 @@
 # Jira Sync Connector
 
-A custom Atlassian Forge app that enables real-time, two-way synchronization of issues between two Jira Cloud organizations. Built on Atlassian's serverless infrastructure—no external hosting required.
+Production-ready Atlassian Forge app for real-time one-way synchronization between two Jira Cloud organizations.
 
-## 🌟 Features
+## ✨ Features
 
-### Currently Implemented (Phase 1)
-- ✅ **Real-time Issue Sync**: Automatic synchronization when issues are created or updated
-- ✅ **Status Synchronization**: Keep issue statuses in sync across organizations
-- ✅ **Comment Sync**: Propagate comments between synced issues
-- ✅ **Epic Support**: Sync epics and maintain epic relationships
-- ✅ **Loop Prevention**: Smart detection to prevent infinite sync loops
-- ✅ **Admin Configuration UI**: Easy-to-use interface for setting up sync connections
+### Core Sync Capabilities
+- ✅ **Real-time sync** - Issues sync instantly via webhooks
+- ✅ **Issue creation & updates** - Summary, description, priority, labels
+- ✅ **Status synchronization** - Configurable status mappings
+- ✅ **Epic/Parent relationships** - Preserves hierarchy across orgs
+- ✅ **Comment sync** - With author attribution: `[Comment from orgname - User: Name]`
+- ✅ **Custom field mapping** - Map custom fields between organizations
+- ✅ **User mapping** - Map assignee & reporter between organizations
+- ✅ **Infinite loop prevention** - Safe bidirectional architecture
 
-### Roadmap
-
-#### Phase 2: Enhanced Two-Way Sync
-- [ ] Bidirectional synchronization
-- [ ] Epic-Story parent-child relationship preservation
-- [ ] Story points and custom field mapping
-- [ ] User assignment mapping between organizations
-- [ ] Sprint synchronization
-
-#### Phase 3: Multi-Organization Support
-- [ ] Support for 3+ Jira organizations
-- [ ] Selective syncing by issue type and labels
-- [ ] Advanced filtering and sync rules
-- [ ] Configurable sync rules engine
-
-#### Phase 4: Enterprise Features
-- [ ] Attachment synchronization
-- [ ] Webhook support for additional integrations
-- [ ] Comprehensive audit logging
-- [ ] Performance metrics dashboard
-- [ ] Scheduled sync fallback mechanism
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────┐
-│   Jira Organization A   │
-│  (serdarjiraone)        │
-│                         │
-│  ┌──────────────────┐   │
-│  │  Forge App       │   │
-│  │  ├─ Triggers     │   │
-│  │  ├─ Functions    │   │
-│  │  └─ Storage      │   │
-│  └──────────────────┘   │
-└──────────┬──────────────┘
-           │
-           │ REST API
-           │ (OAuth/API Token)
-           │
-           ▼
-┌─────────────────────────┐
-│   Jira Organization B   │
-│  (serdarjiratwo)        │
-│                         │
-│  ┌──────────────────┐   │
-│  │  Issues          │   │
-│  │  Projects        │   │
-│  │  Workflows       │   │
-│  └──────────────────┘   │
-└─────────────────────────┘
-```
-
-## 📋 Prerequisites
-
-- **Node.js**: Version 18.x or higher
-- **macOS/Linux/Windows**: Development environment
-- **Forge CLI**: Atlassian Forge command-line tools
-- **Jira Cloud**: Two Jira Cloud organizations
-  - Admin access to Organization A (where the app will be installed)
-  - API access to Organization B (target for sync)
+### Admin Interface
+- 🎛️ **Collapsible UI sections** - Clean, organized configuration
+- 🔄 **Live data loading** - Fetch users, fields, statuses from both orgs
+- 📋 **Visual mapping management** - Add/delete mappings with real names
+- 💾 **Persistent storage** - All configurations saved in Forge storage
 
 ## 🚀 Installation
 
-### 1. Install Node.js
+### Prerequisites
+- Node.js 20.x or 22.x
+- Forge CLI: `npm install -g @forge/cli`
+- Two Jira Cloud instances with admin access
 
-**macOS (using Homebrew):**
+### Setup
+
+1. **Clone the repository**
 ```bash
-brew install node
+git clone https://github.com/SerdarAbali/jira-sync-connector.git
+cd jira-sync-connector
+npm install --legacy-peer-deps
 ```
 
-**Verify installation:**
-```bash
-node --version  # Should be 18.x or higher
-npm --version
-```
-
-### 2. Install Forge CLI
-
-```bash
-npm install -g @forge/cli
-```
-
-### 3. Login to Forge
-
+2. **Login to Forge**
 ```bash
 forge login
 ```
 
-This will open your browser to authenticate with your Atlassian account.
-
-### 4. Clone the Repository
-
+3. **Deploy to Jira**
 ```bash
-git clone https://github.com/SerdarAbali/jira-sync-connector.git
-cd jira-sync-connector
+forge deploy
+forge install
 ```
 
-### 5. Install Dependencies
+4. **Configure the app**
+   - Go to **Jira Settings → Apps → Manage your apps**
+   - Find "Sync Connector" and click **Configure**
+   - Fill in remote Jira details (URL, email, API token, project key)
+   - Click **Load Remote Data** and **Load Local Data**
+   - Configure mappings for users, fields, and statuses
+   - Save each mapping section
 
-```bash
-npm install
+## 📖 Usage
+
+### Basic Workflow
+1. Create or update an issue in **Source Org (serdarjiraone)**
+2. App syncs to **Target Org (serdarjiratwo)** automatically
+3. Updates, comments, status changes sync in real-time
+
+### User Mapping
+Map users between organizations to preserve assignee/reporter:
+- **Remote User** → **Local User**
+- Unmapped users default to unassigned
+
+### Field Mapping
+Sync custom fields by mapping field IDs:
+- **Remote Field** → **Local Field**
+- Only mapped fields sync
+
+### Status Mapping
+Map status IDs when workflow names differ:
+- **Remote Status** → **Local Status**
+- Falls back to name matching if unmapped
+
+## 🏗️ Architecture
+
+### File Structure
+```
+SyncApp/
+├── src/
+│   └── index.js                 # Backend sync logic + resolvers
+├── static/admin-page/
+│   ├── src/
+│   │   └── App.jsx             # React admin UI
+│   └── package.json
+├── manifest.yml                 # Forge app configuration
+└── package.json
 ```
 
-## ⚙️ Configuration
+### Key Components
 
-### 1. Set Up Jira Organizations
+**Backend (`src/index.js`)**
+- `syncIssue()` - Main sync function (create/update)
+- `syncComment()` - Comment sync with author info
+- `createRemoteIssue()` - Create with parent/epic support
+- `updateRemoteIssue()` - Update with user mapping
+- `transitionRemoteIssue()` - Status sync with mapping
+- Resolvers for admin UI (getConfig, getUserMappings, etc.)
 
-You'll need two Jira Cloud organizations:
+**Frontend (`static/admin-page/src/App.jsx`)**
+- Configuration form (remote Jira credentials)
+- User mapping UI (load, add, delete, save)
+- Field mapping UI (load, add, delete, save)
+- Status mapping UI (load, add, delete, save)
 
-- **Organization A** (Source): Where the Forge app will be installed
-- **Organization B** (Target): Where issues will be synced to
+**Triggers (`manifest.yml`)**
+- `avi:jira:created:issue` - New issue webhook
+- `avi:jira:updated:issue` - Issue update webhook
+- `avi:jira:commented:issue` - Comment webhook
 
-### 2. Generate API Token for Organization B
+## 🔧 Development
 
-1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
-2. Click **"Create API token"**
-3. Give it a name (e.g., "Jira Sync Connector")
-4. Copy the token—you'll need this for configuration
+### Build React UI
+```bash
+cd static/admin-page
+npm run build
+cd ../..
+```
 
-### 3. Deploy the App
-
-**Deploy to development environment:**
+### Deploy changes
 ```bash
 forge deploy
 ```
 
-**Install on your Jira site:**
-```bash
-forge install
-```
-
-Select your Jira site (Organization A) when prompted.
-
-### 4. Configure Sync Settings
-
-1. Go to your Jira site → **Settings** (⚙️)
-2. Navigate to **Apps** → **Manage apps**
-3. Find **"Sync Connector"** in the left sidebar
-4. Enter the following:
-   - **Remote Jira URL**: `https://your-org-b.atlassian.net`
-   - **Email**: Your Atlassian account email
-   - **API Token**: The token you generated in step 2
-   - **Project Key**: The project key in Organization B where issues should be synced
-
-5. Click **"Save Configuration"**
-
-## 🔧 Development
-
-### Running in Development Mode
-
-Use Forge tunnel for real-time development:
-
-```bash
-forge tunnel
-```
-
-This creates a tunnel to your local development environment, allowing you to test changes without deploying.
-
-### Project Structure
-
-```
-jira-sync-connector/
-├── src/
-│   ├── index.js           # Main entry point with sync logic
-│   ├── config.js          # Configuration page component
-│   └── utils/             # Helper functions
-├── static/
-│   └── admin/             # Static assets for admin UI
-├── manifest.yml           # Forge app manifest
-├── package.json           # Node.js dependencies
-├── .gitignore            # Git ignore rules
-└── README.md             # This file
-```
-
-### Key Files
-
-**manifest.yml:**
-Defines the app's modules, permissions, and triggers:
-- `jira:adminPage` - Configuration UI
-- `trigger:issue-created` - Listens for new issues
-- `trigger:issue-updated` - Listens for issue updates
-
-**src/index.js:**
-Contains the core sync logic:
-- `syncIssue()` - Main function triggered by Jira events
-- `syncToRemote()` - Handles API calls to remote Jira
-- `configPage()` - Serves the admin configuration UI
-
-### Viewing Logs
-
+### View logs
 ```bash
 forge logs
 ```
 
-Tail logs in real-time:
+### Tunnel for local development
 ```bash
-forge logs --follow
+forge tunnel
 ```
 
-## 🧪 Testing
+## 📋 Configuration
 
-### Manual Testing
+### Remote Jira Setup
+1. Get API token: https://id.atlassian.com/manage-profile/security/api-tokens
+2. Enter in admin UI:
+   - Remote Jira URL: `https://yourorg.atlassian.net`
+   - Admin Email: Your email
+   - API Token: Generated token
+   - Project Key: Target project (e.g., `SCRUM`)
 
-1. **Create an issue** in Organization A
-   - Verify it appears in Organization B
-   - Check that all fields are synced correctly
+### Mapping Strategy
+- **Load data first** - Click both "Load Remote Data" and "Load Local Data"
+- **Auto-selection** - First items auto-selected for quick mapping
+- **Save required** - Must click "Save" buttons to persist mappings
 
-2. **Update an issue** in Organization A
-   - Update summary, description, status
-   - Verify changes reflect in Organization B
+## 🚦 Current Status
 
-3. **Add comments** in Organization A
-   - Verify comments appear in Organization B
+**Phase 1: Complete ✅**
+- One-way sync (Org A → Org B)
+- Full CRUD operations
+- Comment sync with author
+- User/Field/Status mapping UI
+- Epic/Parent preservation
 
-4. **Test epics**
-   - Create an epic in Organization A
-   - Verify epic is created in Organization B
-
-### Automated Testing
-
-```bash
-npm test
-```
-
-## 📦 Deployment
-
-### Deploy to Production
-
-```bash
-# Build and deploy
-forge deploy --environment production
-
-# Install on production site
-forge install --environment production
-```
-
-## 🔐 Security Considerations
-
-### Credentials Storage
-- API tokens are stored securely in Forge's encrypted storage
-- Never commit API tokens or credentials to version control
-- Use `.gitignore` to exclude sensitive files
-
-### Permissions
-The app requires the following Jira permissions:
-- `read:jira-work` - Read issues and projects
-- `write:jira-work` - Create and update issues
-- `storage:app` - Store configuration data
-
-### API Rate Limiting
-- Forge automatically handles rate limiting
-- The app includes retry logic for failed API calls
+**Phase 2: Future 🔮**
+- Bidirectional sync (same app, both orgs)
+- Attachment synchronization
+- Selective project syncing
+- Retroactive sync for existing issues
+- Reaction/engagement sync
 
 ## 🐛 Troubleshooting
 
-### Issue: Admin page not showing up
+### Issues not syncing?
+1. Check `forge logs` for errors
+2. Verify remote credentials in admin UI
+3. Ensure user/field/status mappings saved
+4. Confirm project key is correct
 
-**Solution:**
-1. Verify the app is installed: `forge install --list`
-2. Check app permissions in Jira Settings → Apps
-3. Redeploy: `forge deploy`
+### Assignee not syncing?
+1. Load remote/local data in admin UI
+2. Add user mapping: Remote User → Local User
+3. Click **Save User Mappings**
+4. Create new issue to test
 
-### Issue: Issues not syncing
+### Slow sync (5-10 minutes)?
+- **Normal**: Forge cold starts take time
+- **Peak times**: Jira webhook delays under load
+- **Solution**: Sync usually completes in 1-3 seconds once triggered
 
-**Solution:**
-1. Check logs: `forge logs`
-2. Verify API token is valid
-3. Confirm remote Jira URL is correct
-4. Check project key exists in Organization B
+### Comments delayed?
+- Comment syncs instantly to API
+- Jira UI may cache and delay display
+- Hard refresh (Ctrl+Shift+R) to force update
 
-### Issue: Loop prevention triggering incorrectly
+## 📚 Documentation
 
-**Solution:**
-- Check the `syncedBy` field in issue properties
-- Clear app storage if needed: Contact Atlassian Support
-
-### Issue: Deployment fails
-
-**Solution:**
-```bash
-# Clear local cache
-rm -rf node_modules package-lock.json
-npm install
-
-# Redeploy
-forge deploy
-```
-
-## 📚 Resources
-
-- [Atlassian Forge Documentation](https://developer.atlassian.com/platform/forge/)
-- [Jira Cloud REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/)
-- [Forge Events Reference](https://developer.atlassian.com/platform/forge/events-reference/jira/)
-- [Custom UI Guide](https://developer.atlassian.com/platform/forge/custom-ui/)
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes**
-4. **Test thoroughly** on actual Jira instances
-5. **Commit your changes**: `git commit -m 'Add amazing feature'`
-6. **Push to your fork**: `git push origin feature/amazing-feature`
-7. **Open a Pull Request**
-
-### Development Guidelines
-
-- Follow the existing code style
-- Add comments for complex logic
-- Update documentation for new features
-- Test on real Jira instances before submitting
-- Include unit tests for new functions
+See `/docs` folder for detailed documentation:
+- `ARCHITECTURE.md` - System design & data flow
+- `DEVELOPMENT.md` - Developer guide
+- `API.md` - API reference
+- `DEPLOYMENT.md` - Deployment strategies
+- `TROUBLESHOOTING.md` - Common issues
+- `CONTRIBUTING.md` - Contribution guidelines
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - See LICENSE file
 
-## 👥 Authors
+## 🙋 Support
 
-- **Serdar Abali** - Initial work - [@SerdarAbali](https://github.com/SerdarAbali)
-
-## 🙏 Acknowledgments
-
-- Built with [Atlassian Forge](https://developer.atlassian.com/platform/forge/)
-- UI components from [Atlassian Design System](https://atlassian.design/)
-- Community feedback and contributions
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/SerdarAbali/jira-sync-connector/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/SerdarAbali/jira-sync-connector/discussions)
-- **Forge Documentation**: https://developer.atlassian.com/platform/forge/
-
-## 🔗 Quick Links
-
-- [Report a Bug](https://github.com/SerdarAbali/jira-sync-connector/issues/new?template=bug_report.md)
-- [Request a Feature](https://github.com/SerdarAbali/jira-sync-connector/issues/new?template=feature_request.md)
-- [View Changelog](CHANGELOG.md)
+- **GitHub Issues**: https://github.com/SerdarAbali/jira-sync-connector/issues
+- **Forge Docs**: https://developer.atlassian.com/platform/forge/
 
 ---
 
-**Made with ❤️ for seamless Jira collaboration across organizations**
+**Built with ❤️ using Atlassian Forge**
