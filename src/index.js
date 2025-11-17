@@ -416,17 +416,50 @@ function extractTextFromADF(adf) {
   
   let text = '';
   
-  function traverse(node) {
+  function traverse(node, isFirstNode = false) {
     if (node.type === 'text') {
       text += node.text;
+    } else if (node.type === 'paragraph' && !isFirstNode && text.length > 0) {
+      // Add line breaks between paragraphs
+      text += '\n\n';
+    } else if (node.type === 'hardBreak') {
+      text += '\n';
     }
+    
+    if (node.content && Array.isArray(node.content)) {
+      node.content.forEach((child, index) => traverse(child, index === 0 && isFirstNode));
+    }
+  }
+  
+  traverse(adf, true);
+  return text.trim();
+}
+
+async function replaceMediaIdsInADF(adf, attachmentMapping) {
+  if (!adf || typeof adf !== 'object') return adf;
+  
+  // Deep clone to avoid mutating original
+  const cloned = JSON.parse(JSON.stringify(adf));
+  
+  function traverse(node) {
+    if (node.type === 'media' && node.attrs && node.attrs.id) {
+      const localId = node.attrs.id;
+      const remoteId = attachmentMapping[localId];
+      if (remoteId) {
+        console.log(`🖼️ Replacing media ID: ${localId} → ${remoteId}`);
+        node.attrs.id = remoteId;
+      } else {
+        console.log(`⚠️ No mapping found for media ID: ${localId}`);
+      }
+    }
+    
     if (node.content && Array.isArray(node.content)) {
       node.content.forEach(traverse);
     }
   }
   
-  traverse(adf);
-  return text;
+  traverse(cloned);
+  return cloned;
 }
 
 function textToADFWithAuthor(text, orgName, userName) {
@@ -451,7 +484,7 @@ function textToADFWithAuthor(text, orgName, userName) {
 }
 
 function textToADF(text) {
-  if (!text) {
+  if (!text || text.trim() === '') {
     return {
       type: 'doc',
       version: 1,
@@ -459,20 +492,31 @@ function textToADF(text) {
     };
   }
   
+  // Split by double line breaks for paragraphs
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
+  
+  if (paragraphs.length === 0) {
+    return {
+      type: 'doc',
+      version: 1,
+      content: []
+    };
+  }
+  
+  const content = paragraphs.map(para => ({
+    type: 'paragraph',
+    content: [
+      {
+        type: 'text',
+        text: para.trim()
+      }
+    ]
+  }));
+  
   return {
     type: 'doc',
     version: 1,
-    content: [
-      {
-        type: 'paragraph',
-        content: [
-          {
-            type: 'text',
-            text: text
-          }
-        ]
-      }
-    ]
+    content: content
   };
 }
 
@@ -517,6 +561,14 @@ async function getLocalKey(remoteKey) {
 async function storeMapping(localKey, remoteKey) {
   await storage.set(`local-to-remote:${localKey}`, remoteKey);
   await storage.set(`remote-to-local:${remoteKey}`, localKey);
+}
+
+async function storeAttachmentMapping(localAttachmentId, remoteAttachmentId) {
+  await storage.set(`attachment-mapping:${localAttachmentId}`, remoteAttachmentId);
+}
+
+async function getAttachmentMapping(localAttachmentId) {
+  return await storage.get(`attachment-mapping:${localAttachmentId}`);
 }
 
 async function markSyncing(issueKey) {
@@ -567,6 +619,136 @@ async function getOrgName() {
     console.error('Error fetching org name:', error);
     return 'Jira';
   }
+}
+
+async function downloadAttachment(attachmentUrl) {
+  try {
+    // Extract path from full URL
+    // attachmentUrl is like: https://serdarjiraone.atlassian.net/rest/api/3/attachment/content/10004
+    const url = new URL(attachmentUrl);
+    const path = url.pathname; // Gets: /rest/api/3/attachment/content/10004
+    
+    const response = await api.asApp().requestJira(route`${path}`, {
+      headers: {
+        'Accept': '*/*'
+      }
+    });
+    
+    if (!response.ok) {
+      console.error(`Failed to download attachment: ${response.status}`);
+      return null;
+    }
+    
+    // Get the binary data as ArrayBuffer
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (error) {
+    console.error('Error downloading attachment:', error);
+    return null;
+  }
+}
+
+async function uploadAttachment(remoteKey, filename, fileBuffer, config) {
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  
+  try {
+    // Create form data boundary
+    const boundary = `----ForgeFormBoundary${Date.now()}`;
+    
+    // Build multipart form data manually
+    const formDataParts = [];
+    formDataParts.push(`--${boundary}\r\n`);
+    formDataParts.push(`Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`);
+    formDataParts.push(`Content-Type: application/octet-stream\r\n\r\n`);
+    
+    // Convert string parts to buffers
+    const header = Buffer.from(formDataParts.join(''));
+    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+    
+    // Combine all parts
+    const body = Buffer.concat([header, fileBuffer, footer]);
+    
+    const response = await fetch(
+      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/attachments`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'X-Atlassian-Token': 'no-check'
+        },
+        body: body
+      }
+    );
+    
+    if (response.ok) {
+      const result = await response.json();
+      console.log(`✅ Uploaded attachment: ${filename}`);
+      return result[0]?.id || null; // Return the remote attachment ID
+    } else {
+      const errorText = await response.text();
+      console.error(`❌ Failed to upload attachment ${filename}:`, errorText);
+      return null;
+    }
+  } catch (error) {
+    console.error(`Error uploading attachment ${filename}:`, error);
+    return null;
+  }
+}
+
+async function syncAttachments(localIssueKey, remoteIssueKey, issue, config) {
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+  const attachmentMapping = {}; // localId -> remoteId
+  
+  if (!issue.fields.attachment || issue.fields.attachment.length === 0) {
+    console.log(`No attachments to sync for ${localIssueKey}`);
+    return attachmentMapping;
+  }
+  
+  console.log(`📎 Found ${issue.fields.attachment.length} attachment(s) on ${localIssueKey}`);
+  
+  for (const attachment of issue.fields.attachment) {
+    try {
+      // Check if already synced
+      const existingMapping = await getAttachmentMapping(attachment.id);
+      if (existingMapping) {
+        console.log(`⏭️ Attachment ${attachment.filename} already synced`);
+        attachmentMapping[attachment.id] = existingMapping;
+        continue;
+      }
+      
+      // Check file size
+      if (attachment.size > MAX_FILE_SIZE) {
+        console.log(`⚠️ Skipping ${attachment.filename} - too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB > 10MB)`);
+        continue;
+      }
+      
+      console.log(`📥 Downloading ${attachment.filename} (${(attachment.size / 1024).toFixed(2)}KB)...`);
+      
+      // Download from local Jira
+      const fileBuffer = await downloadAttachment(attachment.content);
+      if (!fileBuffer) {
+        console.error(`Failed to download ${attachment.filename}`);
+        continue;
+      }
+      
+      // Upload to remote Jira
+      console.log(`📤 Uploading ${attachment.filename} to ${remoteIssueKey}...`);
+      const remoteAttachmentId = await uploadAttachment(remoteIssueKey, attachment.filename, fileBuffer, config);
+      
+      if (remoteAttachmentId) {
+        // Store mapping to prevent re-syncing
+        await storeAttachmentMapping(attachment.id, remoteAttachmentId);
+        attachmentMapping[attachment.id] = remoteAttachmentId;
+        console.log(`✅ Synced attachment: ${attachment.filename}`);
+      }
+      
+    } catch (error) {
+      console.error(`Error syncing attachment ${attachment.filename}:`, error);
+    }
+  }
+  
+  return attachmentMapping;
 }
 
 async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings) {
@@ -640,22 +822,26 @@ async function transitionRemoteIssue(remoteKey, statusName, config, statusMappin
 async function createRemoteIssue(issue, config, mappings) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   
-  let description;
+  // For initial creation, use text-only description
+  let initialDescription;
   if (issue.fields.description) {
     if (typeof issue.fields.description === 'object') {
-      description = issue.fields.description;
+      const extractedText = extractTextFromADF(issue.fields.description);
+      initialDescription = extractedText ? textToADF(extractedText) : textToADF('');
+    } else if (typeof issue.fields.description === 'string') {
+      initialDescription = textToADF(issue.fields.description);
     } else {
-      description = textToADF(issue.fields.description);
+      initialDescription = textToADF('');
     }
   } else {
-    description = textToADF(`Synced from ${issue.key}`);
+    initialDescription = textToADF('');
   }
   
   const remoteIssue = {
     fields: {
       project: { key: config.remoteProjectKey },
       summary: issue.fields.summary,
-      description: description,
+      description: initialDescription,
       issuetype: { name: issue.fields.issuetype.name }
     }
   };
@@ -666,6 +852,10 @@ async function createRemoteIssue(issue, config, mappings) {
   
   if (issue.fields.labels && issue.fields.labels.length > 0) {
     remoteIssue.fields.labels = issue.fields.labels;
+  }
+
+  if (issue.fields.duedate) {
+    remoteIssue.fields.duedate = issue.fields.duedate;
   }
 
   if (issue.fields.parent && issue.fields.parent.key) {
@@ -738,6 +928,37 @@ async function createRemoteIssue(issue, config, mappings) {
         await transitionRemoteIssue(result.key, issue.fields.status.name, config, mappings.statusMappings);
       }
       
+      // Sync attachments after issue creation and get mapping
+      const attachmentMapping = await syncAttachments(issue.key, result.key, issue, config);
+      
+      // If description had media nodes and we have mappings, update description with corrected IDs
+      if (issue.fields.description && 
+          typeof issue.fields.description === 'object' && 
+          Object.keys(attachmentMapping).length > 0) {
+        
+        const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
+        
+        console.log(`🖼️ Updating description with corrected media references...`);
+        const updateResponse = await fetch(`${config.remoteUrl}/rest/api/3/issue/${result.key}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            fields: {
+              description: correctedDescription
+            }
+          })
+        });
+        
+        if (updateResponse.ok || updateResponse.status === 204) {
+          console.log(`✅ Updated description with embedded media`);
+        } else {
+          console.log(`⚠️ Could not update description with media - using text-only`);
+        }
+      }
+      
       return result.key;
     } else {
       const errorText = await response.text();
@@ -753,12 +974,24 @@ async function createRemoteIssue(issue, config, mappings) {
 async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   
+  // Sync attachments first to get ID mappings
+  const attachmentMapping = await syncAttachments(localKey, remoteKey, issue, config);
+  
   let description;
   if (issue.fields.description) {
     if (typeof issue.fields.description === 'object') {
-      description = issue.fields.description;
-    } else {
+      // If we have attachment mappings, replace media IDs
+      if (Object.keys(attachmentMapping).length > 0) {
+        description = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
+      } else {
+        // No attachments or no mappings, extract text only
+        const extractedText = extractTextFromADF(issue.fields.description);
+        description = extractedText ? textToADF(extractedText) : textToADF('');
+      }
+    } else if (typeof issue.fields.description === 'string') {
       description = textToADF(issue.fields.description);
+    } else {
+      description = textToADF('');
     }
   } else {
     description = textToADF('');
@@ -777,6 +1010,22 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings) {
   
   if (issue.fields.labels) {
     updateData.fields.labels = issue.fields.labels;
+  }
+
+  if (issue.fields.duedate) {
+    updateData.fields.duedate = issue.fields.duedate;
+  }
+
+  // Handle parent field changes
+  if (issue.fields.parent && issue.fields.parent.key) {
+    const remoteParentKey = await getRemoteKey(issue.fields.parent.key);
+    if (remoteParentKey) {
+      updateData.fields.parent = { key: remoteParentKey };
+      console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
+    }
+  } else if (issue.fields.parent === null) {
+    updateData.fields.parent = null;
+    console.log(`🔗 Removing parent link`);
   }
 
   if (issue.fields.assignee && issue.fields.assignee.accountId) {
