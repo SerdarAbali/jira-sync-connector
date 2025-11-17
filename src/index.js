@@ -13,6 +13,237 @@ resolver.define('saveConfig', async ({ payload }) => {
   return { success: true };
 });
 
+resolver.define('getUserMappings', async () => {
+  const mappings = await storage.get('userMappings');
+  const config = await storage.get('userMappingConfig');
+  return {
+    mappings: mappings || {},
+    config: config || { autoMapUsers: true, fallbackUser: 'unassigned' }
+  };
+});
+
+resolver.define('saveUserMappings', async ({ payload }) => {
+  await storage.set('userMappings', payload.mappings);
+  await storage.set('userMappingConfig', payload.config);
+  return { success: true };
+});
+
+resolver.define('getFieldMappings', async () => {
+  const mappings = await storage.get('fieldMappings');
+  return mappings || {};
+});
+
+resolver.define('saveFieldMappings', async ({ payload }) => {
+  await storage.set('fieldMappings', payload.mappings);
+  return { success: true };
+});
+
+resolver.define('getStatusMappings', async () => {
+  const mappings = await storage.get('statusMappings');
+  return mappings || {};
+});
+
+resolver.define('saveStatusMappings', async ({ payload }) => {
+  await storage.set('statusMappings', payload.mappings);
+  return { success: true };
+});
+
+// Fetch local Jira data (users, fields, statuses)
+resolver.define('fetchLocalData', async () => {
+  try {
+    const config = await storage.get('syncConfig');
+    if (!config || !config.remoteProjectKey) {
+      throw new Error('Project key not configured');
+    }
+
+    // Fetch local users
+    const usersResponse = await api.asApp().requestJira(
+      route`/rest/api/3/users/search?maxResults=1000`
+    );
+    const allUsers = await usersResponse.json();
+    
+    // Filter out bots and service accounts
+    const users = allUsers.filter(u => 
+      u.accountType === 'atlassian' && 
+      u.active === true &&
+      !u.displayName.includes('(') // Filters out "Automation for Jira ()", "Slack ()", etc.
+    );
+
+    // Fetch all fields
+    const fieldsResponse = await api.asApp().requestJira(
+      route`/rest/api/3/field`
+    );
+    const allFields = await fieldsResponse.json();
+    
+    // Filter to custom fields only
+    const customFields = allFields.filter(f => f.custom);
+
+    // Fetch statuses for the project
+    const statusesResponse = await api.asApp().requestJira(
+      route`/rest/api/3/project/${config.remoteProjectKey}/statuses`
+    );
+    const statusData = await statusesResponse.json();
+    
+    // Extract unique statuses from all issue types
+    const statusMap = new Map();
+    statusData.forEach(issueType => {
+      issueType.statuses.forEach(status => {
+        if (!statusMap.has(status.id)) {
+          statusMap.set(status.id, {
+            id: status.id,
+            name: status.name
+          });
+        }
+      });
+    });
+    const statuses = Array.from(statusMap.values());
+
+    return {
+      users: users.map(u => ({
+        accountId: u.accountId,
+        displayName: u.displayName,
+        emailAddress: u.emailAddress || '' // Add fallback for missing email
+      })),
+      fields: customFields.map(f => ({
+        id: f.id,
+        name: f.name
+      })),
+      statuses: statuses
+    };
+  } catch (error) {
+    console.error('Error fetching local data:', error);
+    throw error;
+  }
+});
+
+// Fetch remote Jira data (users, fields, statuses)
+resolver.define('fetchRemoteData', async () => {
+  try {
+    const config = await storage.get('syncConfig');
+    if (!config || !config.remoteUrl || !config.remoteEmail || !config.remoteApiToken) {
+      throw new Error('Remote configuration not complete');
+    }
+
+    const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json'
+    };
+
+    // Fetch remote users
+    const usersResponse = await fetch(
+      `${config.remoteUrl}/rest/api/3/users/search?maxResults=1000`,
+      { headers }
+    );
+    const allUsers = await usersResponse.json();
+    
+    // Filter out bots and service accounts
+    const users = allUsers.filter(u => 
+      u.accountType === 'atlassian' && 
+      u.active === true &&
+      !u.displayName.includes('(') // Filters out "Automation for Jira ()", "Slack ()", etc.
+    );
+
+    // Fetch all fields from remote
+    const fieldsResponse = await fetch(
+      `${config.remoteUrl}/rest/api/3/field`,
+      { headers }
+    );
+    const allFields = await fieldsResponse.json();
+    
+    // Filter to custom fields only
+    const customFields = allFields.filter(f => f.custom);
+
+    // Fetch statuses from remote project
+    const statusesResponse = await fetch(
+      `${config.remoteUrl}/rest/api/3/project/${config.remoteProjectKey}/statuses`,
+      { headers }
+    );
+    const statusData = await statusesResponse.json();
+    
+    // Extract unique statuses from all issue types
+    const statusMap = new Map();
+    statusData.forEach(issueType => {
+      issueType.statuses.forEach(status => {
+        if (!statusMap.has(status.id)) {
+          statusMap.set(status.id, {
+            id: status.id,
+            name: status.name
+          });
+        }
+      });
+    });
+    const statuses = Array.from(statusMap.values());
+
+    return {
+      users: users.map(u => ({
+        accountId: u.accountId,
+        displayName: u.displayName,
+        emailAddress: u.emailAddress || '' // Add fallback for missing email
+      })),
+      fields: customFields.map(f => ({
+        id: f.id,
+        name: f.name
+      })),
+      statuses: statuses
+    };
+  } catch (error) {
+    console.error('Error fetching remote data:', error);
+    throw error;
+  }
+});
+
+// Helper functions to get mappings
+async function getUserMappings() {
+  const data = await storage.get('userMappings');
+  const config = await storage.get('userMappingConfig');
+  return {
+    mappings: data || {},
+    config: config || { autoMapUsers: true, fallbackUser: 'unassigned' }
+  };
+}
+
+async function getFieldMappings() {
+  return await storage.get('fieldMappings') || {};
+}
+
+async function getStatusMappings() {
+  return await storage.get('statusMappings') || {};
+}
+
+// Helper to map a local user account ID to remote user account ID
+function mapUserToRemote(localAccountId, userMappingsData) {
+  if (!localAccountId) return null;
+  
+  const { mappings } = userMappingsData;
+  
+  // Look through mappings to find if this local user is mapped
+  for (const [remoteId, mapping] of Object.entries(mappings)) {
+    const localId = typeof mapping === 'string' ? mapping : mapping.localId;
+    if (localId === localAccountId) {
+      return remoteId;
+    }
+  }
+  
+  // No mapping found, return null (caller should handle fallback)
+  return null;
+}
+
+// Helper to reverse mapping (local -> remote)
+function reverseMapping(mapping) {
+  const reversed = {};
+  for (const [key, value] of Object.entries(mapping)) {
+    if (value) {
+      // Handle both old format (string) and new format (object with localId)
+      const localId = typeof value === 'string' ? value : value.localId;
+      if (localId) {
+        reversed[localId] = key;
+      }
+    }
+  }
+  return reversed;
+}
+
 function extractTextFromADF(adf) {
   if (!adf || typeof adf !== 'object') return '';
   
@@ -146,6 +377,10 @@ async function getOrgName() {
 async function transitionRemoteIssue(remoteKey, statusName, config) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   
+  // Apply status mapping if configured
+  const statusMappings = await getStatusMappings();
+  const reversedStatusMap = reverseMapping(statusMappings);
+  
   try {
     const transitionsResponse = await fetch(
       `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions`,
@@ -163,9 +398,16 @@ async function transitionRemoteIssue(remoteKey, statusName, config) {
     
     const transitions = await transitionsResponse.json();
     
-    const transition = transitions.transitions.find(t => 
+    // First try to find by exact name match
+    let transition = transitions.transitions.find(t => 
       t.to.name.toLowerCase() === statusName.toLowerCase()
     );
+    
+    // If mapping exists, try to find by mapped status ID
+    if (!transition && reversedStatusMap[statusName]) {
+      const mappedStatusId = reversedStatusMap[statusName];
+      transition = transitions.transitions.find(t => t.to.id === mappedStatusId);
+    }
     
     if (!transition) {
       console.log(`No transition found to status: ${statusName}`);
@@ -187,7 +429,7 @@ async function transitionRemoteIssue(remoteKey, statusName, config) {
     );
     
     if (transitionResponse.ok || transitionResponse.status === 204) {
-      console.log(`✅ Transitioned ${remoteKey} to ${statusName}`);
+      console.log(`✅ Transitioned ${remoteKey} to ${transition.to.name}`);
     }
   } catch (error) {
     console.error('Error transitioning issue:', error);
@@ -225,6 +467,54 @@ async function createRemoteIssue(issue, config) {
     remoteIssue.fields.labels = issue.fields.labels;
   }
 
+    // Handle parent (epic) link
+  if (issue.fields.parent && issue.fields.parent.key) {
+    const remoteParentKey = await getRemoteKey(issue.fields.parent.key);
+    if (remoteParentKey) {
+      remoteIssue.fields.parent = { key: remoteParentKey };
+      console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
+    } else {
+      console.log(`⚠️ Parent ${issue.fields.parent.key} not found in remote, skipping parent link`);
+    }
+  }
+
+  // Store user mapping info for after creation
+  const userMappingsData = await getUserMappings();
+  let mappedAssignee = null;
+  let mappedReporter = null;
+  
+  // Map reporter (can be set during creation)
+  if (issue.fields.reporter && issue.fields.reporter.accountId) {
+    mappedReporter = mapUserToRemote(issue.fields.reporter.accountId, userMappingsData);
+    if (mappedReporter) {
+      remoteIssue.fields.reporter = { accountId: mappedReporter };
+      console.log(`👤 Mapped reporter: ${issue.fields.reporter.accountId} → ${mappedReporter}`);
+    } else {
+      console.log(`⚠️ No reporter mapping found for ${issue.fields.reporter.accountId}, using default`);
+    }
+  }
+  
+  // Get mapped assignee but DON'T set it during creation (will set after)
+  if (issue.fields.assignee && issue.fields.assignee.accountId) {
+    mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, userMappingsData);
+    if (mappedAssignee) {
+      console.log(`👤 Will assign to: ${issue.fields.assignee.accountId} → ${mappedAssignee}`);
+    } else {
+      console.log(`⚠️ No assignee mapping found for ${issue.fields.assignee.accountId}`);
+    }
+  }
+
+  // Apply field mappings for custom fields
+  const fieldMappings = await getFieldMappings();
+  const reversedFieldMap = reverseMapping(fieldMappings);
+  
+  for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
+    if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
+      remoteIssue.fields[remoteFieldId] = issue.fields[localFieldId];
+      console.log(`📋 Mapped field ${localFieldId} -> ${remoteFieldId}`);
+    }
+  }
+
   try {
     console.log('Creating remote issue for:', issue.key);
     
@@ -244,6 +534,33 @@ async function createRemoteIssue(issue, config) {
       await storeMapping(issue.key, result.key);
       await markSyncing(result.key);
       
+      // Set assignee AFTER creation if mapped
+      if (mappedAssignee) {
+        try {
+          const assignResponse = await fetch(
+            `${config.remoteUrl}/rest/api/3/issue/${result.key}/assignee`,
+            {
+              method: 'PUT',
+              headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ accountId: mappedAssignee })
+            }
+          );
+          
+          if (assignResponse.ok || assignResponse.status === 204) {
+            console.log(`✅ Assigned ${result.key} to ${mappedAssignee}`);
+          } else {
+            const errorText = await assignResponse.text();
+            console.error(`Failed to assign: ${errorText}`);
+          }
+        } catch (error) {
+          console.error('Error assigning issue:', error);
+        }
+      }
+      
+      // Transition to correct status if needed
       if (issue.fields.status && issue.fields.status.name !== 'To Do') {
         await transitionRemoteIssue(result.key, issue.fields.status.name, config);
       }
@@ -287,6 +604,34 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config) {
   
   if (issue.fields.labels) {
     updateData.fields.labels = issue.fields.labels;
+  }
+
+  // Apply user mappings for assignee
+  const userMappingsData = await getUserMappings();
+  
+  if (issue.fields.assignee && issue.fields.assignee.accountId) {
+    const mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, userMappingsData);
+    if (mappedAssignee) {
+      updateData.fields.assignee = { accountId: mappedAssignee };
+      console.log(`👤 Mapped assignee: ${issue.fields.assignee.accountId} → ${mappedAssignee}`);
+    } else {
+      console.log(`⚠️ No assignee mapping found for ${issue.fields.assignee.accountId}`);
+    }
+  } else if (issue.fields.assignee === null) {
+    // Handle unassign
+    updateData.fields.assignee = null;
+    console.log(`👤 Unassigning issue`);
+  }
+
+  // Apply field mappings for custom fields
+  const fieldMappings = await getFieldMappings();
+  const reversedFieldMap = reverseMapping(fieldMappings);
+  
+  for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
+    if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
+      updateData.fields[remoteFieldId] = issue.fields[localFieldId];
+      console.log(`📋 Mapped field ${localFieldId} -> ${remoteFieldId}`);
+    }
   }
 
   try {

@@ -36,6 +36,7 @@ permissions:
   scopes:
     - read:jira-work
     - write:jira-work
+    - read:jira-user
     - storage:app
   external:
     fetch:
