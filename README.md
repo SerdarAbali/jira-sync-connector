@@ -16,14 +16,16 @@ Production-ready Atlassian Forge app for real-time one-way synchronization betwe
 ✅ **Fix Versions** - Version sync with clearing support  
 ✅ **Affects Versions** - Affected version sync with clearing support  
 ✅ **Time Tracking** - Original estimate and remaining estimate sync  
-✅ **Custom field mapping** - Map custom fields (including sprints) between organizations  
-✅ **User mapping** - Map assignee & reporter between organizations  
+✅ **Custom field mapping** - Map custom fields (including sprints) between organizations
+✅ **User mapping** - Map assignee & reporter between organizations
+✅ **Project filtering** - Selectively sync specific projects/spaces via admin UI
 ✅ **Infinite loop prevention** - Safe one-way architecture with sync detection  
 
 ### Admin Interface
-🎛️ **Collapsible UI sections** - Clean, organized configuration  
-🔄 **Live data loading** - Fetch users, fields, statuses from both orgs  
-📋 **Visual mapping management** - Add/delete mappings with real names  
+🎛️ **Collapsible UI sections** - Clean, organized configuration
+🔄 **Live data loading** - Fetch users, fields, statuses, projects from both orgs
+📋 **Visual mapping management** - Add/delete mappings with real names
+🎯 **Project filter selector** - Multi-select checkboxes to choose which projects to sync
 💾 **Persistent storage** - All configurations saved in Forge storage  
 
 ## 🚀 Installation
@@ -88,6 +90,17 @@ Map status IDs when workflow names differ:
 - Remote Status → Local Status
 - Falls back to name matching if unmapped
 
+### Project Filtering
+Control which projects sync to reduce noise and focus on specific spaces:
+1. Open admin UI → "Project Filter" section
+2. Click "Load Projects" to fetch available projects
+3. Check/uncheck projects you want to sync
+4. Click "Save Project Filter"
+5. **Behavior:**
+   - **Projects selected:** Only selected projects sync
+   - **No selection:** All projects sync (backward compatible)
+   - Applies to webhooks, comments, and scheduled syncs
+
 ## 🏗️ Architecture
 
 ### File Structure
@@ -117,6 +130,7 @@ SyncApp/
 
 **Frontend (static/admin-page/src/App.jsx)**
 - Configuration form (remote Jira credentials)
+- Project filter UI (load, select, save)
 - User mapping UI (load, add, delete, save)
 - Field mapping UI (load, add, delete, save)
 - Status mapping UI (load, add, delete, save)
@@ -205,22 +219,23 @@ forge tunnel
 - ✅ Issue Links synchronization
 - ✅ Duplicate link prevention
 - ✅ Bidirectional link support (inward/outward)
+- ✅ Selective project syncing (project filter UI)
 
-### Phase 3: Future 🔮
-- 🔮 Selective field syncing (UI toggles)
-- 🔮 Partial project sync (JQL filters)
-- 🔮 Retroactive sync for existing issues
+### Phase 3: Control & Filtering (Partially Complete)
+- ✅ **Selective project syncing** - Multi-select UI to choose which projects sync
+- 🔮 **Selective field syncing** - UI toggles for "Sync comments? Attachments? Links?"
+- 🔮 **Retroactive sync** - Sync existing issues that weren't previously synced
 
-### Phase 4: Future 🔮
-- 🔮 Error handling & retry logic
-- 🔮 Rate limiting protection
-- 🔮 Sync health dashboard
-- 🔮 Audit log
+### Phase 4: Reliability & Observability
+- 🔮 **Error handling & retry logic** - Automatic retry for failed syncs
+- 🔮 **Rate limiting protection** - Throttle requests to avoid API limits
+- 🔮 **Sync health dashboard** - Show sync stats, errors, unsynced issues
+- 🔮 **Audit log** - Track what synced when with detailed history
 
-### Phase 5: Future 🔮
-- 🔮 Bidirectional sync (same app, both orgs)
-- 🔮 Conflict resolution
-- 🔮 Loop detection
+### Phase 5: Bidirectional Sync (The Big One)
+- 🔮 **Install on both orgs** - Same app deployed to both Jira instances
+- 🔮 **Loop detection mechanism** - Prevent infinite sync loops
+- 🔮 **Conflict resolution** - Last-write-wins vs manual merge strategies
 
 ## 🐛 Troubleshooting
 
@@ -229,6 +244,14 @@ forge tunnel
 - Verify remote credentials in admin UI
 - Ensure user/field/status mappings saved
 - Confirm project key is correct
+- **Check project filter** - Verify project is in allowed list
+
+### Only certain projects syncing?
+- Open admin UI → "Project Filter" section
+- Review "Currently Selected Projects" list
+- If projects are selected, only those will sync
+- To sync all projects: uncheck all and save (backward compatible)
+- Check logs for: `⛔ Project X is NOT in allowed list`
 
 ### Attachments not syncing?
 - Check file size (10MB limit)

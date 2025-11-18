@@ -1,7 +1,176 @@
 import Resolver from '@forge/resolver';
 import api, { route, storage, fetch } from '@forge/api';
+import {
+  MAX_RETRY_ATTEMPTS,
+  RETRY_BASE_DELAY_MS,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  HTTP_STATUS,
+  ERROR_MESSAGES,
+  LOG_EMOJI,
+  MAX_ATTACHMENT_SIZE,
+  MAX_ATTACHMENT_SIZE_MB,
+  SYNC_FLAG_TTL_SECONDS,
+  SCHEDULED_SYNC_DELAY_MS,
+  STORAGE_KEYS,
+  RECENT_CREATION_WINDOW_MS,
+  OPERATION_RESULT
+} from './constants.js';
 
 const resolver = new Resolver();
+
+// Class to track sync operation results
+class SyncResult {
+  constructor(operation) {
+    this.operation = operation;
+    this.success = true;
+    this.warnings = [];
+    this.errors = [];
+    this.details = {
+      attachments: { success: 0, failed: 0, skipped: 0, errors: [] },
+      links: { success: 0, failed: 0, skipped: 0, errors: [] },
+      transitions: { success: 0, failed: 0, errors: [] },
+      comments: { success: 0, failed: 0, errors: [] },
+      fields: { updated: [], failed: [] }
+    };
+  }
+
+  addWarning(message) {
+    this.warnings.push(message);
+    console.warn(`${LOG_EMOJI.WARNING} ${message}`);
+  }
+
+  addError(message) {
+    this.errors.push(message);
+    this.success = false;
+    console.error(`${LOG_EMOJI.ERROR} ${message}`);
+  }
+
+  addAttachmentSuccess(filename) {
+    this.details.attachments.success++;
+  }
+
+  addAttachmentFailure(filename, error) {
+    this.details.attachments.failed++;
+    this.details.attachments.errors.push(`${filename}: ${error}`);
+    this.addWarning(`Attachment failed: ${filename} - ${error}`);
+  }
+
+  addAttachmentSkipped(filename, reason) {
+    this.details.attachments.skipped++;
+  }
+
+  addLinkSuccess(linkedIssue, linkType) {
+    this.details.links.success++;
+  }
+
+  addLinkFailure(linkedIssue, error) {
+    this.details.links.failed++;
+    this.details.links.errors.push(`${linkedIssue}: ${error}`);
+    this.addWarning(`Link failed: ${linkedIssue} - ${error}`);
+  }
+
+  addLinkSkipped(linkedIssue, reason) {
+    this.details.links.skipped++;
+  }
+
+  addTransitionSuccess(status) {
+    this.details.transitions.success++;
+  }
+
+  addTransitionFailure(status, error) {
+    this.details.transitions.failed++;
+    this.details.transitions.errors.push(`${status}: ${error}`);
+    this.addWarning(`Transition failed: ${status} - ${error}`);
+  }
+
+  logSummary(issueKey, remoteKey) {
+    const hasWarnings = this.warnings.length > 0;
+    const hasErrors = this.errors.length > 0;
+
+    let status = OPERATION_RESULT.SUCCESS;
+    if (hasErrors) status = OPERATION_RESULT.FAILURE;
+    else if (hasWarnings) status = OPERATION_RESULT.PARTIAL;
+
+    // Clear separator for visibility
+    console.log(`${LOG_EMOJI.SUMMARY} ════════════════════════════════════════════════════`);
+    console.log(`${LOG_EMOJI.SUMMARY} SYNC SUMMARY: ${issueKey}${remoteKey ? ' → ' + remoteKey : ''}`);
+    console.log(`${LOG_EMOJI.SUMMARY} Status: ${status.toUpperCase()}`);
+
+    // Attachments
+    const totalAttachments = this.details.attachments.success + this.details.attachments.failed + this.details.attachments.skipped;
+    if (totalAttachments > 0) {
+      console.log(`${LOG_EMOJI.SUMMARY} ${LOG_EMOJI.ATTACHMENT} Attachments: ${this.details.attachments.success}/${totalAttachments} synced, ${this.details.attachments.failed} failed, ${this.details.attachments.skipped} skipped`);
+    }
+
+    // Links
+    const totalLinks = this.details.links.success + this.details.links.failed + this.details.links.skipped;
+    if (totalLinks > 0) {
+      console.log(`${LOG_EMOJI.SUMMARY} ${LOG_EMOJI.LINK} Links: ${this.details.links.success}/${totalLinks} synced, ${this.details.links.failed} failed, ${this.details.links.skipped} skipped`);
+    }
+
+    // Transitions
+    const totalTransitions = this.details.transitions.success + this.details.transitions.failed;
+    if (totalTransitions > 0) {
+      console.log(`${LOG_EMOJI.SUMMARY} ${LOG_EMOJI.STATUS} Transitions: ${this.details.transitions.success}/${totalTransitions} successful`);
+    }
+
+    // Comments
+    const totalComments = this.details.comments.success + this.details.comments.failed;
+    if (totalComments > 0) {
+      console.log(`${LOG_EMOJI.SUMMARY} ${LOG_EMOJI.COMMENT} Comments: ${this.details.comments.success}/${totalComments} synced`);
+    }
+
+    // Warnings
+    if (this.warnings.length > 0) {
+      console.log(`${LOG_EMOJI.SUMMARY} ${LOG_EMOJI.WARNING} Warnings: ${this.warnings.length}`);
+      this.warnings.forEach(w => console.log(`${LOG_EMOJI.SUMMARY}    - ${w}`));
+    }
+
+    // Errors
+    if (this.errors.length > 0) {
+      console.log(`${LOG_EMOJI.SUMMARY} ${LOG_EMOJI.ERROR} Errors: ${this.errors.length}`);
+      this.errors.forEach(e => console.log(`${LOG_EMOJI.SUMMARY}    - ${e}`));
+    }
+
+    console.log(`${LOG_EMOJI.SUMMARY} ════════════════════════════════════════════════════`);
+
+    return status;
+  }
+}
+
+// Utility: Retry with exponential backoff
+async function retryWithBackoff(fn, operation = 'operation', maxRetries = MAX_RETRY_ATTEMPTS) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const result = await fn();
+
+      // Check for rate limiting (HTTP 429)
+      if (result && result.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
+        console.warn(`${LOG_EMOJI.WARNING} Rate limit hit during ${operation}, waiting ${RATE_LIMIT_RETRY_DELAY_MS}ms...`);
+        await sleep(RATE_LIMIT_RETRY_DELAY_MS);
+        continue; // Don't count this as a regular retry attempt
+      }
+
+      return result;
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries - 1;
+
+      if (isLastAttempt) {
+        console.error(`${LOG_EMOJI.ERROR} ${operation} failed after ${maxRetries} attempts:`, error.message);
+        throw error;
+      }
+
+      const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt); // Exponential backoff: 1s, 2s, 4s
+      console.warn(`${LOG_EMOJI.WARNING} ${operation} failed (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...`);
+      await sleep(delay);
+    }
+  }
+}
+
+// Utility: Sleep helper
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 resolver.define('getConfig', async () => {
   const config = await storage.get('syncConfig');
@@ -187,9 +356,23 @@ async function performScheduledSync() {
     };
     
     // Fetch recent issues from local Jira
-    const jql = scheduledConfig.syncScope === 'recent' 
-      ? `project = ${config.remoteProjectKey} AND updated >= -24h ORDER BY updated DESC`
-      : `project = ${config.remoteProjectKey} ORDER BY updated DESC`;
+    // Build project filter for JQL
+    let projectFilter;
+    if (config.allowedProjects && Array.isArray(config.allowedProjects) && config.allowedProjects.length > 0) {
+      // Use allowed projects list
+      if (config.allowedProjects.length === 1) {
+        projectFilter = `project = ${config.allowedProjects[0]}`;
+      } else {
+        projectFilter = `project IN (${config.allowedProjects.join(', ')})`;
+      }
+    } else {
+      // Fallback to remoteProjectKey for backward compatibility
+      projectFilter = `project = ${config.remoteProjectKey}`;
+    }
+
+    const jql = scheduledConfig.syncScope === 'recent'
+      ? `${projectFilter} AND updated >= -24h ORDER BY updated DESC`
+      : `${projectFilter} ORDER BY updated DESC`;
     
     const searchResponse = await api.asApp().requestJira(
       route`/rest/api/3/search?jql=${jql}&maxResults=100`
@@ -236,7 +419,7 @@ async function performScheduledSync() {
         }
         
         // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await sleep(SCHEDULED_SYNC_DELAY_MS);
         
       } catch (error) {
         console.error(`Error syncing ${issueKey}:`, error);
@@ -256,6 +439,26 @@ async function performScheduledSync() {
   return stats;
 }
 
+resolver.define('fetchLocalProjects', async () => {
+  try {
+    const projectsResponse = await api.asApp().requestJira(
+      route`/rest/api/3/project/search?maxResults=1000`
+    );
+    const projectsData = await projectsResponse.json();
+
+    return {
+      projects: projectsData.values.map(p => ({
+        key: p.key,
+        name: p.name,
+        id: p.id
+      }))
+    };
+  } catch (error) {
+    console.error('Error fetching local projects:', error);
+    throw error;
+  }
+});
+
 resolver.define('fetchLocalData', async () => {
   try {
     const config = await storage.get('syncConfig');
@@ -267,9 +470,9 @@ resolver.define('fetchLocalData', async () => {
       route`/rest/api/3/users/search?maxResults=1000`
     );
     const allUsers = await usersResponse.json();
-    
-    const users = allUsers.filter(u => 
-      u.accountType === 'atlassian' && 
+
+    const users = allUsers.filter(u =>
+      u.accountType === 'atlassian' &&
       u.active === true &&
       !u.displayName.includes('(')
     );
@@ -284,7 +487,7 @@ resolver.define('fetchLocalData', async () => {
       route`/rest/api/3/project/${config.remoteProjectKey}/statuses`
     );
     const statusData = await statusesResponse.json();
-    
+
     const statusMap = new Map();
     statusData.forEach(issueType => {
       issueType.statuses.forEach(status => {
@@ -580,7 +783,7 @@ async function getLinkMapping(localLinkId) {
 }
 
 async function markSyncing(issueKey) {
-  await storage.set(`syncing:${issueKey}`, 'true', { ttl: 5 });
+  await storage.set(`syncing:${issueKey}`, 'true', { ttl: SYNC_FLAG_TTL_SECONDS });
 }
 
 async function isSyncing(issueKey) {
@@ -627,6 +830,25 @@ async function getOrgName() {
     console.error('Error fetching org name:', error);
     return 'Jira';
   }
+}
+
+async function isProjectAllowedToSync(projectKey, config) {
+  // If no filter is configured, allow all projects (backward compatibility)
+  if (!config.allowedProjects || !Array.isArray(config.allowedProjects) || config.allowedProjects.length === 0) {
+    console.log(`✅ No project filter configured - allowing ${projectKey}`);
+    return true;
+  }
+
+  // Check if project is in allowed list
+  const isAllowed = config.allowedProjects.includes(projectKey);
+
+  if (isAllowed) {
+    console.log(`✅ Project ${projectKey} is in allowed list`);
+  } else {
+    console.log(`⛔ Project ${projectKey} is NOT in allowed list [${config.allowedProjects.join(', ')}] - skipping sync`);
+  }
+
+  return isAllowed;
 }
 
 async function downloadAttachment(attachmentUrl) {
@@ -685,22 +907,24 @@ async function uploadAttachment(remoteKey, filename, fileBuffer, config) {
     // Combine all parts
     const body = Buffer.concat([header, fileBuffer, footer]);
     
-    const response = await fetch(
-      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/attachments`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'X-Atlassian-Token': 'no-check'
-        },
-        body: body
-      }
-    );
-    
+    const response = await retryWithBackoff(async () => {
+      return await fetch(
+        `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/attachments`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'X-Atlassian-Token': 'no-check'
+          },
+          body: body
+        }
+      );
+    }, `Upload attachment ${filename} to ${remoteKey}`);
+
     if (response.ok) {
       const result = await response.json();
-      console.log(`✅ Uploaded attachment: ${filename}`);
+      console.log(`${LOG_EMOJI.SUCCESS} Uploaded attachment: ${filename}`);
       return result[0]?.id || null; // Return the remote attachment ID
     } else {
       const errorText = await response.text();
@@ -713,76 +937,85 @@ async function uploadAttachment(remoteKey, filename, fileBuffer, config) {
   }
 }
 
-async function syncAttachments(localIssueKey, remoteIssueKey, issue, config) {
-  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+async function syncAttachments(localIssueKey, remoteIssueKey, issue, config, syncResult = null) {
   const attachmentMapping = {}; // localId -> remoteId
-  
+
   if (!issue.fields.attachment || issue.fields.attachment.length === 0) {
     console.log(`No attachments to sync for ${localIssueKey}`);
     return attachmentMapping;
   }
-  
-  console.log(`📎 Found ${issue.fields.attachment.length} attachment(s) on ${localIssueKey}`);
-  
+
+  console.log(`${LOG_EMOJI.ATTACHMENT} Found ${issue.fields.attachment.length} attachment(s) on ${localIssueKey}`);
+
   for (const attachment of issue.fields.attachment) {
     try {
       // Check if already synced
       const existingMapping = await getAttachmentMapping(attachment.id);
       if (existingMapping) {
-        console.log(`⏭️ Attachment ${attachment.filename} already synced`);
+        console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already synced`);
         attachmentMapping[attachment.id] = existingMapping;
+        if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'already synced');
         continue;
       }
-      
+
       // Check file size
-      if (attachment.size > MAX_FILE_SIZE) {
-        console.log(`⚠️ Skipping ${attachment.filename} - too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB > 10MB)`);
+      if (attachment.size > MAX_ATTACHMENT_SIZE) {
+        console.log(`${LOG_EMOJI.WARNING} Skipping ${attachment.filename} - too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB > ${MAX_ATTACHMENT_SIZE_MB}MB)`);
+        if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, `too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB)`);
         continue;
       }
-      
-      console.log(`📥 Downloading ${attachment.filename} (${(attachment.size / 1024).toFixed(2)}KB)...`);
-      
+
+      console.log(`${LOG_EMOJI.DOWNLOAD} Downloading ${attachment.filename} (${(attachment.size / 1024).toFixed(2)}KB)...`);
+
       // Download from local Jira
       const fileBuffer = await downloadAttachment(attachment.content);
       if (!fileBuffer) {
-        console.error(`Failed to download ${attachment.filename}`);
+        console.error(`${LOG_EMOJI.ERROR} Failed to download ${attachment.filename}`);
+        if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'download failed');
         continue;
       }
-      
+
       // Upload to remote Jira
-      console.log(`📤 Uploading ${attachment.filename} to ${remoteIssueKey}...`);
+      console.log(`${LOG_EMOJI.UPLOAD} Uploading ${attachment.filename} to ${remoteIssueKey}...`);
       const remoteAttachmentId = await uploadAttachment(remoteIssueKey, attachment.filename, fileBuffer, config);
-      
+
       if (remoteAttachmentId) {
         // Store mapping to prevent re-syncing
         await storeAttachmentMapping(attachment.id, remoteAttachmentId);
         attachmentMapping[attachment.id] = remoteAttachmentId;
-        console.log(`✅ Synced attachment: ${attachment.filename}`);
+        console.log(`${LOG_EMOJI.SUCCESS} Synced attachment: ${attachment.filename}`);
+        if (syncResult) syncResult.addAttachmentSuccess(attachment.filename);
+      } else {
+        console.error(`${LOG_EMOJI.ERROR} Failed to upload ${attachment.filename}`);
+        if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'upload failed');
       }
-      
+
     } catch (error) {
-      console.error(`Error syncing attachment ${attachment.filename}:`, error);
+      console.error(`${LOG_EMOJI.ERROR} Error syncing attachment ${attachment.filename}:`, error);
+      if (syncResult) syncResult.addAttachmentFailure(attachment.filename, error.message);
     }
   }
-  
+
   return attachmentMapping;
 }
-async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config) {
+async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, syncResult = null) {
   if (!issue.fields.issuelinks || issue.fields.issuelinks.length === 0) {
     console.log(`No issue links to sync for ${localIssueKey}`);
     return;
   }
 
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
-  
-  console.log(`🔗 Found ${issue.fields.issuelinks.length} issue link(s) on ${localIssueKey}`);
+
+  console.log(`${LOG_EMOJI.LINK} Found ${issue.fields.issuelinks.length} issue link(s) on ${localIssueKey}`);
 
   for (const link of issue.fields.issuelinks) {
     try {
       // Check if already synced
       const existingMapping = await getLinkMapping(link.id);
       if (existingMapping) {
-        console.log(`⏭️ Link ${link.id} already synced`);
+        console.log(`${LOG_EMOJI.SKIP} Link ${link.id} already synced`);
+        const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
+        if (syncResult) syncResult.addLinkSkipped(linkedKey, 'already synced');
         continue;
       }
 
@@ -800,14 +1033,16 @@ async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config) {
       }
 
       if (!linkedIssueKey) {
-        console.log(`⚠️ No linked issue found for link ${link.id}`);
+        console.log(`${LOG_EMOJI.WARNING} No linked issue found for link ${link.id}`);
+        if (syncResult) syncResult.addLinkSkipped('unknown', 'no linked issue found');
         continue;
       }
 
       // Check if linked issue is synced
       const remoteLinkedKey = await getRemoteKey(linkedIssueKey);
       if (!remoteLinkedKey) {
-        console.log(`⏭️ Skipping link to ${linkedIssueKey} - not synced yet`);
+        console.log(`${LOG_EMOJI.SKIP} Skipping link to ${linkedIssueKey} - not synced yet`);
+        if (syncResult) syncResult.addLinkSkipped(linkedIssueKey, 'linked issue not synced yet');
         continue;
       }
 
@@ -819,11 +1054,11 @@ async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config) {
       if (direction === 'outward') {
         linkPayload.inwardIssue = { key: remoteIssueKey };
         linkPayload.outwardIssue = { key: remoteLinkedKey };
-        console.log(`🔗 Creating link: ${remoteIssueKey} ${link.type.outward} ${remoteLinkedKey}`);
+        console.log(`${LOG_EMOJI.LINK} Creating link: ${remoteIssueKey} ${link.type.outward} ${remoteLinkedKey}`);
       } else {
         linkPayload.inwardIssue = { key: remoteLinkedKey };
         linkPayload.outwardIssue = { key: remoteIssueKey };
-        console.log(`🔗 Creating link: ${remoteLinkedKey} ${link.type.outward} ${remoteIssueKey}`);
+        console.log(`${LOG_EMOJI.LINK} Creating link: ${remoteLinkedKey} ${link.type.outward} ${remoteIssueKey}`);
       }
 
       const response = await fetch(
@@ -839,25 +1074,29 @@ async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config) {
       );
 
       if (response.ok || response.status === 201) {
-        console.log(`✅ Synced issue link: ${linkedIssueKey} (${linkTypeName})`);
+        console.log(`${LOG_EMOJI.SUCCESS} Synced issue link: ${linkedIssueKey} (${linkTypeName})`);
         // Store mapping to prevent re-creating
         await storeLinkMapping(link.id, 'synced');
+        if (syncResult) syncResult.addLinkSuccess(linkedIssueKey, linkTypeName);
       } else {
         const errorText = await response.text();
-        console.error(`❌ Failed to create link: ${errorText}`);
+        console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
+        if (syncResult) syncResult.addLinkFailure(linkedIssueKey, errorText);
       }
 
     } catch (error) {
-      console.error(`Error syncing link ${link.id}:`, error);
+      console.error(`${LOG_EMOJI.ERROR} Error syncing link ${link.id}:`, error);
+      const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
+      if (syncResult) syncResult.addLinkFailure(linkedKey, error.message);
     }
   }
 }
 
-async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings) {
+async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings, syncResult = null) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   const reversedStatusMap = reverseMapping(statusMappings);
-  
-  console.log(`🔄 Attempting to transition ${remoteKey} to status: ${statusName}`);
+
+  console.log(`${LOG_EMOJI.STATUS} Attempting to transition ${remoteKey} to status: ${statusName}`);
   
   try {
     const transitionsResponse = await fetch(
@@ -887,41 +1126,47 @@ async function transitionRemoteIssue(remoteKey, statusName, config, statusMappin
       console.log(`Trying mapped status ID: ${mappedStatusId}`);
       transition = transitions.transitions.find(t => t.to.id === mappedStatusId);
     }
-    
+
     if (!transition) {
-      console.error(`❌ No transition found to status: ${statusName}`);
-      console.error(`Available target statuses: ${transitions.transitions.map(t => t.to.name).join(', ')}`);
+      const errorMsg = `No transition found to status: ${statusName}. Available: ${transitions.transitions.map(t => t.to.name).join(', ')}`;
+      console.error(`${LOG_EMOJI.ERROR} ${errorMsg}`);
+      if (syncResult) syncResult.addTransitionFailure(statusName, errorMsg);
       return;
     }
-    
+
     console.log(`Using transition: ${transition.name} → ${transition.to.name}`);
-    
-    const transitionResponse = await fetch(
-      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          transition: { id: transition.id }
-        })
-      }
-    );
-    
-    if (transitionResponse.ok || transitionResponse.status === 204) {
-      console.log(`✅ Transitioned ${remoteKey} to ${transition.to.name}`);
+
+    const transitionResponse = await retryWithBackoff(async () => {
+      return await fetch(
+        `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            transition: { id: transition.id }
+          })
+        }
+      );
+    }, `Transition ${remoteKey} to ${statusName}`);
+
+    if (transitionResponse.ok || transitionResponse.status === HTTP_STATUS.NO_CONTENT) {
+      console.log(`${LOG_EMOJI.SUCCESS} Transitioned ${remoteKey} to ${transition.to.name}`);
+      if (syncResult) syncResult.addTransitionSuccess(transition.to.name);
     } else {
       const errorText = await transitionResponse.text();
-      console.error(`❌ Transition failed: ${errorText}`);
+      console.error(`${LOG_EMOJI.ERROR} Transition failed: ${errorText}`);
+      if (syncResult) syncResult.addTransitionFailure(statusName, errorText);
     }
   } catch (error) {
-    console.error(`❌ Error transitioning issue:`, error);
+    console.error(`${LOG_EMOJI.ERROR} Error transitioning issue:`, error);
+    if (syncResult) syncResult.addTransitionFailure(statusName, error.message);
   }
 }
 
-async function createRemoteIssue(issue, config, mappings) {
+async function createRemoteIssue(issue, config, mappings, syncResult = null) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   
   // For initial creation, use text-only description
@@ -1036,31 +1281,33 @@ async function createRemoteIssue(issue, config, mappings) {
 
   try {
     console.log('Creating remote issue for:', issue.key);
-    
-    const response = await fetch(`${config.remoteUrl}/rest/api/3/issue`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(remoteIssue)
-    });
+
+    const response = await retryWithBackoff(async () => {
+      return await fetch(`${config.remoteUrl}/rest/api/3/issue`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(remoteIssue)
+      });
+    }, `Create issue ${issue.key}`);
 
     if (response.ok) {
       const result = await response.json();
-      console.log(`✅ Created ${issue.key} → ${result.key}`);
+      console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
       
       await storeMapping(issue.key, result.key);
-      
+
       if (issue.fields.status && issue.fields.status.name !== 'To Do') {
-        await transitionRemoteIssue(result.key, issue.fields.status.name, config, mappings.statusMappings);
+        await transitionRemoteIssue(result.key, issue.fields.status.name, config, mappings.statusMappings, syncResult);
       }
-      
+
       // Sync attachments after issue creation and get mapping
-      const attachmentMapping = await syncAttachments(issue.key, result.key, issue, config);
-      
+      const attachmentMapping = await syncAttachments(issue.key, result.key, issue, config, syncResult);
+
       // Sync issue links after issue creation
-      await syncIssueLinks(issue.key, result.key, issue, config);
+      await syncIssueLinks(issue.key, result.key, issue, config, syncResult);
       
       // If description had media nodes and we have mappings, update description with corrected IDs
       if (issue.fields.description && 
@@ -1068,48 +1315,54 @@ async function createRemoteIssue(issue, config, mappings) {
           Object.keys(attachmentMapping).length > 0) {
         
         const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
-        
+
         console.log(`🖼️ Updating description with corrected media references...`);
-        const updateResponse = await fetch(`${config.remoteUrl}/rest/api/3/issue/${result.key}`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `Basic ${auth}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            fields: {
-              description: correctedDescription
-            }
-          })
-        });
-        
-        if (updateResponse.ok || updateResponse.status === 204) {
-          console.log(`✅ Updated description with embedded media`);
+        const updateResponse = await retryWithBackoff(async () => {
+          return await fetch(`${config.remoteUrl}/rest/api/3/issue/${result.key}`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              fields: {
+                description: correctedDescription
+              }
+            })
+          });
+        }, `Update description for ${result.key}`);
+
+        if (updateResponse.ok || updateResponse.status === HTTP_STATUS.NO_CONTENT) {
+          console.log(`${LOG_EMOJI.SUCCESS} Updated description with embedded media`);
         } else {
-          console.log(`⚠️ Could not update description with media - using text-only`);
+          const warningMsg = 'Could not update description with media - using text-only';
+          console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
+          if (syncResult) syncResult.addWarning(warningMsg);
         }
       }
-      
+
       return result.key;
     } else {
       const errorText = await response.text();
-      console.error('❌ Create failed:', errorText);
+      console.error(`${LOG_EMOJI.ERROR} Create failed: ${errorText}`);
+      if (syncResult) syncResult.addError(`Create failed: ${errorText}`);
     }
   } catch (error) {
-    console.error('Error creating remote issue:', error);
+    console.error(`${LOG_EMOJI.ERROR} Error creating remote issue:`, error);
+    if (syncResult) syncResult.addError(`Error creating remote issue: ${error.message}`);
   }
-  
+
   return null;
 }
 
-async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings) {
+async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings, syncResult = null) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   
   // Sync attachments first to get ID mappings
-  const attachmentMapping = await syncAttachments(localKey, remoteKey, issue, config);
-  
+  const attachmentMapping = await syncAttachments(localKey, remoteKey, issue, config, syncResult);
+
   // Sync issue links
-  await syncIssueLinks(localKey, remoteKey, issue, config);
+  await syncIssueLinks(localKey, remoteKey, issue, config, syncResult);
   
   let description;
   if (issue.fields.description) {
@@ -1229,56 +1482,68 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings) {
 
   try {
     console.log(`Updating remote issue: ${localKey} → ${remoteKey}`);
-    
-    const response = await fetch(`${config.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(updateData)
-    });
 
-    if (response.ok || response.status === 204) {
-      console.log(`✅ Updated ${remoteKey} fields`);
-      
+    const response = await retryWithBackoff(async () => {
+      return await fetch(`${config.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updateData)
+      });
+    }, `Update issue ${remoteKey}`);
+
+    if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
+      console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
+
       if (issue.fields.status) {
-        await transitionRemoteIssue(remoteKey, issue.fields.status.name, config, mappings.statusMappings);
+        await transitionRemoteIssue(remoteKey, issue.fields.status.name, config, mappings.statusMappings, syncResult);
       }
     } else {
       const errorText = await response.text();
-      console.error('Update failed:', errorText);
+      console.error(`${LOG_EMOJI.ERROR} Update failed: ${errorText}`);
+      if (syncResult) syncResult.addError(`Update failed: ${errorText}`);
     }
   } catch (error) {
-    console.error('Error updating remote issue:', error);
+    console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
+    if (syncResult) syncResult.addError(`Error updating remote issue: ${error.message}`);
   }
 }
 
 export async function syncIssue(event) {
   const issueKey = event.issue.key;
-  
+
   // Check if LOCAL issue is syncing
   if (await isSyncing(issueKey)) {
     console.log(`⏭️ Skipping ${issueKey} - currently syncing`);
     return;
   }
-  
+
   const config = await storage.get('syncConfig');
-  
+
   if (!config || !config.remoteUrl) {
     console.log('Sync skipped: not configured');
     return;
   }
-  
+
   const createdByRemoteSync = await getLocalKey(issueKey);
   if (createdByRemoteSync) {
     console.log(`⏭️ Skipping ${issueKey} - was created by remote sync`);
     return;
   }
-  
+
   const issue = await getFullIssue(issueKey);
   if (!issue) {
     console.error('Could not fetch issue data');
+    return;
+  }
+
+  // Check if project is allowed to sync
+  const projectKey = issue.fields.project.key;
+  const isAllowed = await isProjectAllowedToSync(projectKey, config);
+  if (!isAllowed) {
+    console.log(`⏭️ Skipping ${issueKey} - project ${projectKey} not in allowed list`);
     return;
   }
   
@@ -1294,36 +1559,59 @@ export async function syncIssue(event) {
     fieldMappings: fieldMappings || {},
     statusMappings: statusMappings || {}
   };
-  
-  console.log(`📋 Processing ${issueKey}, event: ${event.eventType}`);
-  
+
+  console.log(`${LOG_EMOJI.INFO} Processing ${issueKey}, event: ${event.eventType}`);
+
   const existingRemoteKey = await getRemoteKey(issueKey);
-  
+
+  // Create sync result tracker
+  const syncResult = new SyncResult(existingRemoteKey ? 'update' : 'create');
+
+  let remoteKey = existingRemoteKey;
+
   if (existingRemoteKey) {
-    console.log(`🔄 UPDATE: ${issueKey} → ${existingRemoteKey}`);
-    await updateRemoteIssue(issueKey, existingRemoteKey, issue, config, mappings);
+    console.log(`${LOG_EMOJI.UPDATE} UPDATE: ${issueKey} → ${existingRemoteKey}`);
+    await updateRemoteIssue(issueKey, existingRemoteKey, issue, config, mappings, syncResult);
   } else {
-    console.log(`✨ CREATE: ${issueKey}`);
-    await createRemoteIssue(issue, config, mappings);
+    console.log(`${LOG_EMOJI.CREATE} CREATE: ${issueKey}`);
+    remoteKey = await createRemoteIssue(issue, config, mappings, syncResult);
   }
+
+  // Log comprehensive summary
+  syncResult.logSummary(issueKey, remoteKey);
 }
 
 export async function syncComment(event) {
   const issueKey = event.issue.key;
   const commentId = event.comment?.id;
   const config = await storage.get('syncConfig');
-  
+
   if (!config || !config.remoteUrl) {
     console.log('Comment sync skipped: not configured');
     return;
   }
-  
+
   const createdByRemoteSync = await getLocalKey(issueKey);
   if (createdByRemoteSync) {
     console.log(`⏭️ Skipping comment on ${issueKey} - issue was created by remote sync`);
     return;
   }
-  
+
+  // Get issue to check project
+  const issue = await getFullIssue(issueKey);
+  if (!issue) {
+    console.log('Could not fetch issue data for comment sync');
+    return;
+  }
+
+  // Check if project is allowed to sync
+  const projectKey = issue.fields.project.key;
+  const isAllowed = await isProjectAllowedToSync(projectKey, config);
+  if (!isAllowed) {
+    console.log(`⏭️ Skipping comment on ${issueKey} - project ${projectKey} not in allowed list`);
+    return;
+  }
+
   const remoteKey = await getRemoteKey(issueKey);
   if (!remoteKey) {
     console.log(`No remote issue found for ${issueKey}`);
@@ -1349,30 +1637,43 @@ export async function syncComment(event) {
   
   const commentBody = textToADFWithAuthor(commentText, orgName, userName);
 
+  // Create sync result tracker for comment
+  const syncResult = new SyncResult('comment');
+
   try {
-    console.log(`💬 Syncing comment: ${issueKey} → ${remoteKey} (from ${orgName} - ${userName})`);
-    
-    const response = await fetch(
-      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/comment`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ body: commentBody })
-      }
-    );
+    console.log(`${LOG_EMOJI.COMMENT} Syncing comment: ${issueKey} → ${remoteKey} (from ${orgName} - ${userName})`);
+
+    const response = await retryWithBackoff(async () => {
+      return await fetch(
+        `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/comment`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ body: commentBody })
+        }
+      );
+    }, `Sync comment to ${remoteKey}`);
 
     if (response.ok) {
-      console.log(`✅ Comment synced to ${remoteKey}`);
+      console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${remoteKey}`);
+      syncResult.details.comments.success++;
     } else {
       const errorText = await response.text();
-      console.error('Comment sync failed:', errorText);
+      console.error(`${LOG_EMOJI.ERROR} Comment sync failed: ${errorText}`);
+      syncResult.details.comments.failed++;
+      syncResult.addError(`Comment sync failed: ${errorText}`);
     }
   } catch (error) {
-    console.error('Error syncing comment:', error);
+    console.error(`${LOG_EMOJI.ERROR} Error syncing comment:`, error);
+    syncResult.details.comments.failed++;
+    syncResult.addError(`Error syncing comment: ${error.message}`);
   }
+
+  // Log summary
+  syncResult.logSummary(issueKey, remoteKey);
 }
 
 export async function run(event, context) {
@@ -1394,7 +1695,7 @@ export async function run(event, context) {
     const createdAt = await storage.get(`created-timestamp:${event.issue.key}`);
     if (createdAt) {
       const timeSinceCreation = Date.now() - parseInt(createdAt, 10);
-      if (timeSinceCreation < 3000) { // Less than 3 seconds since creation
+      if (timeSinceCreation < RECENT_CREATION_WINDOW_MS) {
         // Only skip if remote issue doesn't exist yet (still being created)
         const remoteKey = await getRemoteKey(event.issue.key);
         if (!remoteKey) {

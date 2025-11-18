@@ -49,13 +49,16 @@ function App() {
     remoteUrl: '',
     remoteEmail: '',
     remoteApiToken: '',
-    remoteProjectKey: ''
+    remoteProjectKey: '',
+    allowedProjects: []
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
   const [configOpen, setConfigOpen] = useState(true);
+  const [syncHealthOpen, setSyncHealthOpen] = useState(false);
+  const [projectFilterOpen, setProjectFilterOpen] = useState(false);
   const [userMappingOpen, setUserMappingOpen] = useState(false);
   const [fieldMappingOpen, setFieldMappingOpen] = useState(false);
   const [statusMappingOpen, setStatusMappingOpen] = useState(false);
@@ -77,8 +80,11 @@ function App() {
   const [localFields, setLocalFields] = useState([]);
   const [remoteStatuses, setRemoteStatuses] = useState([]);
   const [localStatuses, setLocalStatuses] = useState([]);
+  const [localProjects, setLocalProjects] = useState([]);
 
   const [dataLoading, setDataLoading] = useState(false);
+  const [syncStats, setSyncStats] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(false);
 
   useEffect(() => {
     loadConfiguration();
@@ -161,7 +167,7 @@ function App() {
 
     try {
       const data = await invoke('fetchLocalData');
-      
+
       if (data.users) {
         setLocalUsers(data.users);
         if (data.users.length > 0) setNewUserLocal(data.users[0].accountId);
@@ -174,7 +180,7 @@ function App() {
         setLocalStatuses(data.statuses);
         if (data.statuses.length > 0) setNewStatusLocal(data.statuses[0].id);
       }
-      
+
       setMessage('Local data loaded successfully!');
     } catch (error) {
       setMessage('Error loading local data: ' + error.message);
@@ -185,9 +191,136 @@ function App() {
     }
   };
 
+  const loadLocalProjects = async () => {
+    setDataLoading(true);
+    setMessage('Loading local projects...');
+
+    try {
+      const data = await invoke('fetchLocalProjects');
+
+      if (data.projects) {
+        setLocalProjects(data.projects);
+        setMessage(`Loaded ${data.projects.length} project(s) successfully!`);
+      }
+    } catch (error) {
+      setMessage('Error loading local projects: ' + error.message);
+      console.error(error);
+    } finally {
+      setDataLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  const toggleProjectSelection = (projectKey) => {
+    console.log('Toggling project:', projectKey);
+    setConfig(prev => {
+      const currentProjects = prev.allowedProjects || [];
+      const isSelected = currentProjects.includes(projectKey);
+      const newProjects = isSelected
+        ? currentProjects.filter(p => p !== projectKey)
+        : [...currentProjects, projectKey];
+
+      console.log('Previous projects:', currentProjects);
+      console.log('New projects:', newProjects);
+
+      return {
+        ...prev,
+        allowedProjects: newProjects
+      };
+    });
+  };
+
+  const loadSyncStats = async () => {
+    setStatsLoading(true);
+    try {
+      const stats = await invoke('getScheduledSyncStats');
+      setSyncStats(stats);
+    } catch (error) {
+      console.error('Error loading sync stats:', error);
+      setMessage('Error loading sync stats: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const handleSaveProjectFilter = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      await invoke('saveConfig', { config });
+      setMessage('Project filter saved successfully!');
+    } catch (error) {
+      setMessage('Error saving project filter: ' + error.message);
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  const validateConfig = (data) => {
+    const errors = [];
+
+    // Validate remote URL
+    if (!data.remoteUrl || data.remoteUrl.trim() === '') {
+      errors.push('Remote Jira URL is required');
+    } else {
+      try {
+        const url = new URL(data.remoteUrl);
+        if (!url.protocol.startsWith('http')) {
+          errors.push('Remote URL must use http:// or https://');
+        }
+        if (!url.hostname.includes('atlassian.net')) {
+          errors.push('Remote URL must be an Atlassian domain (*.atlassian.net)');
+        }
+      } catch (e) {
+        errors.push('Remote URL is not a valid URL');
+      }
+    }
+
+    // Validate email
+    if (!data.remoteEmail || data.remoteEmail.trim() === '') {
+      errors.push('Admin email is required');
+    } else {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(data.remoteEmail)) {
+        errors.push('Admin email is not valid');
+      }
+    }
+
+    // Validate API token
+    if (!data.remoteApiToken || data.remoteApiToken.trim() === '') {
+      errors.push('API token is required');
+    } else if (data.remoteApiToken.length < 20) {
+      errors.push('API token appears to be invalid (too short)');
+    }
+
+    // Validate project key
+    if (!data.remoteProjectKey || data.remoteProjectKey.trim() === '') {
+      errors.push('Project key is required');
+    } else {
+      const projectKeyRegex = /^[A-Z][A-Z0-9_]*$/;
+      if (!projectKeyRegex.test(data.remoteProjectKey)) {
+        errors.push('Project key must be uppercase letters, numbers, and underscores (e.g., SCRUM)');
+      }
+    }
+
+    return errors;
+  };
+
   const handleSubmit = async (data) => {
     setSaving(true);
     setMessage('');
+
+    // Validate input
+    const validationErrors = validateConfig(data);
+    if (validationErrors.length > 0) {
+      setMessage('Validation errors:\n' + validationErrors.join('\n'));
+      setSaving(false);
+      setTimeout(() => setMessage(''), 5000);
+      return;
+    }
+
     try {
       await invoke('saveConfig', { config: data });
       setMessage('Configuration saved successfully!');
@@ -390,11 +523,12 @@ function App() {
       </div>
 
       {message && (
-        <div style={{ 
-          marginTop: '20px', 
-          padding: '10px', 
-          background: message.includes('Error') ? '#ffebe6' : '#e3fcef',
-          borderRadius: '3px'
+        <div style={{
+          marginTop: '20px',
+          padding: '10px',
+          background: message.includes('Error') || message.includes('Validation') ? '#ffebe6' : '#e3fcef',
+          borderRadius: '3px',
+          whiteSpace: 'pre-line'
         }}>
           {message}
         </div>
@@ -410,7 +544,190 @@ function App() {
       </div>
 
       <div style={sectionStyle}>
-        <div 
+        <div
+          style={collapsibleHeaderStyle}
+          onClick={() => setSyncHealthOpen(!syncHealthOpen)}
+        >
+          <span>Sync Health & Statistics</span>
+          <span>{syncHealthOpen ? '▼' : '▶'}</span>
+        </div>
+
+        {syncHealthOpen && (
+          <div style={{ marginTop: '16px' }}>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              View synchronization statistics and health metrics.
+            </p>
+
+            <Button appearance="primary" onClick={loadSyncStats} isLoading={statsLoading} style={{ marginBottom: '16px' }}>
+              Refresh Stats
+            </Button>
+
+            {syncStats && (
+              <div>
+                {syncStats.lastRun ? (
+                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+                    <h4 style={{ marginTop: 0, marginBottom: '12px' }}>Last Sync Run</h4>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Time:</strong> {new Date(syncStats.lastRun).toLocaleString()}
+                    </p>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Duration:</strong> {syncStats.lastRun ? `${Math.round((Date.now() - new Date(syncStats.lastRun).getTime()) / 1000 / 60)} minutes ago` : 'N/A'}
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: 0 }}>No scheduled sync has run yet.</p>
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Checked</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesChecked || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesCreated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesUpdated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#FF8B00' }}>Issues Skipped</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesSkipped || 0}</p>
+                  </div>
+                </div>
+
+                {syncStats.errors && syncStats.errors.length > 0 && (
+                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Errors ({syncStats.errors.length})</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                      {syncStats.errors.slice(0, 10).map((error, index) => (
+                        <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>{error}</li>
+                      ))}
+                    </ul>
+                    {syncStats.errors.length > 10 && (
+                      <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
+                        ... and {syncStats.errors.length - 10} more errors
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {(!syncStats.errors || syncStats.errors.length === 0) && (
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <p style={{ margin: 0, color: '#00875A' }}>✓ No errors reported</p>
+                  </div>
+                )}
+
+                <div style={{ marginTop: '16px', padding: '12px', background: '#f4f5f7', borderRadius: '3px' }}>
+                  <p style={{ fontSize: '12px', color: '#6B778C', margin: 0 }}>
+                    <strong>Success Rate:</strong> {syncStats.issuesChecked > 0
+                      ? `${Math.round(((syncStats.issuesCreated + syncStats.issuesUpdated) / syncStats.issuesChecked) * 100)}%`
+                      : 'N/A'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {!syncStats && !statsLoading && (
+              <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px' }}>
+                <p style={{ margin: 0, color: '#6B778C' }}>Click "Refresh Stats" to load sync statistics.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={sectionStyle}>
+        <div
+          style={collapsibleHeaderStyle}
+          onClick={() => setProjectFilterOpen(!projectFilterOpen)}
+        >
+          <span>Project Filter ({config.allowedProjects?.length || 0} selected)</span>
+          <span>{projectFilterOpen ? '▼' : '▶'}</span>
+        </div>
+
+        {projectFilterOpen && (
+          <div style={{ marginTop: '16px' }}>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              Select which projects to sync. If no projects are selected, all projects will be synced (backward compatible).
+            </p>
+
+            {config.allowedProjects && config.allowedProjects.length > 0 && localProjects.length === 0 && (
+              <div style={{ marginBottom: '16px', padding: '12px', background: '#e3fcef', borderRadius: '3px' }}>
+                <h4 style={{ marginTop: 0 }}>Currently Selected Projects:</h4>
+                <ul style={{ marginBottom: 0 }}>
+                  {config.allowedProjects.map(projectKey => (
+                    <li key={projectKey}><strong>{projectKey}</strong></li>
+                  ))}
+                </ul>
+                <p style={{ color: '#6B778C', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
+                  Click "Load Projects" below to see all available projects and modify selection
+                </p>
+              </div>
+            )}
+
+            <Button appearance="primary" onClick={loadLocalProjects} isLoading={dataLoading} style={{ marginBottom: '16px' }}>
+              Load Projects
+            </Button>
+
+            {localProjects.length > 0 && (
+              <>
+                <h4>Available Projects</h4>
+                <div style={{ marginBottom: '16px' }}>
+                  {localProjects.map(project => {
+                    const isSelected = config.allowedProjects?.includes(project.key);
+                    return (
+                      <div
+                        key={project.key}
+                        style={{
+                          padding: '12px',
+                          background: isSelected ? '#e3fcef' : '#f4f5f7',
+                          borderRadius: '3px',
+                          marginBottom: '8px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          cursor: 'pointer',
+                          border: isSelected ? '2px solid #00875A' : '2px solid transparent'
+                        }}
+                        onClick={() => toggleProjectSelection(project.key)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected || false}
+                          readOnly
+                          style={{ marginRight: '12px', cursor: 'pointer', pointerEvents: 'none' }}
+                        />
+                        <div>
+                          <strong>{project.key}</strong> - {project.name}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <Button appearance="primary" onClick={handleSaveProjectFilter} isLoading={saving}>
+                  Save Project Filter
+                </Button>
+              </>
+            )}
+
+            {localProjects.length === 0 && (!config.allowedProjects || config.allowedProjects.length === 0) && (
+              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>
+                Click "Load Projects" to see available projects
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={sectionStyle}>
+        <div
           style={collapsibleHeaderStyle}
           onClick={() => setUserMappingOpen(!userMappingOpen)}
         >
