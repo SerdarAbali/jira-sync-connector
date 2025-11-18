@@ -571,6 +571,14 @@ async function getAttachmentMapping(localAttachmentId) {
   return await storage.get(`attachment-mapping:${localAttachmentId}`);
 }
 
+async function storeLinkMapping(localLinkId, remoteLinkId) {
+  await storage.set(`link-mapping:${localLinkId}`, remoteLinkId);
+}
+
+async function getLinkMapping(localLinkId) {
+  return await storage.get(`link-mapping:${localLinkId}`);
+}
+
 async function markSyncing(issueKey) {
   await storage.set(`syncing:${issueKey}`, 'true', { ttl: 5 });
 }
@@ -623,16 +631,25 @@ async function getOrgName() {
 
 async function downloadAttachment(attachmentUrl) {
   try {
-    // Extract path from full URL
-    // attachmentUrl is like: https://serdarjiraone.atlassian.net/rest/api/3/attachment/content/10004
-    const url = new URL(attachmentUrl);
-    const path = url.pathname; // Gets: /rest/api/3/attachment/content/10004
+    // Extract attachment ID from URL
+    // URL format: https://serdarjiraone.atlassian.net/rest/api/3/attachment/content/10004
+    const matches = attachmentUrl.match(/\/attachment\/content\/(\d+)/);
+    if (!matches || !matches[1]) {
+      console.error('Could not extract attachment ID from URL:', attachmentUrl);
+      return null;
+    }
     
-    const response = await api.asApp().requestJira(route`${path}`, {
-      headers: {
-        'Accept': '*/*'
+    const attachmentId = matches[1];
+    console.log(`Downloading attachment ID: ${attachmentId}`);
+    
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/attachment/content/${attachmentId}`,
+      {
+        headers: {
+          'Accept': '*/*'
+        }
       }
-    });
+    );
     
     if (!response.ok) {
       console.error(`Failed to download attachment: ${response.status}`);
@@ -750,6 +767,91 @@ async function syncAttachments(localIssueKey, remoteIssueKey, issue, config) {
   
   return attachmentMapping;
 }
+async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config) {
+  if (!issue.fields.issuelinks || issue.fields.issuelinks.length === 0) {
+    console.log(`No issue links to sync for ${localIssueKey}`);
+    return;
+  }
+
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  
+  console.log(`🔗 Found ${issue.fields.issuelinks.length} issue link(s) on ${localIssueKey}`);
+
+  for (const link of issue.fields.issuelinks) {
+    try {
+      // Check if already synced
+      const existingMapping = await getLinkMapping(link.id);
+      if (existingMapping) {
+        console.log(`⏭️ Link ${link.id} already synced`);
+        continue;
+      }
+
+      const linkTypeName = link.type.name;
+      let linkedIssueKey = null;
+      let direction = null;
+
+      // Determine linked issue and direction
+      if (link.outwardIssue) {
+        linkedIssueKey = link.outwardIssue.key;
+        direction = 'outward';
+      } else if (link.inwardIssue) {
+        linkedIssueKey = link.inwardIssue.key;
+        direction = 'inward';
+      }
+
+      if (!linkedIssueKey) {
+        console.log(`⚠️ No linked issue found for link ${link.id}`);
+        continue;
+      }
+
+      // Check if linked issue is synced
+      const remoteLinkedKey = await getRemoteKey(linkedIssueKey);
+      if (!remoteLinkedKey) {
+        console.log(`⏭️ Skipping link to ${linkedIssueKey} - not synced yet`);
+        continue;
+      }
+
+      // Create the link in remote org
+      const linkPayload = {
+        type: { name: linkTypeName }
+      };
+
+      if (direction === 'outward') {
+        linkPayload.inwardIssue = { key: remoteIssueKey };
+        linkPayload.outwardIssue = { key: remoteLinkedKey };
+        console.log(`🔗 Creating link: ${remoteIssueKey} ${link.type.outward} ${remoteLinkedKey}`);
+      } else {
+        linkPayload.inwardIssue = { key: remoteLinkedKey };
+        linkPayload.outwardIssue = { key: remoteIssueKey };
+        console.log(`🔗 Creating link: ${remoteLinkedKey} ${link.type.outward} ${remoteIssueKey}`);
+      }
+
+      const response = await fetch(
+        `${config.remoteUrl}/rest/api/3/issueLink`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(linkPayload)
+        }
+      );
+
+      if (response.ok || response.status === 201) {
+        console.log(`✅ Synced issue link: ${linkedIssueKey} (${linkTypeName})`);
+        // Store mapping to prevent re-creating
+        await storeLinkMapping(link.id, 'synced');
+      } else {
+        const errorText = await response.text();
+        console.error(`❌ Failed to create link: ${errorText}`);
+      }
+
+    } catch (error) {
+      console.error(`Error syncing link ${link.id}:`, error);
+    }
+  }
+}
 
 async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -858,6 +960,32 @@ async function createRemoteIssue(issue, config, mappings) {
     remoteIssue.fields.duedate = issue.fields.duedate;
   }
 
+  if (issue.fields.components && issue.fields.components.length > 0) {
+    remoteIssue.fields.components = issue.fields.components.map(c => ({ name: c.name }));
+    console.log(`🏷️ Syncing ${issue.fields.components.length} component(s): ${issue.fields.components.map(c => c.name).join(', ')}`);
+  }
+
+  if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
+    remoteIssue.fields.fixVersions = issue.fields.fixVersions.map(v => ({ name: v.name }));
+    console.log(`🔖 Syncing ${issue.fields.fixVersions.length} fix version(s): ${issue.fields.fixVersions.map(v => v.name).join(', ')}`);
+  }
+
+  if (issue.fields.versions && issue.fields.versions.length > 0) {
+    remoteIssue.fields.versions = issue.fields.versions.map(v => ({ name: v.name }));
+    console.log(`📌 Syncing ${issue.fields.versions.length} affects version(s): ${issue.fields.versions.map(v => v.name).join(', ')}`);
+  }
+
+  if (issue.fields.timetracking && Object.keys(issue.fields.timetracking).length > 0) {
+    remoteIssue.fields.timetracking = {};
+    if (issue.fields.timetracking.originalEstimate) {
+      remoteIssue.fields.timetracking.originalEstimate = issue.fields.timetracking.originalEstimate;
+    }
+    if (issue.fields.timetracking.remainingEstimate) {
+      remoteIssue.fields.timetracking.remainingEstimate = issue.fields.timetracking.remainingEstimate;
+    }
+    console.log(`⏱️ Syncing time tracking: ${issue.fields.timetracking.originalEstimate || 'no estimate'}`);
+  }
+
   if (issue.fields.parent && issue.fields.parent.key) {
     const remoteParentKey = await getRemoteKey(issue.fields.parent.key);
     if (remoteParentKey) {
@@ -931,6 +1059,9 @@ async function createRemoteIssue(issue, config, mappings) {
       // Sync attachments after issue creation and get mapping
       const attachmentMapping = await syncAttachments(issue.key, result.key, issue, config);
       
+      // Sync issue links after issue creation
+      await syncIssueLinks(issue.key, result.key, issue, config);
+      
       // If description had media nodes and we have mappings, update description with corrected IDs
       if (issue.fields.description && 
           typeof issue.fields.description === 'object' && 
@@ -977,17 +1108,16 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings) {
   // Sync attachments first to get ID mappings
   const attachmentMapping = await syncAttachments(localKey, remoteKey, issue, config);
   
+  // Sync issue links
+  await syncIssueLinks(localKey, remoteKey, issue, config);
+  
   let description;
   if (issue.fields.description) {
     if (typeof issue.fields.description === 'object') {
-      // If we have attachment mappings, replace media IDs
-      if (Object.keys(attachmentMapping).length > 0) {
-        description = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
-      } else {
-        // No attachments or no mappings, extract text only
-        const extractedText = extractTextFromADF(issue.fields.description);
-        description = extractedText ? textToADF(extractedText) : textToADF('');
-      }
+      // Always extract text only for updates to avoid media ID mapping issues
+      // Attachments are synced separately as files
+      const extractedText = extractTextFromADF(issue.fields.description);
+      description = extractedText ? textToADF(extractedText) : textToADF('');
     } else if (typeof issue.fields.description === 'string') {
       description = textToADF(issue.fields.description);
     } else {
@@ -1014,6 +1144,41 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings) {
 
   if (issue.fields.duedate) {
     updateData.fields.duedate = issue.fields.duedate;
+  }
+
+  if (issue.fields.components && issue.fields.components.length > 0) {
+    updateData.fields.components = issue.fields.components.map(c => ({ name: c.name }));
+    console.log(`🏷️ Updating ${issue.fields.components.length} component(s): ${issue.fields.components.map(c => c.name).join(', ')}`);
+  } else if (issue.fields.components && issue.fields.components.length === 0) {
+    updateData.fields.components = [];
+    console.log(`🏷️ Clearing components`);
+  }
+
+  if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
+    updateData.fields.fixVersions = issue.fields.fixVersions.map(v => ({ name: v.name }));
+    console.log(`🔖 Updating ${issue.fields.fixVersions.length} fix version(s): ${issue.fields.fixVersions.map(v => v.name).join(', ')}`);
+  } else if (issue.fields.fixVersions && issue.fields.fixVersions.length === 0) {
+    updateData.fields.fixVersions = [];
+    console.log(`🔖 Clearing fix versions`);
+  }
+
+  if (issue.fields.versions && issue.fields.versions.length > 0) {
+    updateData.fields.versions = issue.fields.versions.map(v => ({ name: v.name }));
+    console.log(`📌 Updating ${issue.fields.versions.length} affects version(s): ${issue.fields.versions.map(v => v.name).join(', ')}`);
+  } else if (issue.fields.versions && issue.fields.versions.length === 0) {
+    updateData.fields.versions = [];
+    console.log(`📌 Clearing affects versions`);
+  }
+
+  if (issue.fields.timetracking && Object.keys(issue.fields.timetracking).length > 0) {
+    updateData.fields.timetracking = {};
+    if (issue.fields.timetracking.originalEstimate) {
+      updateData.fields.timetracking.originalEstimate = issue.fields.timetracking.originalEstimate;
+    }
+    if (issue.fields.timetracking.remainingEstimate) {
+      updateData.fields.timetracking.remainingEstimate = issue.fields.timetracking.remainingEstimate;
+    }
+    console.log(`⏱️ Updating time tracking: ${issue.fields.timetracking.originalEstimate || 'no estimate'}`);
   }
 
   // Handle parent field changes
