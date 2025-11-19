@@ -83,7 +83,8 @@ function App() {
   const [localProjects, setLocalProjects] = useState([]);
 
   const [dataLoading, setDataLoading] = useState(false);
-  const [syncStats, setSyncStats] = useState(null);
+  const [scheduledStats, setScheduledStats] = useState(null);
+  const [webhookStats, setWebhookStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
 
   useEffect(() => {
@@ -233,8 +234,12 @@ function App() {
   const loadSyncStats = async () => {
     setStatsLoading(true);
     try {
-      const stats = await invoke('getScheduledSyncStats');
-      setSyncStats(stats);
+      const [scheduled, webhook] = await Promise.all([
+        invoke('getScheduledSyncStats'),
+        invoke('getWebhookSyncStats')
+      ]);
+      setScheduledStats(scheduled);
+      setWebhookStats(webhook);
     } catch (error) {
       console.error('Error loading sync stats:', error);
       setMessage('Error loading sync stats: ' + error.message);
@@ -562,79 +567,130 @@ function App() {
               Refresh Stats
             </Button>
 
-            {syncStats && (
-              <div>
-                {syncStats.lastRun ? (
+            {webhookStats && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ marginTop: 0, marginBottom: '16px', color: '#172B4D' }}>Real-time Webhook Syncs</h3>
+
+                {webhookStats.lastSync ? (
                   <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
-                    <h4 style={{ marginTop: 0, marginBottom: '12px' }}>Last Sync Run</h4>
                     <p style={{ margin: '4px 0' }}>
-                      <strong>Time:</strong> {new Date(syncStats.lastRun).toLocaleString()}
+                      <strong>Last Activity:</strong> {new Date(webhookStats.lastSync).toLocaleString()}
                     </p>
                     <p style={{ margin: '4px 0' }}>
-                      <strong>Duration:</strong> {syncStats.lastRun ? `${Math.round((Date.now() - new Date(syncStats.lastRun).getTime()) / 1000 / 60)} minutes ago` : 'N/A'}
+                      <strong>Total Syncs:</strong> {webhookStats.totalSyncs || 0}
                     </p>
                   </div>
                 ) : (
                   <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
-                    <p style={{ margin: 0 }}>No scheduled sync has run yet.</p>
+                    <p style={{ margin: 0 }}>No webhook syncs have occurred yet.</p>
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.issuesCreated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.issuesUpdated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#deebff', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#0052CC' }}>Comments Synced</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.commentsSynced || 0}</p>
+                  </div>
+                </div>
+
+                {webhookStats.errors && webhookStats.errors.length > 0 && (
+                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Webhook Errors ({webhookStats.errors.length})</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                      {webhookStats.errors.slice(0, 5).map((err, index) => (
+                        <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>
+                          <strong>{new Date(err.timestamp).toLocaleTimeString()}:</strong> {err.error}
+                        </li>
+                      ))}
+                    </ul>
+                    {webhookStats.errors.length > 5 && (
+                      <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
+                        ... and {webhookStats.errors.length - 5} more errors
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {scheduledStats && (
+              <div>
+                <h3 style={{ marginTop: 0, marginBottom: '16px', color: '#172B4D' }}>Scheduled Bulk Syncs (Hourly)</h3>
+
+                {scheduledStats.lastRun ? (
+                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Last Run:</strong> {new Date(scheduledStats.lastRun).toLocaleString()}
+                    </p>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Time Ago:</strong> {Math.round((Date.now() - new Date(scheduledStats.lastRun).getTime()) / 1000 / 60)} minutes ago
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: 0 }}>No scheduled sync has run yet. First run will occur within 1 hour of deployment.</p>
                   </div>
                 )}
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
                   <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
                     <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Checked</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesChecked || 0}</p>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesChecked || 0}</p>
                   </div>
 
                   <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
                     <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesCreated || 0}</p>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesCreated || 0}</p>
                   </div>
 
                   <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
                     <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesUpdated || 0}</p>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesUpdated || 0}</p>
                   </div>
 
                   <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px' }}>
                     <h4 style={{ marginTop: 0, fontSize: '14px', color: '#FF8B00' }}>Issues Skipped</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{syncStats.issuesSkipped || 0}</p>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesSkipped || 0}</p>
                   </div>
                 </div>
 
-                {syncStats.errors && syncStats.errors.length > 0 && (
-                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Errors ({syncStats.errors.length})</h4>
+                {scheduledStats.errors && scheduledStats.errors.length > 0 && (
+                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Scheduled Sync Errors ({scheduledStats.errors.length})</h4>
                     <ul style={{ margin: 0, paddingLeft: '20px' }}>
-                      {syncStats.errors.slice(0, 10).map((error, index) => (
+                      {scheduledStats.errors.slice(0, 5).map((error, index) => (
                         <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>{error}</li>
                       ))}
                     </ul>
-                    {syncStats.errors.length > 10 && (
+                    {scheduledStats.errors.length > 5 && (
                       <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
-                        ... and {syncStats.errors.length - 10} more errors
+                        ... and {scheduledStats.errors.length - 5} more errors
                       </p>
                     )}
                   </div>
                 )}
 
-                {(!syncStats.errors || syncStats.errors.length === 0) && (
-                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <p style={{ margin: 0, color: '#00875A' }}>✓ No errors reported</p>
-                  </div>
-                )}
-
                 <div style={{ marginTop: '16px', padding: '12px', background: '#f4f5f7', borderRadius: '3px' }}>
                   <p style={{ fontSize: '12px', color: '#6B778C', margin: 0 }}>
-                    <strong>Success Rate:</strong> {syncStats.issuesChecked > 0
-                      ? `${Math.round(((syncStats.issuesCreated + syncStats.issuesUpdated) / syncStats.issuesChecked) * 100)}%`
+                    <strong>Success Rate:</strong> {scheduledStats.issuesChecked > 0
+                      ? `${Math.round(((scheduledStats.issuesCreated + scheduledStats.issuesUpdated) / scheduledStats.issuesChecked) * 100)}%`
                       : 'N/A'}
                   </p>
                 </div>
               </div>
             )}
 
-            {!syncStats && !statsLoading && (
+            {(!webhookStats && !scheduledStats) && !statsLoading && (
               <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px' }}>
                 <p style={{ margin: 0, color: '#6B778C' }}>Click "Refresh Stats" to load sync statistics.</p>
               </div>

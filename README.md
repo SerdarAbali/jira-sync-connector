@@ -5,17 +5,17 @@ Production-ready Atlassian Forge app for real-time one-way synchronization betwe
 ## ✨ Features
 
 ### Core Sync Capabilities
-✅ **Real-time sync** - Issues sync instantly via webhooks  
-✅ **Issue creation & updates** - Summary, description, priority, labels, due date  
-✅ **Status synchronization** - Configurable status mappings with transitions  
-✅ **Epic/Parent relationships** - Preserves hierarchy across orgs  
-✅ **Comment sync** - With author attribution: `[Comment from orgname - User: Name]`  
-✅ **Attachment sync** - Binary file transfer with 10MB limit and duplicate prevention  
-✅ **Issue Links** - Syncs all link types (blocks, relates to, duplicates, etc.)  
-✅ **Components** - Component sync with clearing support  
-✅ **Fix Versions** - Version sync with clearing support  
-✅ **Affects Versions** - Affected version sync with clearing support  
-✅ **Time Tracking** - Original estimate and remaining estimate sync  
+✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
+✅ **Issue creation & updates** - Summary, description, priority, labels, due date
+✅ **Status synchronization** - Configurable status mappings with transitions
+✅ **Epic/Parent relationships** - Preserves hierarchy across orgs
+✅ **Comment sync** - With author attribution: `[Comment from orgname - User: Name]`
+✅ **Attachment sync** - Binary file transfer with 10MB limit and duplicate prevention
+✅ **Issue Links** - Syncs all link types (blocks, relates to, duplicates, etc.)
+✅ **Components** - Component sync with clearing support
+✅ **Fix Versions** - Version sync with clearing support
+✅ **Affects Versions** - Affected version sync with clearing support
+✅ **Time Tracking** - Original estimate and remaining estimate sync
 ✅ **Custom field mapping** - Map custom fields (including sprints) between organizations
 ✅ **User mapping** - Map assignee & reporter between organizations
 ✅ **Project filtering** - Selectively sync specific projects/spaces via admin UI
@@ -26,6 +26,7 @@ Production-ready Atlassian Forge app for real-time one-way synchronization betwe
 🔄 **Live data loading** - Fetch users, fields, statuses, projects from both orgs
 📋 **Visual mapping management** - Add/delete mappings with real names
 🎯 **Project filter selector** - Multi-select checkboxes to choose which projects to sync
+📊 **Sync health dashboard** - Real-time webhook stats + scheduled bulk sync stats
 💾 **Persistent storage** - All configurations saved in Forge storage  
 
 ## 🚀 Installation
@@ -69,10 +70,30 @@ forge install
 
 ## 📖 Usage
 
+### Dual Sync Strategy
+The app uses two complementary sync mechanisms for maximum reliability:
+
+**Real-time Webhook Syncs**
+- Triggers instantly when issues are created, updated, or commented
+- Provides immediate synchronization (typically 1-3 seconds)
+- Tracks: issues created, issues updated, comments synced, errors
+
+**Scheduled Bulk Syncs (Hourly)**
+- Runs every hour to catch any missed syncs
+- Checks all issues in allowed projects for sync requirements
+- Ensures eventual consistency and catches webhook failures
+- Tracks: issues checked, created, updated, skipped, errors
+
+**Why Both?**
+- Webhooks provide instant sync for active work
+- Scheduled sync catches edge cases (missed webhooks, network issues, etc.)
+- Together they ensure no issue is ever missed
+
 ### Basic Workflow
-1. Create or update an issue in Source Org (serdarjiraone)
-2. App syncs to Target Org (serdarjiratwo) automatically
+1. Create or update an issue in Source Org
+2. Webhook triggers immediate sync to Target Org (1-3 seconds)
 3. Updates, comments, attachments, links sync in real-time
+4. Hourly scheduled sync validates all issues are in sync
 
 ### User Mapping
 Map users between organizations to preserve assignee/reporter:
@@ -101,6 +122,26 @@ Control which projects sync to reduce noise and focus on specific spaces:
    - **No selection:** All projects sync (backward compatible)
    - Applies to webhooks, comments, and scheduled syncs
 
+### Sync Health Dashboard
+Monitor sync activity and troubleshoot issues:
+
+**Real-time Webhook Syncs Section**
+- Last activity timestamp
+- Total syncs count
+- Issues created, updated, and comments synced
+- Recent errors with timestamps (top 5 shown)
+
+**Scheduled Bulk Syncs Section**
+- Last run timestamp and time elapsed
+- Issues checked, created, updated, and skipped
+- Success rate calculation
+- Recent errors (top 5 shown)
+
+**How to Access:**
+1. Open admin UI → "Sync Health & Statistics" section
+2. Click "Refresh Stats" to load latest data
+3. Review metrics and errors to troubleshoot issues
+
 ## 🏗️ Architecture
 
 ### File Structure
@@ -119,26 +160,30 @@ SyncApp/
 ### Key Components
 
 **Backend (src/index.js)**
-- `syncIssue()` - Main sync function (create/update)
-- `syncComment()` - Comment sync with author info
+- `syncIssue()` - Main sync function (create/update) with webhook tracking
+- `syncComment()` - Comment sync with author info and webhook tracking
+- `trackWebhookSync()` - Track real-time sync statistics
+- `performScheduledSync()` - Hourly bulk sync for missed issues
 - `syncAttachments()` - Binary file download/upload with deduplication
 - `syncIssueLinks()` - Link sync with mapping verification
 - `createRemoteIssue()` - Create with parent/epic/component/version support
 - `updateRemoteIssue()` - Update with user mapping and field clearing
 - `transitionRemoteIssue()` - Status sync with mapping
-- Resolvers for admin UI (getConfig, getUserMappings, etc.)
+- Resolvers for admin UI (getConfig, getWebhookSyncStats, getScheduledSyncStats, etc.)
 
 **Frontend (static/admin-page/src/App.jsx)**
 - Configuration form (remote Jira credentials)
+- Sync health dashboard (webhook stats + scheduled sync stats)
 - Project filter UI (load, select, save)
 - User mapping UI (load, add, delete, save)
 - Field mapping UI (load, add, delete, save)
 - Status mapping UI (load, add, delete, save)
 
 **Triggers (manifest.yml)**
-- `avi:jira:created:issue` - New issue webhook
-- `avi:jira:updated:issue` - Issue update webhook
-- `avi:jira:commented:issue` - Comment webhook
+- `avi:jira:created:issue` - New issue webhook (real-time)
+- `avi:jira:updated:issue` - Issue update webhook (real-time)
+- `avi:jira:commented:issue` - Comment webhook (real-time)
+- `scheduledTrigger` - Hourly bulk sync (runs every hour)
 
 ### Synced Fields
 
@@ -221,16 +266,17 @@ forge tunnel
 - ✅ Bidirectional link support (inward/outward)
 - ✅ Selective project syncing (project filter UI)
 
-### Phase 3: Control & Filtering (Partially Complete)
+### Phase 3: Control & Filtering ✅
 - ✅ **Selective project syncing** - Multi-select UI to choose which projects sync
 - 🔮 **Selective field syncing** - UI toggles for "Sync comments? Attachments? Links?"
-- 🔮 **Retroactive sync** - Sync existing issues that weren't previously synced
 
-### Phase 4: Reliability & Observability
+### Phase 4: Reliability & Observability (Partially Complete)
+- ✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
+- ✅ **Sync health dashboard** - Real-time webhook stats + scheduled sync stats with error tracking
+- ✅ **Error tracking** - Top 50 errors tracked with timestamps for webhooks
 - 🔮 **Error handling & retry logic** - Automatic retry for failed syncs
 - 🔮 **Rate limiting protection** - Throttle requests to avoid API limits
-- 🔮 **Sync health dashboard** - Show sync stats, errors, unsynced issues
-- 🔮 **Audit log** - Track what synced when with detailed history
+- 🔮 **Audit log** - Detailed sync history with timestamps
 
 ### Phase 5: Bidirectional Sync (The Big One)
 - 🔮 **Install on both orgs** - Same app deployed to both Jira instances
@@ -240,11 +286,21 @@ forge tunnel
 ## 🐛 Troubleshooting
 
 ### Issues not syncing?
-- Check `forge logs` for errors
+- **Check Sync Health Dashboard** - Open admin UI → "Sync Health & Statistics" → "Refresh Stats"
+  - Review webhook stats for real-time sync activity
+  - Review scheduled sync stats for bulk sync results
+  - Check "Recent Errors" sections for specific error messages
+- Check `forge logs` for detailed errors
 - Verify remote credentials in admin UI
 - Ensure user/field/status mappings saved
 - Confirm project key is correct
 - **Check project filter** - Verify project is in allowed list
+
+### Understanding the dashboard?
+- **Webhook stats show zeros** - No issues created/updated yet since deployment
+- **Scheduled stats show zeros** - First hourly sync hasn't run yet (wait up to 1 hour)
+- **High "Issues Skipped" count** - Normal; issues already in sync are skipped
+- **Recent errors listed** - Click into logs with `forge logs` for full details
 
 ### Only certain projects syncing?
 - Open admin UI → "Project Filter" section

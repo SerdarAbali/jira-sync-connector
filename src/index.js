@@ -297,24 +297,72 @@ resolver.define('getScheduledSyncStats', async () => {
   };
 });
 
+resolver.define('getWebhookSyncStats', async () => {
+  const stats = await storage.get('webhookSyncStats');
+  return stats || {
+    totalSyncs: 0,
+    issuesCreated: 0,
+    issuesUpdated: 0,
+    commentsSynced: 0,
+    issuesSkipped: 0,
+    errors: [],
+    lastSync: null
+  };
+});
+
 async function checkIfIssueNeedsSync(issueKey, issue, config, mappings) {
   // Check if issue was created by remote sync
   const createdByRemote = await getLocalKey(issueKey);
   if (createdByRemote) {
     return { needsSync: false, reason: 'created-by-remote' };
   }
-  
+
   // Check if issue has remote mapping
   const remoteKey = await getRemoteKey(issueKey);
-  
+
   if (!remoteKey) {
     // No mapping exists - needs creation
     return { needsSync: true, action: 'create' };
   }
-  
+
   // Has mapping - check if fields have changed
   // For now, we'll sync it (in future, we can add change detection)
   return { needsSync: true, action: 'update', remoteKey };
+}
+
+// Track real-time webhook sync statistics
+async function trackWebhookSync(type, success, error = null) {
+  try {
+    const stats = await storage.get('webhookSyncStats') || {
+      totalSyncs: 0,
+      issuesCreated: 0,
+      issuesUpdated: 0,
+      commentsSynced: 0,
+      issuesSkipped: 0,
+      errors: [],
+      lastSync: null
+    };
+
+    stats.totalSyncs++;
+    stats.lastSync = new Date().toISOString();
+
+    if (success) {
+      if (type === 'create') stats.issuesCreated++;
+      else if (type === 'update') stats.issuesUpdated++;
+      else if (type === 'comment') stats.commentsSynced++;
+    } else {
+      stats.issuesSkipped++;
+      if (error) {
+        // Keep only last 50 errors
+        stats.errors.unshift({ timestamp: new Date().toISOString(), error });
+        if (stats.errors.length > 50) stats.errors = stats.errors.slice(0, 50);
+      }
+    }
+
+    await storage.set('webhookSyncStats', stats);
+  } catch (err) {
+    console.error('Error tracking webhook stats:', err);
+  }
 }
 
 async function performScheduledSync() {
@@ -1517,6 +1565,7 @@ export async function syncIssue(event) {
   // Check if LOCAL issue is syncing
   if (await isSyncing(issueKey)) {
     console.log(`⏭️ Skipping ${issueKey} - currently syncing`);
+    await trackWebhookSync('skip', false, 'Already syncing');
     return;
   }
 
@@ -1524,18 +1573,21 @@ export async function syncIssue(event) {
 
   if (!config || !config.remoteUrl) {
     console.log('Sync skipped: not configured');
+    await trackWebhookSync('skip', false, 'Not configured');
     return;
   }
 
   const createdByRemoteSync = await getLocalKey(issueKey);
   if (createdByRemoteSync) {
     console.log(`⏭️ Skipping ${issueKey} - was created by remote sync`);
+    await trackWebhookSync('skip', false, 'Created by remote sync');
     return;
   }
 
   const issue = await getFullIssue(issueKey);
   if (!issue) {
     console.error('Could not fetch issue data');
+    await trackWebhookSync('skip', false, `Could not fetch issue data for ${issueKey}`);
     return;
   }
 
@@ -1544,16 +1596,17 @@ export async function syncIssue(event) {
   const isAllowed = await isProjectAllowedToSync(projectKey, config);
   if (!isAllowed) {
     console.log(`⏭️ Skipping ${issueKey} - project ${projectKey} not in allowed list`);
+    await trackWebhookSync('skip', false, `Project ${projectKey} not allowed`);
     return;
   }
-  
+
   // Fetch all mappings ONCE
   const [userMappings, fieldMappings, statusMappings] = await Promise.all([
     storage.get('userMappings'),
     storage.get('fieldMappings'),
     storage.get('statusMappings')
   ]);
-  
+
   const mappings = {
     userMappings: userMappings || {},
     fieldMappings: fieldMappings || {},
@@ -1569,12 +1622,19 @@ export async function syncIssue(event) {
 
   let remoteKey = existingRemoteKey;
 
-  if (existingRemoteKey) {
-    console.log(`${LOG_EMOJI.UPDATE} UPDATE: ${issueKey} → ${existingRemoteKey}`);
-    await updateRemoteIssue(issueKey, existingRemoteKey, issue, config, mappings, syncResult);
-  } else {
-    console.log(`${LOG_EMOJI.CREATE} CREATE: ${issueKey}`);
-    remoteKey = await createRemoteIssue(issue, config, mappings, syncResult);
+  try {
+    if (existingRemoteKey) {
+      console.log(`${LOG_EMOJI.UPDATE} UPDATE: ${issueKey} → ${existingRemoteKey}`);
+      await updateRemoteIssue(issueKey, existingRemoteKey, issue, config, mappings, syncResult);
+      await trackWebhookSync('update', syncResult.success, syncResult.errors.join('; '));
+    } else {
+      console.log(`${LOG_EMOJI.CREATE} CREATE: ${issueKey}`);
+      remoteKey = await createRemoteIssue(issue, config, mappings, syncResult);
+      await trackWebhookSync('create', syncResult.success && remoteKey, syncResult.errors.join('; '));
+    }
+  } catch (error) {
+    await trackWebhookSync(existingRemoteKey ? 'update' : 'create', false, error.message);
+    throw error;
   }
 
   // Log comprehensive summary
@@ -1588,12 +1648,14 @@ export async function syncComment(event) {
 
   if (!config || !config.remoteUrl) {
     console.log('Comment sync skipped: not configured');
+    await trackWebhookSync('comment', false, 'Not configured');
     return;
   }
 
   const createdByRemoteSync = await getLocalKey(issueKey);
   if (createdByRemoteSync) {
     console.log(`⏭️ Skipping comment on ${issueKey} - issue was created by remote sync`);
+    await trackWebhookSync('comment', false, 'Issue created by remote sync');
     return;
   }
 
@@ -1601,6 +1663,7 @@ export async function syncComment(event) {
   const issue = await getFullIssue(issueKey);
   if (!issue) {
     console.log('Could not fetch issue data for comment sync');
+    await trackWebhookSync('comment', false, 'Could not fetch issue data');
     return;
   }
 
@@ -1609,32 +1672,35 @@ export async function syncComment(event) {
   const isAllowed = await isProjectAllowedToSync(projectKey, config);
   if (!isAllowed) {
     console.log(`⏭️ Skipping comment on ${issueKey} - project ${projectKey} not in allowed list`);
+    await trackWebhookSync('comment', false, `Project ${projectKey} not allowed`);
     return;
   }
 
   const remoteKey = await getRemoteKey(issueKey);
   if (!remoteKey) {
     console.log(`No remote issue found for ${issueKey}`);
+    await trackWebhookSync('comment', false, `No remote issue found for ${issueKey}`);
     return;
   }
-  
+
   const fullComment = await getFullComment(issueKey, commentId);
   if (!fullComment) {
     console.log('Could not fetch full comment data');
+    await trackWebhookSync('comment', false, 'Could not fetch comment data');
     return;
   }
-  
+
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   const orgName = await getOrgName();
   const userName = fullComment.author?.displayName || fullComment.author?.emailAddress || 'Unknown User';
-  
+
   let commentText = '';
   if (fullComment.body && typeof fullComment.body === 'object') {
     commentText = extractTextFromADF(fullComment.body);
   } else {
     commentText = fullComment.body || '';
   }
-  
+
   const commentBody = textToADFWithAuthor(commentText, orgName, userName);
 
   // Create sync result tracker for comment
@@ -1660,16 +1726,19 @@ export async function syncComment(event) {
     if (response.ok) {
       console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${remoteKey}`);
       syncResult.details.comments.success++;
+      await trackWebhookSync('comment', true);
     } else {
       const errorText = await response.text();
       console.error(`${LOG_EMOJI.ERROR} Comment sync failed: ${errorText}`);
       syncResult.details.comments.failed++;
       syncResult.addError(`Comment sync failed: ${errorText}`);
+      await trackWebhookSync('comment', false, errorText);
     }
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error syncing comment:`, error);
     syncResult.details.comments.failed++;
     syncResult.addError(`Error syncing comment: ${error.message}`);
+    await trackWebhookSync('comment', false, error.message);
   }
 
   // Log summary

@@ -11,24 +11,32 @@ modules:
       function: sync-trigger
       events:
         - avi:jira:created:issue
-    
+
     - key: issue-updated
       function: sync-trigger
       events:
         - avi:jira:updated:issue
-    
+
     - key: issue-commented
       function: comment-trigger
       events:
         - avi:jira:commented:issue
 
+  scheduledTrigger:
+    - key: scheduled-sync
+      interval: hour
+      function: scheduled-sync-function
+
   function:
     - key: sync-trigger
       handler: index.run
-    
+
     - key: comment-trigger
       handler: index.runComment
-    
+
+    - key: scheduled-sync-function
+      handler: index.runScheduledSync
+
     - key: resolver
       handler: index.handler
 
