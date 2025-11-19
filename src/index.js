@@ -310,6 +310,85 @@ resolver.define('getWebhookSyncStats', async () => {
   };
 });
 
+resolver.define('clearWebhookErrors', async () => {
+  try {
+    const stats = await storage.get('webhookSyncStats');
+    if (stats) {
+      stats.errors = [];
+      await storage.set('webhookSyncStats', stats);
+    }
+    return { success: true, message: 'Webhook errors cleared' };
+  } catch (error) {
+    console.error('Error clearing webhook errors:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+resolver.define('clearScheduledErrors', async () => {
+  try {
+    const stats = await storage.get('scheduledSyncStats');
+    if (stats) {
+      stats.errors = [];
+      await storage.set('scheduledSyncStats', stats);
+    }
+    return { success: true, message: 'Scheduled sync errors cleared' };
+  } catch (error) {
+    console.error('Error clearing scheduled errors:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+resolver.define('getSyncOptions', async () => {
+  const options = await storage.get('syncOptions');
+  return options || {
+    syncComments: true,
+    syncAttachments: true,
+    syncLinks: true
+  };
+});
+
+resolver.define('saveSyncOptions', async ({ payload }) => {
+  try {
+    await storage.set('syncOptions', payload.options);
+    return { success: true, message: 'Sync options saved' };
+  } catch (error) {
+    console.error('Error saving sync options:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+async function logAuditEntry(entry) {
+  try {
+    const auditLog = await storage.get('auditLog') || [];
+    auditLog.unshift({
+      ...entry,
+      timestamp: new Date().toISOString()
+    });
+    // Keep only last 100 entries
+    if (auditLog.length > 100) {
+      auditLog.length = 100;
+    }
+    await storage.set('auditLog', auditLog);
+  } catch (error) {
+    console.error('Error logging audit entry:', error);
+  }
+}
+
+resolver.define('getAuditLog', async () => {
+  const log = await storage.get('auditLog');
+  return log || [];
+});
+
+resolver.define('clearAuditLog', async () => {
+  try {
+    await storage.set('auditLog', []);
+    return { success: true, message: 'Audit log cleared' };
+  } catch (error) {
+    console.error('Error clearing audit log:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 async function checkIfIssueNeedsSync(issueKey, issue, config, mappings) {
   // Check if issue was created by remote sync
   const createdByRemote = await getLocalKey(issueKey);
@@ -365,9 +444,122 @@ async function trackWebhookSync(type, success, error = null) {
   }
 }
 
+async function retryAllPendingLinks(config, mappings) {
+  console.log(`🔄 Starting pending link retry...`);
+
+  let totalRetried = 0;
+  let totalSuccess = 0;
+  let totalFailed = 0;
+  let totalStillPending = 0;
+
+  try {
+    // Query all pending-links keys from storage
+    const allKeys = await storage.query().where('key', startsWith('pending-links:')).getMany();
+
+    if (!allKeys || !allKeys.results || Object.keys(allKeys.results).length === 0) {
+      console.log(`No pending links to retry`);
+      return { retried: 0, success: 0, failed: 0, stillPending: 0 };
+    }
+
+    console.log(`📋 Found ${Object.keys(allKeys.results).length} issue(s) with pending links`);
+
+    // Process each issue's pending links
+    for (const [storageKey, pendingLinks] of Object.entries(allKeys.results)) {
+      const localIssueKey = storageKey.replace('pending-links:', '');
+      const remoteIssueKey = await getRemoteKey(localIssueKey);
+
+      if (!remoteIssueKey) {
+        console.log(`⏭️ Skipping ${localIssueKey} - not synced to remote yet`);
+        continue;
+      }
+
+      console.log(`🔗 Retrying ${pendingLinks.length} pending link(s) for ${localIssueKey}`);
+
+      const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+
+      for (const pendingLink of pendingLinks) {
+        totalRetried++;
+
+        // Check if linked issue is now synced
+        const remoteLinkedKey = await getRemoteKey(pendingLink.linkedIssueKey);
+
+        if (!remoteLinkedKey) {
+          console.log(`⏭️ ${pendingLink.linkedIssueKey} still not synced - keeping as pending`);
+          totalStillPending++;
+
+          // Update attempts counter (remove after 10 attempts to prevent infinite storage)
+          if (pendingLink.attempts >= 10) {
+            console.log(`❌ Removing ${pendingLink.linkedIssueKey} from pending - max attempts reached`);
+            await removePendingLink(localIssueKey, pendingLink.linkId);
+            totalFailed++;
+          }
+          continue;
+        }
+
+        // Linked issue is now synced - try to create the link
+        console.log(`✅ ${pendingLink.linkedIssueKey} is now synced - creating link`);
+
+        try {
+          const linkPayload = {
+            type: { name: pendingLink.linkTypeName }
+          };
+
+          if (pendingLink.direction === 'outward') {
+            linkPayload.inwardIssue = { key: remoteIssueKey };
+            linkPayload.outwardIssue = { key: remoteLinkedKey };
+            console.log(`${LOG_EMOJI.LINK} Creating link: ${remoteIssueKey} → ${remoteLinkedKey}`);
+          } else {
+            linkPayload.inwardIssue = { key: remoteLinkedKey };
+            linkPayload.outwardIssue = { key: remoteIssueKey };
+            console.log(`${LOG_EMOJI.LINK} Creating link: ${remoteLinkedKey} → ${remoteIssueKey}`);
+          }
+
+          const response = await fetch(
+            `${config.remoteUrl}/rest/api/3/issueLink`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(linkPayload)
+            }
+          );
+
+          if (response.ok || response.status === 201) {
+            console.log(`${LOG_EMOJI.SUCCESS} Successfully synced pending link: ${pendingLink.linkedIssueKey}`);
+            await storeLinkMapping(pendingLink.linkId, 'synced');
+            await removePendingLink(localIssueKey, pendingLink.linkId);
+            totalSuccess++;
+          } else {
+            const errorText = await response.text();
+            console.error(`${LOG_EMOJI.ERROR} Failed to create pending link: ${errorText}`);
+            totalFailed++;
+            // Keep as pending for next retry
+          }
+        } catch (error) {
+          console.error(`${LOG_EMOJI.ERROR} Error creating pending link:`, error);
+          totalFailed++;
+          // Keep as pending for next retry
+        }
+
+        // Small delay to avoid rate limiting
+        await sleep(100);
+      }
+    }
+
+    console.log(`✅ Pending link retry complete: ${totalSuccess} success, ${totalFailed} failed, ${totalStillPending} still pending`);
+    return { retried: totalRetried, success: totalSuccess, failed: totalFailed, stillPending: totalStillPending };
+
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error in retryAllPendingLinks:`, error);
+    return { retried: totalRetried, success: totalSuccess, failed: totalFailed, stillPending: totalStillPending };
+  }
+}
+
 async function performScheduledSync() {
   console.log(`⏰ Scheduled sync starting...`);
-  
+
   const scheduledConfig = await storage.get('scheduledSyncConfig');
   if (!scheduledConfig || !scheduledConfig.enabled) {
     console.log(`⏭️ Scheduled sync disabled`);
@@ -479,10 +671,33 @@ async function performScheduledSync() {
     console.error('Scheduled sync error:', error);
     stats.errors.push(`General error: ${error.message}`);
   }
-  
+
+  // Retry pending links after main sync
+  try {
+    const config = await storage.get('syncConfig');
+    if (config && config.remoteUrl) {
+      const [userMappings, fieldMappings, statusMappings] = await Promise.all([
+        storage.get('userMappings'),
+        storage.get('fieldMappings'),
+        storage.get('statusMappings')
+      ]);
+
+      const mappings = {
+        userMappings: userMappings || {},
+        fieldMappings: fieldMappings || {},
+        statusMappings: statusMappings || {}
+      };
+
+      const pendingLinkResults = await retryAllPendingLinks(config, mappings);
+      console.log(`🔗 Pending links: ${pendingLinkResults.success} synced, ${pendingLinkResults.stillPending} still pending`);
+    }
+  } catch (error) {
+    console.error('Error retrying pending links:', error);
+  }
+
   // Save stats
   await storage.set('scheduledSyncStats', stats);
-  
+
   console.log(`✅ Scheduled sync complete:`, stats);
   return stats;
 }
@@ -772,12 +987,27 @@ function textToADF(text) {
 }
 
 function extractSprintIds(fieldValue) {
-  if (!Array.isArray(fieldValue) || fieldValue.length === 0) {
+  if (!fieldValue) {
     return null;
   }
-  
-  // Check if this is sprint data (array of objects with id property)
+
+  // Sprint fields are ALWAYS arrays - if it's not an array, it's not a sprint field
+  if (!Array.isArray(fieldValue)) {
+    return null;
+  }
+
+  if (fieldValue.length === 0) {
+    return null;
+  }
+
+  // Check if this is sprint data (array of objects with id, name, state properties)
   if (typeof fieldValue[0] === 'object' && fieldValue[0] !== null) {
+    // Sprint objects have specific properties like id, name, state, goal
+    // If it has an 'id' property, it's likely a sprint object
+    if (fieldValue[0].id === undefined) {
+      return null;
+    }
+
     const ids = fieldValue
       .map(item => {
         // Sprint objects can have id as number or string
@@ -789,15 +1019,26 @@ function extractSprintIds(fieldValue) {
         return null;
       })
       .filter(id => id !== null);
-    
+
     return ids.length > 0 ? ids : null;
   }
-  
-  // Already an array of numbers
+
+  // Already an array of numbers - could be sprint IDs
   if (typeof fieldValue[0] === 'number') {
     return fieldValue;
   }
-  
+
+  // Array of strings that might be sprint IDs
+  if (typeof fieldValue[0] === 'string') {
+    const ids = fieldValue
+      .map(val => {
+        const parsed = parseInt(val, 10);
+        return isNaN(parsed) ? null : parsed;
+      })
+      .filter(id => id !== null);
+    return ids.length > 0 ? ids : null;
+  }
+
   return null;
 }
 
@@ -830,8 +1071,49 @@ async function getLinkMapping(localLinkId) {
   return await storage.get(`link-mapping:${localLinkId}`);
 }
 
+async function storePendingLink(issueKey, linkData) {
+  const pendingLinks = await storage.get(`pending-links:${issueKey}`) || [];
+  // Check if link already pending to avoid duplicates
+  const existingIndex = pendingLinks.findIndex(l => l.linkId === linkData.linkId);
+  if (existingIndex >= 0) {
+    // Update existing pending link
+    pendingLinks[existingIndex] = {
+      ...linkData,
+      attempts: (pendingLinks[existingIndex].attempts || 0) + 1,
+      lastAttempt: new Date().toISOString()
+    };
+  } else {
+    // Add new pending link
+    pendingLinks.push({
+      ...linkData,
+      attempts: 1,
+      lastAttempt: new Date().toISOString()
+    });
+  }
+  await storage.set(`pending-links:${issueKey}`, pendingLinks);
+  console.log(`📌 Stored pending link: ${issueKey} → ${linkData.linkedIssueKey}`);
+}
+
+async function getPendingLinks(issueKey) {
+  return await storage.get(`pending-links:${issueKey}`) || [];
+}
+
+async function removePendingLink(issueKey, linkId) {
+  const pendingLinks = await storage.get(`pending-links:${issueKey}`) || [];
+  const filtered = pendingLinks.filter(l => l.linkId !== linkId);
+  if (filtered.length === 0) {
+    await storage.delete(`pending-links:${issueKey}`);
+  } else {
+    await storage.set(`pending-links:${issueKey}`, filtered);
+  }
+}
+
 async function markSyncing(issueKey) {
   await storage.set(`syncing:${issueKey}`, 'true', { ttl: SYNC_FLAG_TTL_SECONDS });
+}
+
+async function clearSyncFlag(issueKey) {
+  await storage.delete(`syncing:${issueKey}`);
 }
 
 async function isSyncing(issueKey) {
@@ -1089,8 +1371,15 @@ async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, sync
       // Check if linked issue is synced
       const remoteLinkedKey = await getRemoteKey(linkedIssueKey);
       if (!remoteLinkedKey) {
-        console.log(`${LOG_EMOJI.SKIP} Skipping link to ${linkedIssueKey} - not synced yet`);
-        if (syncResult) syncResult.addLinkSkipped(linkedIssueKey, 'linked issue not synced yet');
+        console.log(`${LOG_EMOJI.SKIP} Linked issue ${linkedIssueKey} not synced yet - storing as pending`);
+        // Store pending link for retry in scheduled sync
+        await storePendingLink(localIssueKey, {
+          linkId: link.id,
+          linkedIssueKey: linkedIssueKey,
+          direction: direction,
+          linkTypeName: linkTypeName
+        });
+        if (syncResult) syncResult.addLinkSkipped(linkedIssueKey, 'linked issue not synced yet - stored as pending');
         continue;
       }
 
@@ -1125,6 +1414,8 @@ async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, sync
         console.log(`${LOG_EMOJI.SUCCESS} Synced issue link: ${linkedIssueKey} (${linkTypeName})`);
         // Store mapping to prevent re-creating
         await storeLinkMapping(link.id, 'synced');
+        // Remove from pending links if it was pending
+        await removePendingLink(localIssueKey, link.id);
         if (syncResult) syncResult.addLinkSuccess(linkedIssueKey, linkTypeName);
       } else {
         const errorText = await response.text();
@@ -1305,30 +1596,45 @@ async function createRemoteIssue(issue, config, mappings, syncResult = null) {
   }
 
   // Apply field mappings with improved sprint handling
+  const syncFieldOptions = await storage.get('syncOptions') || { syncSprints: false };
   const reversedFieldMap = reverseMapping(mappings.fieldMappings);
   for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
     if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
       let fieldValue = issue.fields[localFieldId];
-      
+
+      console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
+
       // Try to extract sprint IDs if this is sprint data
       const sprintIds = extractSprintIds(fieldValue);
       if (sprintIds !== null) {
+        // This is a sprint field - check if sprint sync is enabled
+        if (!syncFieldOptions.syncSprints) {
+          console.log(`⏭️ Skipping sprint field ${localFieldId} - sprint sync disabled`);
+          continue;
+        }
         fieldValue = sprintIds;
         console.log(`🏃 Extracted sprint IDs for ${localFieldId} → ${remoteFieldId}: ${JSON.stringify(fieldValue)}`);
+      } else if (Array.isArray(fieldValue) && fieldValue.length > 0 && typeof fieldValue[0] === 'object') {
+        // This might be sprint data but extraction failed - skip it to avoid errors
+        console.warn(`⚠️ Skipping ${localFieldId} - looks like sprint data but couldn't extract IDs. Original value:`, JSON.stringify(fieldValue[0]));
+        continue;
       }
-      
+
       // Skip empty arrays to avoid errors
       if (Array.isArray(fieldValue) && fieldValue.length === 0) {
         console.log(`⚠️ Skipping empty array for ${localFieldId}`);
         continue;
       }
-      
+
       remoteIssue.fields[remoteFieldId] = fieldValue;
     }
   }
 
   try {
     console.log('Creating remote issue for:', issue.key);
+
+    // Mark issue as syncing to prevent concurrent sync operations
+    await markSyncing(issue.key);
 
     const response = await retryWithBackoff(async () => {
       return await fetch(`${config.remoteUrl}/rest/api/3/issue`, {
@@ -1344,24 +1650,38 @@ async function createRemoteIssue(issue, config, mappings, syncResult = null) {
     if (response.ok) {
       const result = await response.json();
       console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
-      
+
+      // CRITICAL FIX: Store mapping IMMEDIATELY to prevent duplicate creation
+      // This must happen BEFORE attachments/links sync to avoid race conditions
       await storeMapping(issue.key, result.key);
 
       if (issue.fields.status && issue.fields.status.name !== 'To Do') {
         await transitionRemoteIssue(result.key, issue.fields.status.name, config, mappings.statusMappings, syncResult);
       }
 
-      // Sync attachments after issue creation and get mapping
-      const attachmentMapping = await syncAttachments(issue.key, result.key, issue, config, syncResult);
+      // Get sync options
+      const syncOptions = await storage.get('syncOptions') || { syncAttachments: true, syncLinks: true, syncSprints: false };
 
-      // Sync issue links after issue creation
-      await syncIssueLinks(issue.key, result.key, issue, config, syncResult);
-      
+      // Sync attachments after issue creation and get mapping (if enabled)
+      let attachmentMapping = {};
+      if (syncOptions.syncAttachments) {
+        attachmentMapping = await syncAttachments(issue.key, result.key, issue, config, syncResult);
+      } else {
+        console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
+      }
+
+      // Sync issue links after issue creation (if enabled)
+      if (syncOptions.syncLinks) {
+        await syncIssueLinks(issue.key, result.key, issue, config, syncResult);
+      } else {
+        console.log(`⏭️ Skipping links sync (disabled in sync options)`);
+      }
+
       // If description had media nodes and we have mappings, update description with corrected IDs
-      if (issue.fields.description && 
-          typeof issue.fields.description === 'object' && 
+      if (issue.fields.description &&
+          typeof issue.fields.description === 'object' &&
           Object.keys(attachmentMapping).length > 0) {
-        
+
         const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
 
         console.log(`🖼️ Updating description with corrected media references...`);
@@ -1389,15 +1709,21 @@ async function createRemoteIssue(issue, config, mappings, syncResult = null) {
         }
       }
 
+      // Clear sync flag on success
+      await clearSyncFlag(issue.key);
       return result.key;
     } else {
       const errorText = await response.text();
       console.error(`${LOG_EMOJI.ERROR} Create failed: ${errorText}`);
       if (syncResult) syncResult.addError(`Create failed: ${errorText}`);
+      // Clear sync flag on error
+      await clearSyncFlag(issue.key);
     }
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error creating remote issue:`, error);
     if (syncResult) syncResult.addError(`Error creating remote issue: ${error.message}`);
+    // Clear sync flag on exception
+    await clearSyncFlag(issue.key);
   }
 
   return null;
@@ -1405,13 +1731,28 @@ async function createRemoteIssue(issue, config, mappings, syncResult = null) {
 
 async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings, syncResult = null) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
-  
-  // Sync attachments first to get ID mappings
-  const attachmentMapping = await syncAttachments(localKey, remoteKey, issue, config, syncResult);
 
-  // Sync issue links
-  await syncIssueLinks(localKey, remoteKey, issue, config, syncResult);
-  
+  // Mark issue as syncing to prevent concurrent sync operations
+  await markSyncing(localKey);
+
+  // Get sync options
+  const syncOptions = await storage.get('syncOptions') || { syncAttachments: true, syncLinks: true, syncSprints: false };
+
+  // Sync attachments first to get ID mappings (if enabled)
+  let attachmentMapping = {};
+  if (syncOptions.syncAttachments) {
+    attachmentMapping = await syncAttachments(localKey, remoteKey, issue, config, syncResult);
+  } else {
+    console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
+  }
+
+  // Sync issue links (if enabled)
+  if (syncOptions.syncLinks) {
+    await syncIssueLinks(localKey, remoteKey, issue, config, syncResult);
+  } else {
+    console.log(`⏭️ Skipping links sync (disabled in sync options)`);
+  }
+
   let description;
   if (issue.fields.description) {
     if (typeof issue.fields.description === 'object') {
@@ -1507,23 +1848,35 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings, s
 
   // Apply field mappings with improved sprint handling
   const reversedFieldMap = reverseMapping(mappings.fieldMappings);
+
   for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
     if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
       let fieldValue = issue.fields[localFieldId];
-      
+
+      console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
+
       // Try to extract sprint IDs if this is sprint data
       const sprintIds = extractSprintIds(fieldValue);
       if (sprintIds !== null) {
+        // This is a sprint field - check if sprint sync is enabled
+        if (!syncOptions.syncSprints) {
+          console.log(`⏭️ Skipping sprint field ${localFieldId} - sprint sync disabled`);
+          continue;
+        }
         fieldValue = sprintIds;
         console.log(`🏃 Extracted sprint IDs for ${localFieldId} → ${remoteFieldId}: ${JSON.stringify(fieldValue)}`);
+      } else if (Array.isArray(fieldValue) && fieldValue.length > 0 && typeof fieldValue[0] === 'object') {
+        // This might be sprint data but extraction failed - skip it to avoid errors
+        console.warn(`⚠️ Skipping ${localFieldId} - looks like sprint data but couldn't extract IDs. Original value:`, JSON.stringify(fieldValue[0]));
+        continue;
       }
-      
+
       // Skip empty arrays to avoid errors
       if (Array.isArray(fieldValue) && fieldValue.length === 0) {
         console.log(`⚠️ Skipping empty array for ${localFieldId}`);
         continue;
       }
-      
+
       updateData.fields[remoteFieldId] = fieldValue;
     }
   }
@@ -1548,14 +1901,20 @@ async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings, s
       if (issue.fields.status) {
         await transitionRemoteIssue(remoteKey, issue.fields.status.name, config, mappings.statusMappings, syncResult);
       }
+      // Clear sync flag on success
+      await clearSyncFlag(localKey);
     } else {
       const errorText = await response.text();
       console.error(`${LOG_EMOJI.ERROR} Update failed: ${errorText}`);
       if (syncResult) syncResult.addError(`Update failed: ${errorText}`);
+      // Clear sync flag on error
+      await clearSyncFlag(localKey);
     }
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
     if (syncResult) syncResult.addError(`Error updating remote issue: ${error.message}`);
+    // Clear sync flag on exception
+    await clearSyncFlag(localKey);
   }
 }
 
@@ -1627,13 +1986,34 @@ export async function syncIssue(event) {
       console.log(`${LOG_EMOJI.UPDATE} UPDATE: ${issueKey} → ${existingRemoteKey}`);
       await updateRemoteIssue(issueKey, existingRemoteKey, issue, config, mappings, syncResult);
       await trackWebhookSync('update', syncResult.success, syncResult.errors.join('; '));
+      await logAuditEntry({
+        action: 'update',
+        sourceIssue: issueKey,
+        targetIssue: existingRemoteKey,
+        success: syncResult.success,
+        errors: syncResult.errors
+      });
     } else {
       console.log(`${LOG_EMOJI.CREATE} CREATE: ${issueKey}`);
       remoteKey = await createRemoteIssue(issue, config, mappings, syncResult);
       await trackWebhookSync('create', syncResult.success && remoteKey, syncResult.errors.join('; '));
+      await logAuditEntry({
+        action: 'create',
+        sourceIssue: issueKey,
+        targetIssue: remoteKey,
+        success: syncResult.success && remoteKey,
+        errors: syncResult.errors
+      });
     }
   } catch (error) {
     await trackWebhookSync(existingRemoteKey ? 'update' : 'create', false, error.message);
+    await logAuditEntry({
+      action: existingRemoteKey ? 'update' : 'create',
+      sourceIssue: issueKey,
+      targetIssue: existingRemoteKey || null,
+      success: false,
+      errors: [error.message]
+    });
     throw error;
   }
 
@@ -1649,6 +2029,13 @@ export async function syncComment(event) {
   if (!config || !config.remoteUrl) {
     console.log('Comment sync skipped: not configured');
     await trackWebhookSync('comment', false, 'Not configured');
+    return;
+  }
+
+  // Check if comment sync is enabled
+  const syncOptions = await storage.get('syncOptions') || { syncComments: true };
+  if (!syncOptions.syncComments) {
+    console.log('⏭️ Comment sync skipped: disabled in sync options');
     return;
   }
 

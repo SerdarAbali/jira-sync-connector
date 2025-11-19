@@ -26,6 +26,7 @@ Production-ready Atlassian Forge app for real-time one-way synchronization betwe
 🔄 **Live data loading** - Fetch users, fields, statuses, projects from both orgs
 📋 **Visual mapping management** - Add/delete mappings with real names
 🎯 **Project filter selector** - Multi-select checkboxes to choose which projects to sync
+🔧 **Manual sync controls** - Force sync specific issues + clear error history
 📊 **Sync health dashboard** - Real-time webhook stats + scheduled bulk sync stats
 💾 **Persistent storage** - All configurations saved in Forge storage  
 
@@ -142,6 +143,27 @@ Monitor sync activity and troubleshoot issues:
 2. Click "Refresh Stats" to load latest data
 3. Review metrics and errors to troubleshoot issues
 
+### Manual Sync Controls
+Take manual control when needed:
+
+**Sync Specific Issue**
+- Enter any issue key (e.g., "PROJ-123") to force immediate sync
+- Useful for testing, debugging, or recovering from errors
+- Bypasses normal sync conditions and forces create/update
+- Shows success/error message with sync result
+- Press Enter or click "Sync Now" button
+
+**Clear Error History**
+- "Clear Webhook Errors" - Resets webhook error tracking
+- "Clear Scheduled Errors" - Resets scheduled sync error tracking
+- Useful for fresh troubleshooting after fixing configuration
+- Does not retry failed syncs, only clears the error log
+
+**How to Access:**
+1. Open admin UI → "Manual Sync Controls" section
+2. Enter issue key and click "Sync Now" for on-demand sync
+3. Click error clear buttons to reset error history
+
 ## 🏗️ Architecture
 
 ### File Structure
@@ -164,15 +186,17 @@ SyncApp/
 - `syncComment()` - Comment sync with author info and webhook tracking
 - `trackWebhookSync()` - Track real-time sync statistics
 - `performScheduledSync()` - Hourly bulk sync for missed issues
+- `retryWithBackoff()` - Exponential backoff retry with rate limit detection
 - `syncAttachments()` - Binary file download/upload with deduplication
 - `syncIssueLinks()` - Link sync with mapping verification
 - `createRemoteIssue()` - Create with parent/epic/component/version support
 - `updateRemoteIssue()` - Update with user mapping and field clearing
 - `transitionRemoteIssue()` - Status sync with mapping
-- Resolvers for admin UI (getConfig, getWebhookSyncStats, getScheduledSyncStats, etc.)
+- Resolvers for admin UI (forceSyncIssue, clearWebhookErrors, clearScheduledErrors, etc.)
 
 **Frontend (static/admin-page/src/App.jsx)**
 - Configuration form (remote Jira credentials)
+- Manual sync controls (force sync issue, clear errors)
 - Sync health dashboard (webhook stats + scheduled sync stats)
 - Project filter UI (load, select, save)
 - User mapping UI (load, add, delete, save)
@@ -270,13 +294,14 @@ forge tunnel
 - ✅ **Selective project syncing** - Multi-select UI to choose which projects sync
 - 🔮 **Selective field syncing** - UI toggles for "Sync comments? Attachments? Links?"
 
-### Phase 4: Reliability & Observability (Partially Complete)
+### Phase 4: Reliability & Observability ✅
 - ✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
 - ✅ **Sync health dashboard** - Real-time webhook stats + scheduled sync stats with error tracking
 - ✅ **Error tracking** - Top 50 errors tracked with timestamps for webhooks
-- 🔮 **Error handling & retry logic** - Automatic retry for failed syncs
-- 🔮 **Rate limiting protection** - Throttle requests to avoid API limits
-- 🔮 **Audit log** - Detailed sync history with timestamps
+- ✅ **Error handling & retry logic** - Exponential backoff (3 attempts: 1s, 2s, 4s)
+- ✅ **Rate limiting protection** - Detects HTTP 429 and waits 60s before retry
+- ✅ **Manual sync controls** - Force sync specific issues + clear error history
+- 🔮 **Audit log** - Detailed sync history with timestamps (future enhancement)
 
 ### Phase 5: Bidirectional Sync (The Big One)
 - 🔮 **Install on both orgs** - Same app deployed to both Jira instances
@@ -301,6 +326,13 @@ forge tunnel
 - **Scheduled stats show zeros** - First hourly sync hasn't run yet (wait up to 1 hour)
 - **High "Issues Skipped" count** - Normal; issues already in sync are skipped
 - **Recent errors listed** - Click into logs with `forge logs` for full details
+
+### Need to force sync an issue?
+- Open admin UI → "Manual Sync Controls" section
+- Enter the issue key (e.g., "PROJ-123")
+- Click "Sync Now" to force immediate sync
+- Check the success/error message returned
+- Useful for testing or recovering from specific failures
 
 ### Only certain projects syncing?
 - Open admin UI → "Project Filter" section

@@ -87,6 +87,22 @@ function App() {
   const [webhookStats, setWebhookStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
 
+  const [manualSyncOpen, setManualSyncOpen] = useState(false);
+  const [manualIssueKey, setManualIssueKey] = useState('');
+  const [manualSyncLoading, setManualSyncLoading] = useState(false);
+
+  const [syncOptionsOpen, setSyncOptionsOpen] = useState(false);
+  const [syncOptions, setSyncOptions] = useState({
+    syncComments: true,
+    syncAttachments: true,
+    syncLinks: true,
+    syncSprints: false
+  });
+
+  const [auditLogOpen, setAuditLogOpen] = useState(false);
+  const [auditLog, setAuditLog] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
   useEffect(() => {
     loadConfiguration();
     loadAllMappings();
@@ -120,6 +136,11 @@ function App() {
       const statusMappingData = await invoke('getStatusMappings');
       if (statusMappingData) {
         setStatusMappings(statusMappingData);
+      }
+
+      const syncOptionsData = await invoke('getSyncOptions');
+      if (syncOptionsData) {
+        setSyncOptions(syncOptionsData);
       }
     } catch (error) {
       console.error('Error loading mappings:', error);
@@ -246,6 +267,123 @@ function App() {
       setTimeout(() => setMessage(''), 3000);
     } finally {
       setStatsLoading(false);
+    }
+  };
+
+  const handleManualSync = async () => {
+    if (!manualIssueKey.trim()) {
+      setMessage('Please enter an issue key');
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
+
+    setManualSyncLoading(true);
+    setMessage('');
+
+    try {
+      const result = await invoke('forceSyncIssue', { issueKey: manualIssueKey.trim() });
+      if (result.success) {
+        setMessage(`✅ ${result.message}`);
+        setManualIssueKey('');
+        // Refresh stats after sync
+        await loadSyncStats();
+      } else {
+        setMessage(`❌ Error: ${result.error}`);
+      }
+      setTimeout(() => setMessage(''), 5000);
+    } catch (error) {
+      console.error('Error during manual sync:', error);
+      setMessage('❌ Error: ' + error.message);
+      setTimeout(() => setMessage(''), 5000);
+    } finally {
+      setManualSyncLoading(false);
+    }
+  };
+
+  const handleClearWebhookErrors = async () => {
+    setMessage('');
+    try {
+      const result = await invoke('clearWebhookErrors');
+      if (result.success) {
+        setMessage(`✅ ${result.message}`);
+        await loadSyncStats();
+      } else {
+        setMessage(`❌ Error: ${result.error}`);
+      }
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error clearing webhook errors:', error);
+      setMessage('❌ Error: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  const handleClearScheduledErrors = async () => {
+    setMessage('');
+    try {
+      const result = await invoke('clearScheduledErrors');
+      if (result.success) {
+        setMessage(`✅ ${result.message}`);
+        await loadSyncStats();
+      } else {
+        setMessage(`❌ Error: ${result.error}`);
+      }
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error clearing scheduled errors:', error);
+      setMessage('❌ Error: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  const handleSaveSyncOptions = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      const result = await invoke('saveSyncOptions', { options: syncOptions });
+      if (result.success) {
+        setMessage('✅ Sync options saved successfully!');
+      } else {
+        setMessage(`❌ Error: ${result.error}`);
+      }
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error saving sync options:', error);
+      setMessage('❌ Error: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const loadAuditLog = async () => {
+    setAuditLoading(true);
+    try {
+      const log = await invoke('getAuditLog');
+      setAuditLog(log || []);
+    } catch (error) {
+      console.error('Error loading audit log:', error);
+      setMessage('❌ Error loading audit log: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const handleClearAuditLog = async () => {
+    try {
+      const result = await invoke('clearAuditLog');
+      if (result.success) {
+        setMessage('✅ Audit log cleared');
+        await loadAuditLog();
+      } else {
+        setMessage(`❌ Error: ${result.error}`);
+      }
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error clearing audit log:', error);
+      setMessage('❌ Error: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
     }
   };
 
@@ -551,6 +689,83 @@ function App() {
       <div style={sectionStyle}>
         <div
           style={collapsibleHeaderStyle}
+          onClick={() => setManualSyncOpen(!manualSyncOpen)}
+        >
+          <span>Manual Sync Controls</span>
+          <span>{manualSyncOpen ? '▼' : '▶'}</span>
+        </div>
+
+        {manualSyncOpen && (
+          <div style={{ marginTop: '16px' }}>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              Manually trigger sync for a specific issue or clear error history.
+            </p>
+
+            <div style={{ marginBottom: '20px', padding: '16px', background: '#f4f5f7', borderRadius: '3px' }}>
+              <h4 style={{ marginTop: 0, marginBottom: '12px', color: '#172B4D' }}>Sync Specific Issue</h4>
+              <p style={{ fontSize: '13px', color: '#6B778C', marginBottom: '12px' }}>
+                Enter an issue key (e.g., PROJ-123) to force sync immediately:
+              </p>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={manualIssueKey}
+                  onChange={(e) => setManualIssueKey(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      handleManualSync();
+                    }
+                  }}
+                  placeholder="e.g., PROJ-123"
+                  style={{
+                    padding: '8px 12px',
+                    border: '2px solid #DFE1E6',
+                    borderRadius: '3px',
+                    fontSize: '14px',
+                    flex: '1',
+                    maxWidth: '200px'
+                  }}
+                />
+                <Button
+                  appearance="primary"
+                  onClick={handleManualSync}
+                  isLoading={manualSyncLoading}
+                  isDisabled={!manualIssueKey.trim()}
+                >
+                  Sync Now
+                </Button>
+              </div>
+            </div>
+
+            <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px' }}>
+              <h4 style={{ marginTop: 0, marginBottom: '12px', color: '#172B4D' }}>Clear Error History</h4>
+              <p style={{ fontSize: '13px', color: '#6B778C', marginBottom: '12px' }}>
+                Clear tracked errors for a fresh start (does not retry failed syncs):
+              </p>
+
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <Button
+                  appearance="default"
+                  onClick={handleClearWebhookErrors}
+                >
+                  Clear Webhook Errors
+                </Button>
+                <Button
+                  appearance="default"
+                  onClick={handleClearScheduledErrors}
+                >
+                  Clear Scheduled Errors
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={sectionStyle}>
+        <div
+          style={collapsibleHeaderStyle}
           onClick={() => setSyncHealthOpen(!syncHealthOpen)}
         >
           <span>Sync Health & Statistics</span>
@@ -702,6 +917,90 @@ function App() {
       <div style={sectionStyle}>
         <div
           style={collapsibleHeaderStyle}
+          onClick={() => setSyncOptionsOpen(!syncOptionsOpen)}
+        >
+          <span>Selective Field Sync</span>
+          <span>{syncOptionsOpen ? '▼' : '▶'}</span>
+        </div>
+
+        {syncOptionsOpen && (
+          <div style={{ marginTop: '16px' }}>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              Choose which types of data to sync. Unchecked items will be skipped during synchronization.
+            </p>
+
+            <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={syncOptions.syncComments}
+                    onChange={(e) => setSyncOptions({ ...syncOptions, syncComments: e.target.checked })}
+                    style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Comments</span>
+                </label>
+                <p style={{ marginLeft: '24px', marginTop: '4px', fontSize: '13px', color: '#6B778C' }}>
+                  Sync all comments from source to target issues
+                </p>
+              </div>
+
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={syncOptions.syncAttachments}
+                    onChange={(e) => setSyncOptions({ ...syncOptions, syncAttachments: e.target.checked })}
+                    style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Attachments</span>
+                </label>
+                <p style={{ marginLeft: '24px', marginTop: '4px', fontSize: '13px', color: '#6B778C' }}>
+                  Sync file attachments (10MB limit per file)
+                </p>
+              </div>
+
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={syncOptions.syncLinks}
+                    onChange={(e) => setSyncOptions({ ...syncOptions, syncLinks: e.target.checked })}
+                    style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Issue Links</span>
+                </label>
+                <p style={{ marginLeft: '24px', marginTop: '4px', fontSize: '13px', color: '#6B778C' }}>
+                  Sync issue links (blocks, relates to, duplicates, etc.)
+                </p>
+              </div>
+
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={syncOptions.syncSprints}
+                    onChange={(e) => setSyncOptions({ ...syncOptions, syncSprints: e.target.checked })}
+                    style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Sprints</span>
+                </label>
+                <p style={{ marginLeft: '24px', marginTop: '4px', fontSize: '13px', color: '#6B778C' }}>
+                  Sync sprint field via custom field mappings
+                </p>
+              </div>
+            </div>
+
+            <Button appearance="primary" onClick={handleSaveSyncOptions} isLoading={saving}>
+              Save Sync Options
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <div style={sectionStyle}>
+        <div
+          style={collapsibleHeaderStyle}
           onClick={() => setProjectFilterOpen(!projectFilterOpen)}
         >
           <span>Project Filter ({config.allowedProjects?.length || 0} selected)</span>
@@ -777,6 +1076,62 @@ function App() {
               <p style={{ color: '#6B778C', fontStyle: 'italic' }}>
                 Click "Load Projects" to see available projects
               </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={sectionStyle}>
+        <div
+          style={collapsibleHeaderStyle}
+          onClick={() => setAuditLogOpen(!auditLogOpen)}
+        >
+          <span>Audit Log (Last 100 Syncs)</span>
+          <span>{auditLogOpen ? '▼' : '▶'}</span>
+        </div>
+
+        {auditLogOpen && (
+          <div style={{ marginTop: '16px' }}>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              View recent sync operations with timestamps and results.
+            </p>
+
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+              <Button appearance="primary" onClick={loadAuditLog} isLoading={auditLoading}>
+                Load Audit Log
+              </Button>
+              <Button appearance="default" onClick={handleClearAuditLog} isDisabled={auditLog.length === 0}>
+                Clear Log
+              </Button>
+            </div>
+
+            {auditLog.length > 0 ? (
+              <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #DFE1E6', borderRadius: '3px' }}>
+                {auditLog.map((entry, index) => (
+                  <div key={index} style={{ padding: '12px', borderBottom: index < auditLog.length - 1 ? '1px solid #F4F5F7' : 'none', background: entry.success ? '#fff' : '#ffebe6' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontWeight: '500', color: entry.success ? '#00875A' : '#DE350B' }}>
+                        {entry.action === 'create' ? '✨ CREATE' : '🔄 UPDATE'} {entry.success ? '✅' : '❌'}
+                      </span>
+                      <span style={{ fontSize: '12px', color: '#6B778C' }}>
+                        {new Date(entry.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '13px' }}>
+                      {entry.sourceIssue} → {entry.targetIssue || 'N/A'}
+                    </div>
+                    {entry.errors && entry.errors.length > 0 && (
+                      <div style={{ fontSize: '12px', color: '#DE350B', marginTop: '4px' }}>
+                        {entry.errors.join(', ')}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', textAlign: 'center', color: '#6B778C' }}>
+                No audit log entries yet. Click "Load Audit Log" to view recent syncs.
+              </div>
             )}
           </div>
         )}
