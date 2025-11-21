@@ -370,16 +370,6 @@ forge tunnel
 - Jira UI may cache and delay display
 - Hard refresh (Ctrl+Shift+R) to force update
 
-## Documentation
-
-See `/docs` folder for detailed documentation:
-- `ARCHITECTURE.md` - System design & data flow
-- `DEVELOPMENT.md` - Developer guide
-- `API.md` - API reference
-- `DEPLOYMENT.md` - Deployment strategies
-- `TROUBLESHOOTING.md` - Common issues
-- `CONTRIBUTING.md` - Contribution guidelines
-
 ## License
 
 MIT License - See LICENSE file
