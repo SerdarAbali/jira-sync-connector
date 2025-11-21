@@ -2,34 +2,69 @@
 
 Production-ready Atlassian Forge app for real-time one-way synchronization between two Jira Cloud organizations.
 
+## 🎉 Recent Updates (November 2025)
+
+### ✨ Major Refactoring - Modular Architecture
+The entire codebase has been **refactored from a monolithic 2,266-line file into 26 focused modules** following Atlassian Forge best practices:
+
+**Benefits:**
+- 🎯 **Better maintainability** - Each module has a single, clear responsibility
+- ⚡ **Faster cold starts** - Smaller modules load faster in Forge's serverless environment
+- 🐛 **Easier debugging** - Clear module boundaries make issues easier to trace
+- 👥 **Team collaboration** - Multiple developers can work on different modules without conflicts
+- 🧪 **Testability** - Each module can be tested independently
+
+**New Structure:**
+```
+src/
+├── index.js (6 lines) ← Minimal entry point
+├── constants.js ← Shared constants
+├── utils/ (4 modules)
+│   ├── adf.js - ADF conversion utilities
+│   ├── mapping.js - User/field mapping helpers
+│   ├── retry.js - Retry with backoff logic
+│   └── validation.js - Project validation
+├── services/
+│   ├── storage/ (3 modules) - Mappings, flags, stats
+│   ├── jira/ (2 modules) - Local & remote Jira clients
+│   ├── sync/ (6 modules) - Sync orchestration
+│   └── scheduled/ (1 module) - Scheduled sync logic
+├── resolvers/ (6 modules) - API resolvers by category
+└── triggers/ (4 modules) - Webhook handlers
+```
+
+### 🐛 Critical Bug Fixes
+- ✅ **Fixed: Issues being incorrectly skipped** - Removed faulty bidirectional sync check that was blocking legitimate one-way syncs
+- ✅ **Fixed: Key collision issues** - Same issue keys (e.g., SCRUM-83) in both orgs no longer cause false skip conditions
+- ✅ **Fixed: Status/assignee changes not syncing** - All field updates now sync correctly
+
 ## Features
 
 ### Core Sync Capabilities
-- ✅ Dual sync strategy – Real-time webhooks + hourly scheduled bulk sync
-- ✅ Issue creation & updates – Summary, description, priority, labels, due date
-- ✅ Status synchronization – Configurable status mappings with transitions
-- ✅ Epic/Parent relationships – Preserves hierarchy across orgs
-- ✅ Comment sync – With author attribution: [Comment from orgname – User: Name]
-- ✅ Attachment sync – Binary file transfer with 10MB limit and duplicate prevention
-- ✅ Issue Links – Syncs all link types (blocks, relates to, duplicates, etc.)
-- ✅ Components – Component sync with clearing support
-- ✅ Fix Versions – Version sync with clearing support
-- ✅ Affects Versions – Affected version sync with clearing support
-- ✅ Time Tracking – Original estimate and remaining estimate sync
-- ✅ Custom field mapping – Map custom fields (including sprints) between organizations
-- ✅ User mapping – Map assignee & reporter between organizations
-- ✅ Project filtering – Selectively sync specific projects/spaces via admin UI
-- ✅ Infinite loop prevention – Safe one-way architecture with sync detection
-
+- ✅ **Dual sync strategy** – Real-time webhooks + hourly scheduled bulk sync
+- ✅ **Issue creation & updates** – Summary, description, priority, labels, due date
+- ✅ **Status synchronization** – Configurable status mappings with transitions
+- ✅ **Epic/Parent relationships** – Preserves hierarchy across orgs
+- ✅ **Comment sync** – With author attribution: `[Comment from OrgName - User: Name]`
+- ✅ **Attachment sync** – Binary file transfer with 10MB limit and duplicate prevention
+- ✅ **Issue Links** – Syncs all link types (blocks, relates to, duplicates, etc.) with pending retry
+- ✅ **Components** – Component sync with clearing support
+- ✅ **Fix Versions** – Version sync with clearing support
+- ✅ **Affects Versions** – Affected version sync with clearing support
+- ✅ **Time Tracking** – Original estimate and remaining estimate sync
+- ✅ **Custom field mapping** – Map custom fields (including sprints) between organizations
+- ✅ **User mapping** – Map assignee & reporter between organizations
+- ✅ **Project filtering** – Selectively sync specific projects/spaces via admin UI
+- ✅ **Infinite loop prevention** – Safe one-way architecture with proper sync detection
 
 ### Admin Interface
-**Collapsible UI sections** - Clean, organized configuration
-**Live data loading** - Fetch users, fields, statuses, projects from both orgs
-**Visual mapping management** - Add/delete mappings with real names
-**Project filter selector** - Multi-select checkboxes to choose which projects to sync
-**Manual sync controls** - Force sync specific issues + clear error history
-**Sync health dashboard** - Real-time webhook stats + scheduled bulk sync stats
-**Persistent storage** - All configurations saved in Forge storage  
+- 📊 **Collapsible UI sections** - Clean, organized configuration
+- 🔄 **Live data loading** - Fetch users, fields, statuses, projects from both orgs
+- 🎨 **Visual mapping management** - Add/delete mappings with real names
+- 🎯 **Project filter selector** - Multi-select checkboxes to choose which projects to sync
+- 🔧 **Manual sync controls** - Force sync specific issues + clear error history
+- 📈 **Sync health dashboard** - Real-time webhook stats + scheduled bulk sync stats
+- 💾 **Persistent storage** - All configurations saved in Forge storage
 
 ## Installation
 
@@ -167,33 +202,88 @@ Take manual control when needed:
 
 ## Architecture
 
-### File Structure
+### Modular File Structure (New!)
 ```
 SyncApp/
 ├── src/
-│   └── index.js                 # Backend sync logic + resolvers
+│   ├── index.js (6 lines)           # Entry point - exports triggers & resolvers
+│   ├── constants.js                 # Shared constants & emojis
+│   │
+│   ├── utils/                       # Utility functions (4 modules)
+│   │   ├── adf.js                  # ADF ↔ text conversion
+│   │   ├── mapping.js              # User/field mapping helpers
+│   │   ├── retry.js                # Retry with exponential backoff
+│   │   └── validation.js           # Project validation
+│   │
+│   ├── services/                    # Core business logic
+│   │   ├── storage/                # Storage abstractions (3 modules)
+│   │   │   ├── mappings.js         # Issue/attachment/link mappings
+│   │   │   ├── flags.js            # Sync flags & pending links
+│   │   │   └── stats.js            # Statistics tracking
+│   │   │
+│   │   ├── jira/                   # Jira API clients (2 modules)
+│   │   │   ├── local-client.js     # Local Jira API wrapper
+│   │   │   └── remote-client.js    # Remote Jira API wrapper
+│   │   │
+│   │   ├── sync/                   # Sync operations (6 modules)
+│   │   │   ├── sync-result.js      # SyncResult tracking class
+│   │   │   ├── issue-sync.js       # Main issue sync orchestration
+│   │   │   ├── comment-sync.js     # Comment sync logic
+│   │   │   ├── attachment-sync.js  # Attachment operations
+│   │   │   ├── link-sync.js        # Link operations
+│   │   │   └── transition-sync.js  # Status transitions
+│   │   │
+│   │   └── scheduled/              # Scheduled operations (1 module)
+│   │       └── scheduled-sync.js   # Hourly bulk sync + pending link retry
+│   │
+│   ├── resolvers/                   # API resolvers (6 modules)
+│   │   ├── index.js                # Resolver aggregator
+│   │   ├── config.js               # Configuration resolvers
+│   │   ├── sync.js                 # Sync operation resolvers
+│   │   ├── data.js                 # Data fetching resolvers
+│   │   ├── stats.js                # Statistics resolvers
+│   │   └── audit.js                # Audit log resolvers
+│   │
+│   └── triggers/                    # Webhook handlers (4 modules)
+│       ├── issue.js                # Issue create/update trigger
+│       ├── comment.js              # Comment trigger
+│       ├── link.js                 # Link creation trigger
+│       └── scheduled.js            # Scheduled sync trigger
+│
 ├── static/admin-page/
 │   ├── src/
-│   │   └── App.jsx             # React admin UI
+│   │   └── App.jsx                 # React admin UI
 │   └── package.json
-├── manifest.yml                 # Forge app configuration
+│
+├── manifest.yml                     # Forge app configuration
 └── package.json
 ```
 
 ### Key Components
 
-**Backend (src/index.js)**
-- `syncIssue()` - Main sync function (create/update) with webhook tracking
-- `syncComment()` - Comment sync with author info and webhook tracking
-- `trackWebhookSync()` - Track real-time sync statistics
-- `performScheduledSync()` - Hourly bulk sync for missed issues
-- `retryWithBackoff()` - Exponential backoff retry with rate limit detection
-- `syncAttachments()` - Binary file download/upload with deduplication
-- `syncIssueLinks()` - Link sync with mapping verification
-- `createRemoteIssue()` - Create with parent/epic/component/version support
-- `updateRemoteIssue()` - Update with user mapping and field clearing
-- `transitionRemoteIssue()` - Status sync with mapping
-- Resolvers for admin UI (forceSyncIssue, clearWebhookErrors, clearScheduledErrors, etc.)
+**Sync Orchestration (`services/sync/issue-sync.js`)**
+- `syncIssue()` - Main webhook handler (create/update detection)
+- `createRemoteIssue()` - Create with full field mapping
+- `updateRemoteIssue()` - Update with field clearing support
+- Uses modular services for attachments, links, transitions
+
+**Storage Services (`services/storage/`)**
+- `mappings.js` - Issue, attachment, and link mappings
+- `flags.js` - Sync flags, pending links with TTL
+- `stats.js` - Webhook and scheduled sync statistics
+
+**Sync Services (`services/sync/`)**
+- `attachment-sync.js` - Binary file operations
+- `link-sync.js` - Issue link operations with pending retry
+- `transition-sync.js` - Status transitions with mapping
+- `comment-sync.js` - Comment sync with author attribution
+- `sync-result.js` - Comprehensive sync result tracking
+
+**Utilities (`utils/`)**
+- `retry.js` - Exponential backoff with rate limit detection
+- `adf.js` - ADF format conversion and media ID replacement
+- `mapping.js` - User and field mapping helpers
+- `validation.js` - Project filtering validation
 
 **Frontend (static/admin-page/src/App.jsx)**
 - Configuration form (remote Jira credentials)
@@ -256,7 +346,7 @@ This app is built with **Forge best practices** and production-ready optimizatio
 
 ### ✅ Webhook Reliability
 - **Duplicate prevention** - Checks existing mappings before creating issues
-- **Loop prevention** - Detects issues created by remote sync and skips them
+- **One-way sync optimized** - Removed faulty bidirectional checks that blocked legitimate syncs
 - **Project filtering** - Only processes allowed projects to reduce noise
 - **Changelog logging** - Logs all field changes for debugging
 
@@ -298,13 +388,13 @@ scheduledSyncStats            // Scheduled sync stats
 auditLog                      // Last 50 audit entries
 ```
 
-### Why This Architecture?
-1. **No unsupported Forge queries** - Index-based approach works reliably
-2. **Storage stays under 5MB** - Auto-cleanup prevents bloat
-3. **No infinite loops** - TTL flags and mapping checks prevent cycles
-4. **Handles failures gracefully** - Retry logic with exponential backoff
-5. **Eventual consistency** - Scheduled sync catches missed webhooks
-6. **Observable** - Comprehensive stats and audit logging
+### Why This Modular Architecture?
+1. **Clear separation of concerns** - Each module does one thing well
+2. **Easier to test** - Isolated modules can be unit tested
+3. **Better performance** - Smaller files = faster cold starts in Forge
+4. **Maintainable** - Easy to find and fix issues
+5. **Scalable** - Easy to add new features without breaking existing code
+6. **Team-friendly** - Multiple developers can work independently
 
 ## Development
 
@@ -322,7 +412,7 @@ forge deploy
 
 ### View logs
 ```bash
-forge logs
+forge logs --tail
 ```
 
 ### Tunnel for local development
@@ -367,7 +457,7 @@ forge tunnel
 
 ### Phase 3: Control & Filtering ✅
 - ✅ **Selective project syncing** - Multi-select UI to choose which projects sync
-- 🔮 **Selective field syncing** - UI toggles for "Sync comments? Attachments? Links?"
+- ✅ **Sync options toggles** - Enable/disable comments, attachments, links, sprints
 
 ### Phase 4: Reliability & Observability ✅
 - ✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
@@ -376,9 +466,15 @@ forge tunnel
 - ✅ **Error handling & retry logic** - Exponential backoff (3 attempts: 1s, 2s, 4s)
 - ✅ **Rate limiting protection** - Detects HTTP 429 and waits 60s before retry
 - ✅ **Manual sync controls** - Force sync specific issues + clear error history
-- 🔮 **Audit log** - Detailed sync history with timestamps (future enhancement)
+- ✅ **Audit log** - Last 50 audit entries with timestamps
 
-### Phase 5: Bidirectional Sync (The Big One)
+### Phase 5: Code Quality & Architecture ✅
+- ✅ **Modular refactoring** - 26 focused modules replacing 2,266-line monolith
+- ✅ **Forge best practices** - Following official Atlassian patterns
+- ✅ **Bug fixes** - Fixed one-way sync issues causing skips
+- ✅ **Performance optimizations** - Smaller modules = faster cold starts
+
+### Phase 6: Bidirectional Sync (Future)
 - 🔮 **Install on both orgs** - Same app deployed to both Jira instances
 - 🔮 **Loop detection mechanism** - Prevent infinite sync loops
 - 🔮 **Conflict resolution** - Last-write-wins vs manual merge strategies
@@ -390,7 +486,7 @@ forge tunnel
   - Review webhook stats for real-time sync activity
   - Review scheduled sync stats for bulk sync results
   - Check "Recent Errors" sections for specific error messages
-- Check `forge logs` for detailed errors
+- Check `forge logs --tail` for detailed errors
 - Verify remote credentials in admin UI
 - Ensure user/field/status mappings saved
 - Confirm project key is correct
@@ -400,7 +496,7 @@ forge tunnel
 - **Webhook stats show zeros** - No issues created/updated yet since deployment
 - **Scheduled stats show zeros** - First hourly sync hasn't run yet (wait up to 1 hour)
 - **High "Issues Skipped" count** - Normal; issues already in sync are skipped
-- **Recent errors listed** - Click into logs with `forge logs` for full details
+- **Recent errors listed** - Click into logs with `forge logs --tail` for full details
 
 ### Need to force sync an issue?
 - Open admin UI → "Manual Sync Controls" section
@@ -414,19 +510,22 @@ forge tunnel
 - Review "Currently Selected Projects" list
 - If projects are selected, only those will sync
 - To sync all projects: uncheck all and save (backward compatible)
-- Check logs for: `⛔ Project X is NOT in allowed list`
+- Check logs for: `⏭️ Skipping {issueKey} - project {projectKey} not in allowed list`
 
 ### Attachments not syncing?
 - Check file size (10MB limit)
 - Verify download/upload permissions
 - Check logs for specific errors
 - Ensure storage mappings are working
+- Verify "Sync Attachments" is enabled in Sync Options
 
 ### Issue links not syncing?
 - Ensure linked issues exist in both orgs
 - Verify both issues have been synced first
 - Check link type exists in target org
 - Review logs for skipped links
+- Pending links auto-retry every hour
+- Verify "Sync Links" is enabled in Sync Options
 
 ### Assignee not syncing?
 - Load remote/local data in admin UI
@@ -435,14 +534,22 @@ forge tunnel
 - Create new issue to test
 
 ### Slow sync (5-10 minutes)?
-- Normal: Forge cold starts take time
+- Normal: Forge cold starts can take time
 - Peak times: Jira webhook delays under load
 - Solution: Sync usually completes in 1-3 seconds once triggered
+- Check Sync Health Dashboard for timing metrics
 
 ### Comments delayed?
 - Comment syncs instantly to API
 - Jira UI may cache and delay display
 - Hard refresh (Ctrl+Shift+R) to force update
+- Verify "Sync Comments" is enabled in Sync Options
+
+### Module Import Errors?
+- All imports use `.js` extensions (ES modules)
+- Check file paths are relative (e.g., `../utils/retry.js`)
+- Verify all exports are named exports
+- Run `forge deploy` to validate
 
 ## License
 
