@@ -13,7 +13,12 @@ import {
   SCHEDULED_SYNC_DELAY_MS,
   STORAGE_KEYS,
   RECENT_CREATION_WINDOW_MS,
-  OPERATION_RESULT
+  OPERATION_RESULT,
+  BATCH_SIZE,
+  BATCH_DELAY_MS,
+  MAX_AUDIT_LOG_ENTRIES,
+  MAX_ERROR_ENTRIES,
+  MAX_PENDING_LINK_ATTEMPTS
 } from './constants.js';
 
 const resolver = new Resolver();
@@ -364,9 +369,9 @@ async function logAuditEntry(entry) {
       ...entry,
       timestamp: new Date().toISOString()
     });
-    // Keep only last 100 entries
-    if (auditLog.length > 100) {
-      auditLog.length = 100;
+    // Keep only last MAX_AUDIT_LOG_ENTRIES entries to prevent storage bloat
+    if (auditLog.length > MAX_AUDIT_LOG_ENTRIES) {
+      auditLog.length = MAX_AUDIT_LOG_ENTRIES;
     }
     await storage.set('auditLog', auditLog);
   } catch (error) {
@@ -453,19 +458,27 @@ async function retryAllPendingLinks(config, mappings) {
   let totalStillPending = 0;
 
   try {
-    // Query all pending-links keys from storage
-    const allKeys = await storage.query().where('key', startsWith('pending-links:')).getMany();
+    // FIX: Use index-based approach instead of invalid startsWith query
+    // Forge storage API doesn't support startsWith - use an index instead
+    const pendingLinksIndex = await storage.get('pending-links-index') || [];
 
-    if (!allKeys || !allKeys.results || Object.keys(allKeys.results).length === 0) {
+    if (pendingLinksIndex.length === 0) {
       console.log(`No pending links to retry`);
       return { retried: 0, success: 0, failed: 0, stillPending: 0 };
     }
 
-    console.log(`📋 Found ${Object.keys(allKeys.results).length} issue(s) with pending links`);
+    console.log(`📋 Found ${pendingLinksIndex.length} issue(s) with pending links`);
 
     // Process each issue's pending links
-    for (const [storageKey, pendingLinks] of Object.entries(allKeys.results)) {
-      const localIssueKey = storageKey.replace('pending-links:', '');
+    for (const localIssueKey of pendingLinksIndex) {
+      const pendingLinks = await storage.get(`pending-links:${localIssueKey}`);
+      
+      if (!pendingLinks || pendingLinks.length === 0) {
+        // Clean up index if no links found
+        await removeIssueFromPendingLinksIndex(localIssueKey);
+        continue;
+      }
+
       const remoteIssueKey = await getRemoteKey(localIssueKey);
 
       if (!remoteIssueKey) {
@@ -487,8 +500,8 @@ async function retryAllPendingLinks(config, mappings) {
           console.log(`⏭️ ${pendingLink.linkedIssueKey} still not synced - keeping as pending`);
           totalStillPending++;
 
-          // Update attempts counter (remove after 10 attempts to prevent infinite storage)
-          if (pendingLink.attempts >= 10) {
+          // Update attempts counter (remove after MAX_PENDING_LINK_ATTEMPTS to prevent infinite storage)
+          if (pendingLink.attempts >= MAX_PENDING_LINK_ATTEMPTS) {
             console.log(`❌ Removing ${pendingLink.linkedIssueKey} from pending - max attempts reached`);
             await removePendingLink(localIssueKey, pendingLink.linkId);
             totalFailed++;
@@ -1091,6 +1104,14 @@ async function storePendingLink(issueKey, linkData) {
     });
   }
   await storage.set(`pending-links:${issueKey}`, pendingLinks);
+
+  // Update index
+  const pendingLinksIndex = await storage.get('pending-links-index') || [];
+  if (!pendingLinksIndex.includes(issueKey)) {
+    pendingLinksIndex.push(issueKey);
+    await storage.set('pending-links-index', pendingLinksIndex);
+  }
+
   console.log(`📌 Stored pending link: ${issueKey} → ${linkData.linkedIssueKey}`);
 }
 
@@ -1103,9 +1124,16 @@ async function removePendingLink(issueKey, linkId) {
   const filtered = pendingLinks.filter(l => l.linkId !== linkId);
   if (filtered.length === 0) {
     await storage.delete(`pending-links:${issueKey}`);
+    await removeIssueFromPendingLinksIndex(issueKey);
   } else {
     await storage.set(`pending-links:${issueKey}`, filtered);
   }
+}
+
+async function removeIssueFromPendingLinksIndex(issueKey) {
+  const pendingLinksIndex = await storage.get('pending-links-index') || [];
+  const updatedIndex = pendingLinksIndex.filter(key => key !== issueKey);
+  await storage.set('pending-links-index', updatedIndex);
 }
 
 async function markSyncing(issueKey) {
@@ -2139,11 +2167,23 @@ export async function run(event, context) {
   // Log what changed
   if (event.changelog?.items) {
     console.log(`🔄 Changes detected:`);
+    let hasLinkChanges = false;
     event.changelog.items.forEach(item => {
       console.log(`   - ${item.field}: "${item.fromString}" → "${item.toString}"`);
+      if (item.field === 'Link') {
+        hasLinkChanges = true;
+        console.log(`   🔗 LINK CHANGE DETECTED: "${item.fromString}" → "${item.toString}"`);
+      }
     });
+    if (hasLinkChanges) {
+      console.log(`🔗 This update includes link changes - will sync links`);
+    }
   } else {
     console.log(`⚠️ No changelog available in event`);
+    // IMPORTANT: Link additions often don't trigger changelog, so we should still process
+    if (event.eventType === 'avi:jira:updated:issue') {
+      console.log(`ℹ️ Update event without changelog - may be a link addition, will process`);
+    }
   }
   
   // For updated events, check if this is right after creation (prevents duplicate creation)
@@ -2157,6 +2197,8 @@ export async function run(event, context) {
         if (!remoteKey) {
           console.log(`⏭️ Skipping UPDATE event - issue was just created ${timeSinceCreation}ms ago (still creating remote)`);
           return;
+        } else {
+          console.log(`✅ Remote issue exists (${remoteKey}), processing update even though issue was just created`);
         }
       }
     }
@@ -2173,6 +2215,41 @@ export async function run(event, context) {
 export async function runComment(event, context) {
   console.log(`💬 Comment trigger fired`);
   await syncComment(event);
+}
+
+export async function runLinkCreated(event, context) {
+  console.log(`🔗 Link creation trigger fired`);
+  console.log(`🔗 Link event:`, JSON.stringify(event, null, 2));
+  
+  // The link event contains information about both issues in the link
+  // We need to trigger a sync for the source issue to pick up the new link
+  try {
+    // Try to get the issue key from the event
+    let issueKey = null;
+    
+    if (event.issueLink && event.issueLink.sourceIssueId) {
+      // Fetch the source issue to get its key
+      const response = await api.asApp().requestJira(
+        route`/rest/api/3/issue/${event.issueLink.sourceIssueId}`
+      );
+      const issue = await response.json();
+      issueKey = issue.key;
+    }
+    
+    if (issueKey) {
+      console.log(`🔗 Triggering sync for issue: ${issueKey}`);
+      // Create a synthetic event to trigger sync
+      const syntheticEvent = {
+        eventType: 'avi:jira:updated:issue',
+        issue: { key: issueKey }
+      };
+      await syncIssue(syntheticEvent);
+    } else {
+      console.log(`⚠️ Could not determine issue key from link event`);
+    }
+  } catch (error) {
+    console.error(`❌ Error processing link creation:`, error);
+  }
 }
 
 export async function runScheduledSync(event, context) {

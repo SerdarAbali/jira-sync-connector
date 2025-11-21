@@ -232,6 +232,80 @@ SyncApp/
 - Any custom field via field mapping
 - Sprint fields (with automatic ID extraction)
 
+## Forge Compliance & Production Optimizations
+
+This app is built with **Forge best practices** and production-ready optimizations:
+
+### ✅ Storage Management
+- **Index-based queries** - Uses `pending-links-index` array instead of unsupported `startsWith()` queries
+- **Automatic cleanup** - Audit logs limited to 50 entries to stay within Forge's 5MB storage limit
+- **Error tracking** - Last 50 errors tracked per sync type (webhook/scheduled)
+- **Pending link limits** - Auto-removes pending links after 10 failed retry attempts
+
+### ✅ Rate Limiting & Performance
+- **Exponential backoff retry** - 3 attempts with delays: 1s, 2s, 4s
+- **Rate limit detection** - Detects HTTP 429 and waits 60s before retry
+- **Batch processing ready** - Constants defined for future batch processing (10 issues per batch, 5s delay)
+- **Scheduled sync delays** - 500ms between issues to avoid overwhelming API
+
+### ✅ Timeout Prevention
+- **Sync flag TTL** - 5-second TTL prevents deadlocks from failed operations
+- **Concurrent sync prevention** - Issues marked as "syncing" prevent duplicate operations
+- **Recent creation window** - 3-second window prevents duplicate create operations
+- **Mapping stored immediately** - Critical fix prevents race conditions in parallel syncs
+
+### ✅ Webhook Reliability
+- **Duplicate prevention** - Checks existing mappings before creating issues
+- **Loop prevention** - Detects issues created by remote sync and skips them
+- **Project filtering** - Only processes allowed projects to reduce noise
+- **Changelog logging** - Logs all field changes for debugging
+
+### ✅ Scheduled Sync Reliability
+- **Hourly execution** - Catches missed webhooks and ensures eventual consistency
+- **Retry pending links** - Automatically retries links when both issues are synced
+- **JQL-based queries** - Efficient queries using allowed projects filter
+- **Stats tracking** - Comprehensive stats for monitoring sync health
+
+### Storage Schema
+```javascript
+// Configuration
+syncConfig                    // Remote Jira credentials + project key
+userMappings                  // Remote user ID → Local user ID
+fieldMappings                 // Remote field ID → Local field ID
+statusMappings                // Remote status ID → Local status ID
+syncOptions                   // Feature toggles (comments, attachments, links, sprints)
+scheduledSyncConfig           // Scheduled sync settings (enabled, interval, scope)
+
+// Issue Mappings (Bidirectional)
+local-to-remote:{issueKey}    // SCRUM-81 → SCRUM-79
+remote-to-local:{remoteKey}   // SCRUM-79 → SCRUM-81
+
+// Attachment Mappings
+attachment-mapping:{localId}  // 10001 → 20002
+
+// Link Mappings
+link-mapping:{localLinkId}    // 30001 → 'synced'
+pending-links:{issueKey}      // Array of pending links for retry
+pending-links-index           // Array of issue keys with pending links
+
+// Sync State (TTL: 5-10s)
+syncing:{issueKey}            // 'true' (TTL: 5s)
+created-timestamp:{issueKey}  // Unix timestamp (TTL: 10s)
+
+// Statistics & Audit
+webhookSyncStats              // Real-time webhook sync stats
+scheduledSyncStats            // Scheduled sync stats
+auditLog                      // Last 50 audit entries
+```
+
+### Why This Architecture?
+1. **No unsupported Forge queries** - Index-based approach works reliably
+2. **Storage stays under 5MB** - Auto-cleanup prevents bloat
+3. **No infinite loops** - TTL flags and mapping checks prevent cycles
+4. **Handles failures gracefully** - Retry logic with exponential backoff
+5. **Eventual consistency** - Scheduled sync catches missed webhooks
+6. **Observable** - Comprehensive stats and audit logging
+
 ## Development
 
 ### Build React UI

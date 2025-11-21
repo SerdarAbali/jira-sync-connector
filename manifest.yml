@@ -22,6 +22,11 @@ modules:
       events:
         - avi:jira:commented:issue
 
+    - key: issue-link-created
+      function: link-trigger
+      events:
+        - avi:jira-issue-link:created
+
   scheduledTrigger:
     - key: scheduled-sync
       interval: hour
@@ -33,6 +38,9 @@ modules:
 
     - key: comment-trigger
       handler: index.runComment
+
+    - key: link-trigger
+      handler: index.runLinkCreated
 
     - key: scheduled-sync-function
       handler: index.runScheduledSync

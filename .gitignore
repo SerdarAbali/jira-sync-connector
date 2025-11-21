@@ -27,3 +27,9 @@ Thumbs.db
 # Build outputs
 dist/
 build/
+README.md
+src/constants.js
+src/index.js
+static/admin-page/.parcel-cache/data.mdb
+static/admin-page/.parcel-cache/lock.mdb
+static/admin-page/package-lock.json

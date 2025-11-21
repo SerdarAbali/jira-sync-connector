@@ -4,6 +4,7 @@ import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
 import Form, { Field } from '@atlaskit/form';
 import TextField from '@atlaskit/textfield';
+import Tabs, { Tab, TabList, TabPanel } from '@atlaskit/tabs';
 import '@atlaskit/css-reset';
 
 const sectionStyle = {
@@ -56,13 +57,6 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  const [configOpen, setConfigOpen] = useState(true);
-  const [syncHealthOpen, setSyncHealthOpen] = useState(false);
-  const [projectFilterOpen, setProjectFilterOpen] = useState(false);
-  const [userMappingOpen, setUserMappingOpen] = useState(false);
-  const [fieldMappingOpen, setFieldMappingOpen] = useState(false);
-  const [statusMappingOpen, setStatusMappingOpen] = useState(false);
-
   const [userMappings, setUserMappings] = useState({});
   const [fieldMappings, setFieldMappings] = useState({});
   const [statusMappings, setStatusMappings] = useState({});
@@ -103,9 +97,18 @@ function App() {
   const [auditLog, setAuditLog] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
 
+  const [scheduledSyncOpen, setScheduledSyncOpen] = useState(false);
+  const [scheduledSyncConfig, setScheduledSyncConfig] = useState({
+    enabled: false,
+    intervalMinutes: 60,
+    lastRun: null,
+    syncScope: 'recent'
+  });
+
   useEffect(() => {
     loadConfiguration();
     loadAllMappings();
+    loadScheduledSyncConfig();
   }, []);
 
   const loadConfiguration = async () => {
@@ -144,6 +147,17 @@ function App() {
       }
     } catch (error) {
       console.error('Error loading mappings:', error);
+    }
+  };
+
+  const loadScheduledSyncConfig = async () => {
+    try {
+      const config = await invoke('getScheduledSyncConfig');
+      if (config) {
+        setScheduledSyncConfig(config);
+      }
+    } catch (error) {
+      console.error('Error loading scheduled sync config:', error);
     }
   };
 
@@ -602,26 +616,67 @@ function App() {
     }
   };
 
+  const handleSaveScheduledSyncConfig = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      const result = await invoke('saveScheduledSyncConfig', { config: scheduledSyncConfig });
+      if (result.success) {
+        setMessage('✅ Scheduled sync configuration saved successfully!');
+      } else {
+        setMessage(`❌ Error: ${result.error}`);
+      }
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error saving scheduled sync config:', error);
+      setMessage('❌ Error: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) {
     return <div style={{ padding: '20px' }}>Loading...</div>;
   }
 
   return (
-    <div style={{ padding: '20px', maxWidth: '800px' }}>
+    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
       <h1>Sync Connector Configuration</h1>
       <p>Configure the remote Jira instance to sync with:</p>
-      
-      <div style={sectionStyle}>
-        <div 
-          style={collapsibleHeaderStyle}
-          onClick={() => setConfigOpen(!configOpen)}
-        >
-          <span>Remote Jira Configuration</span>
-          <span>{configOpen ? '▼' : '▶'}</span>
-        </div>
 
-        {configOpen && (
-          <div style={{ marginTop: '16px' }}>
+      {message && (
+        <div style={{
+          marginTop: '20px',
+          padding: '10px',
+          background: message.includes('Error') || message.includes('Validation') ? '#ffebe6' : '#e3fcef',
+          borderRadius: '3px',
+          whiteSpace: 'pre-line'
+        }}>
+          {message}
+        </div>
+      )}
+
+      <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+        <Button appearance="primary" onClick={loadRemoteData} isLoading={dataLoading}>
+          Load Remote Data
+        </Button>
+        <Button appearance="primary" onClick={loadLocalData} isLoading={dataLoading}>
+          Load Local Data
+        </Button>
+      </div>
+
+      <Tabs id="admin-tabs" style={{ marginTop: '30px' }}>
+        <TabList>
+          <Tab>Configuration</Tab>
+          <Tab>Mappings</Tab>
+          <Tab>Sync Controls</Tab>
+          <Tab>Health & Stats</Tab>
+        </TabList>
+
+        <TabPanel>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Remote Jira Configuration</h3>
             <Form onSubmit={handleSubmit}>
               {({ formProps }) => (
                 <form {...formProps}>
@@ -662,41 +717,292 @@ function App() {
               </ol>
             </div>
           </div>
-        )}
-      </div>
 
-      {message && (
-        <div style={{
-          marginTop: '20px',
-          padding: '10px',
-          background: message.includes('Error') || message.includes('Validation') ? '#ffebe6' : '#e3fcef',
-          borderRadius: '3px',
-          whiteSpace: 'pre-line'
-        }}>
-          {message}
-        </div>
-      )}
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Project Filter ({config.allowedProjects?.length || 0} selected)</h3>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              Select which projects to sync. If no projects are selected, all projects will be synced (backward compatible).
+            </p>
 
-      <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-        <Button appearance="primary" onClick={loadRemoteData} isLoading={dataLoading}>
-          Load Remote Data
-        </Button>
-        <Button appearance="primary" onClick={loadLocalData} isLoading={dataLoading}>
-          Load Local Data
-        </Button>
-      </div>
+            {config.allowedProjects && config.allowedProjects.length > 0 && localProjects.length === 0 && (
+              <div style={{ marginBottom: '16px', padding: '12px', background: '#e3fcef', borderRadius: '3px' }}>
+                <h4 style={{ marginTop: 0 }}>Currently Selected Projects:</h4>
+                <ul style={{ marginBottom: 0 }}>
+                  {config.allowedProjects.map(projectKey => (
+                    <li key={projectKey}><strong>{projectKey}</strong></li>
+                  ))}
+                </ul>
+                <p style={{ color: '#6B778C', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
+                  Click "Load Projects" below to see all available projects and modify selection
+                </p>
+              </div>
+            )}
 
-      <div style={sectionStyle}>
-        <div
-          style={collapsibleHeaderStyle}
-          onClick={() => setManualSyncOpen(!manualSyncOpen)}
-        >
-          <span>Manual Sync Controls</span>
-          <span>{manualSyncOpen ? '▼' : '▶'}</span>
-        </div>
+            <Button appearance="primary" onClick={loadLocalProjects} isLoading={dataLoading} style={{ marginBottom: '16px' }}>
+              Load Projects
+            </Button>
 
-        {manualSyncOpen && (
-          <div style={{ marginTop: '16px' }}>
+            {localProjects.length > 0 && (
+              <>
+                <h4>Available Projects</h4>
+                <div style={{ marginBottom: '16px' }}>
+                  {localProjects.map(project => {
+                    const isSelected = config.allowedProjects?.includes(project.key);
+                    return (
+                      <div
+                        key={project.key}
+                        style={{
+                          padding: '12px',
+                          background: isSelected ? '#e3fcef' : '#f4f5f7',
+                          borderRadius: '3px',
+                          marginBottom: '8px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          cursor: 'pointer',
+                          border: isSelected ? '2px solid #00875A' : '2px solid transparent'
+                        }}
+                        onClick={() => toggleProjectSelection(project.key)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected || false}
+                          readOnly
+                          style={{ marginRight: '12px', cursor: 'pointer', pointerEvents: 'none' }}
+                        />
+                        <div>
+                          <strong>{project.key}</strong> - {project.name}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <Button appearance="primary" onClick={handleSaveProjectFilter} isLoading={saving}>
+                  Save Project Filter
+                </Button>
+              </>
+            )}
+
+            {localProjects.length === 0 && (!config.allowedProjects || config.allowedProjects.length === 0) && (
+              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>
+                Click "Load Projects" to see available projects
+              </p>
+            )}
+          </div>
+        </TabPanel>
+
+        <TabPanel>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>User Mapping ({Object.keys(userMappings).length})</h3>
+            <h4>Add User Mapping</h4>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Remote User
+              </label>
+              <select
+                value={newUserRemote}
+                onChange={(e) => setNewUserRemote(e.target.value)}
+                style={selectStyle}
+              >
+                <option value="">Select remote user...</option>
+                {remoteUsers.map(user => (
+                  <option key={user.accountId} value={user.accountId}>
+                    {user.displayName}{user.emailAddress ? ` (${user.emailAddress})` : ''}
+                  </option>
+                ))}
+              </select>
+
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Local User
+              </label>
+              <select
+                value={newUserLocal}
+                onChange={(e) => setNewUserLocal(e.target.value)}
+                style={selectStyle}
+              >
+                <option value="">Select local user...</option>
+                {localUsers.map(user => (
+                  <option key={user.accountId} value={user.accountId}>
+                    {user.displayName}{user.emailAddress ? ` (${user.emailAddress})` : ''}
+                  </option>
+                ))}
+              </select>
+
+              <Button appearance="primary" onClick={addUserMapping}>
+                Add Mapping
+              </Button>
+            </div>
+
+            <h4>Current Mappings</h4>
+            {Object.keys(userMappings).length === 0 && (
+              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No user mappings yet</p>
+            )}
+            {Object.entries(userMappings).map(([remoteId, mapping]) => {
+              const localId = typeof mapping === 'string' ? mapping : mapping.localId;
+              const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
+              const localName = typeof mapping === 'object' ? mapping.localName : localId;
+              
+              return (
+                <div key={remoteId} style={mappingItemStyle}>
+                  <span>
+                    <strong>{remoteName}</strong> → {localName}
+                  </span>
+                  <Button appearance="subtle" onClick={() => deleteUserMapping(remoteId)}>
+                    Delete
+                  </Button>
+                </div>
+              );
+            })}
+
+            <div style={{ marginTop: '16px' }}>
+              <Button appearance="primary" onClick={handleSaveUserMappings} isLoading={saving}>
+                Save User Mappings
+              </Button>
+            </div>
+          </div>
+
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Field Mapping ({Object.keys(fieldMappings).length})</h3>
+            <h4>Add Field Mapping</h4>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Remote Field
+              </label>
+              <select
+                value={newFieldRemote}
+                onChange={(e) => setNewFieldRemote(e.target.value)}
+                style={selectStyle}
+              >
+                <option value="">Select remote field...</option>
+                {remoteFields.map(field => (
+                  <option key={field.id} value={field.id}>
+                    {field.name} ({field.id})
+                  </option>
+                ))}
+              </select>
+
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Local Field
+              </label>
+              <select
+                value={newFieldLocal}
+                onChange={(e) => setNewFieldLocal(e.target.value)}
+                style={selectStyle}
+              >
+                <option value="">Select local field...</option>
+                {localFields.map(field => (
+                  <option key={field.id} value={field.id}>
+                    {field.name} ({field.id})
+                  </option>
+                ))}
+              </select>
+
+              <Button appearance="primary" onClick={addFieldMapping}>
+                Add Mapping
+              </Button>
+            </div>
+
+            <h4>Current Mappings</h4>
+            {Object.keys(fieldMappings).length === 0 && (
+              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No field mappings yet</p>
+            )}
+            {Object.entries(fieldMappings).map(([remoteId, mapping]) => {
+              const localId = typeof mapping === 'string' ? mapping : mapping.localId;
+              const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
+              const localName = typeof mapping === 'object' ? mapping.localName : localId;
+              
+              return (
+                <div key={remoteId} style={mappingItemStyle}>
+                  <span>
+                    <strong>{remoteName}</strong> → {localName}
+                  </span>
+                  <Button appearance="subtle" onClick={() => deleteFieldMapping(remoteId)}>
+                    Delete
+                  </Button>
+                </div>
+              );
+            })}
+
+            <div style={{ marginTop: '16px' }}>
+              <Button appearance="primary" onClick={handleSaveFieldMappings} isLoading={saving}>
+                Save Field Mappings
+              </Button>
+            </div>
+          </div>
+
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Status Mapping ({Object.keys(statusMappings).length})</h3>
+            <h4>Add Status Mapping</h4>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Remote Status
+              </label>
+              <select
+                value={newStatusRemote}
+                onChange={(e) => setNewStatusRemote(e.target.value)}
+                style={selectStyle}
+              >
+                <option value="">Select remote status...</option>
+                {remoteStatuses.map(status => (
+                  <option key={status.id} value={status.id}>
+                    {status.name}
+                  </option>
+                ))}
+              </select>
+
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Local Status
+              </label>
+              <select
+                value={newStatusLocal}
+                onChange={(e) => setNewStatusLocal(e.target.value)}
+                style={selectStyle}
+              >
+                <option value="">Select local status...</option>
+                {localStatuses.map(status => (
+                  <option key={status.id} value={status.id}>
+                    {status.name}
+                  </option>
+                ))}
+              </select>
+
+              <Button appearance="primary" onClick={addStatusMapping}>
+                Add Mapping
+              </Button>
+            </div>
+
+            <h4>Current Mappings</h4>
+            {Object.keys(statusMappings).length === 0 && (
+              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No status mappings yet</p>
+            )}
+            {Object.entries(statusMappings).map(([remoteId, mapping]) => {
+              const localId = typeof mapping === 'string' ? mapping : mapping.localId;
+              const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
+              const localName = typeof mapping === 'object' ? mapping.localName : localId;
+              
+              return (
+                <div key={remoteId} style={mappingItemStyle}>
+                  <span>
+                    <strong>{remoteName}</strong> → {localName}
+                  </span>
+                  <Button appearance="subtle" onClick={() => deleteStatusMapping(remoteId)}>
+                    Delete
+                  </Button>
+                </div>
+              );
+            })}
+
+            <div style={{ marginTop: '16px' }}>
+              <Button appearance="primary" onClick={handleSaveStatusMappings} isLoading={saving}>
+                Save Status Mappings
+              </Button>
+            </div>
+          </div>
+        </TabPanel>
+
+        <TabPanel>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Manual Sync Controls</h3>
             <p style={{ marginBottom: '16px', color: '#6B778C' }}>
               Manually trigger sync for a specific issue or clear error history.
             </p>
@@ -760,171 +1066,9 @@ function App() {
               </div>
             </div>
           </div>
-        )}
-      </div>
 
-      <div style={sectionStyle}>
-        <div
-          style={collapsibleHeaderStyle}
-          onClick={() => setSyncHealthOpen(!syncHealthOpen)}
-        >
-          <span>Sync Health & Statistics</span>
-          <span>{syncHealthOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {syncHealthOpen && (
-          <div style={{ marginTop: '16px' }}>
-            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-              View synchronization statistics and health metrics.
-            </p>
-
-            <Button appearance="primary" onClick={loadSyncStats} isLoading={statsLoading} style={{ marginBottom: '16px' }}>
-              Refresh Stats
-            </Button>
-
-            {webhookStats && (
-              <div style={{ marginBottom: '24px' }}>
-                <h3 style={{ marginTop: 0, marginBottom: '16px', color: '#172B4D' }}>Real-time Webhook Syncs</h3>
-
-                {webhookStats.lastSync ? (
-                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
-                    <p style={{ margin: '4px 0' }}>
-                      <strong>Last Activity:</strong> {new Date(webhookStats.lastSync).toLocaleString()}
-                    </p>
-                    <p style={{ margin: '4px 0' }}>
-                      <strong>Total Syncs:</strong> {webhookStats.totalSyncs || 0}
-                    </p>
-                  </div>
-                ) : (
-                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
-                    <p style={{ margin: 0 }}>No webhook syncs have occurred yet.</p>
-                  </div>
-                )}
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.issuesCreated || 0}</p>
-                  </div>
-
-                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.issuesUpdated || 0}</p>
-                  </div>
-
-                  <div style={{ padding: '16px', background: '#deebff', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#0052CC' }}>Comments Synced</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.commentsSynced || 0}</p>
-                  </div>
-                </div>
-
-                {webhookStats.errors && webhookStats.errors.length > 0 && (
-                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px', marginBottom: '16px' }}>
-                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Webhook Errors ({webhookStats.errors.length})</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px' }}>
-                      {webhookStats.errors.slice(0, 5).map((err, index) => (
-                        <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>
-                          <strong>{new Date(err.timestamp).toLocaleTimeString()}:</strong> {err.error}
-                        </li>
-                      ))}
-                    </ul>
-                    {webhookStats.errors.length > 5 && (
-                      <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
-                        ... and {webhookStats.errors.length - 5} more errors
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {scheduledStats && (
-              <div>
-                <h3 style={{ marginTop: 0, marginBottom: '16px', color: '#172B4D' }}>Scheduled Bulk Syncs (Hourly)</h3>
-
-                {scheduledStats.lastRun ? (
-                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
-                    <p style={{ margin: '4px 0' }}>
-                      <strong>Last Run:</strong> {new Date(scheduledStats.lastRun).toLocaleString()}
-                    </p>
-                    <p style={{ margin: '4px 0' }}>
-                      <strong>Time Ago:</strong> {Math.round((Date.now() - new Date(scheduledStats.lastRun).getTime()) / 1000 / 60)} minutes ago
-                    </p>
-                  </div>
-                ) : (
-                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
-                    <p style={{ margin: 0 }}>No scheduled sync has run yet. First run will occur within 1 hour of deployment.</p>
-                  </div>
-                )}
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Checked</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesChecked || 0}</p>
-                  </div>
-
-                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesCreated || 0}</p>
-                  </div>
-
-                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesUpdated || 0}</p>
-                  </div>
-
-                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#FF8B00' }}>Issues Skipped</h4>
-                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesSkipped || 0}</p>
-                  </div>
-                </div>
-
-                {scheduledStats.errors && scheduledStats.errors.length > 0 && (
-                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px', marginBottom: '16px' }}>
-                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Scheduled Sync Errors ({scheduledStats.errors.length})</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px' }}>
-                      {scheduledStats.errors.slice(0, 5).map((error, index) => (
-                        <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>{error}</li>
-                      ))}
-                    </ul>
-                    {scheduledStats.errors.length > 5 && (
-                      <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
-                        ... and {scheduledStats.errors.length - 5} more errors
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <div style={{ marginTop: '16px', padding: '12px', background: '#f4f5f7', borderRadius: '3px' }}>
-                  <p style={{ fontSize: '12px', color: '#6B778C', margin: 0 }}>
-                    <strong>Success Rate:</strong> {scheduledStats.issuesChecked > 0
-                      ? `${Math.round(((scheduledStats.issuesCreated + scheduledStats.issuesUpdated) / scheduledStats.issuesChecked) * 100)}%`
-                      : 'N/A'}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {(!webhookStats && !scheduledStats) && !statsLoading && (
-              <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px' }}>
-                <p style={{ margin: 0, color: '#6B778C' }}>Click "Refresh Stats" to load sync statistics.</p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div style={sectionStyle}>
-        <div
-          style={collapsibleHeaderStyle}
-          onClick={() => setSyncOptionsOpen(!syncOptionsOpen)}
-        >
-          <span>Selective Field Sync</span>
-          <span>{syncOptionsOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {syncOptionsOpen && (
-          <div style={{ marginTop: '16px' }}>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Selective Field Sync</h3>
             <p style={{ marginBottom: '16px', color: '#6B778C' }}>
               Choose which types of data to sync. Unchecked items will be skipped during synchronization.
             </p>
@@ -995,103 +1139,201 @@ function App() {
               Save Sync Options
             </Button>
           </div>
-        )}
-      </div>
 
-      <div style={sectionStyle}>
-        <div
-          style={collapsibleHeaderStyle}
-          onClick={() => setProjectFilterOpen(!projectFilterOpen)}
-        >
-          <span>Project Filter ({config.allowedProjects?.length || 0} selected)</span>
-          <span>{projectFilterOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {projectFilterOpen && (
-          <div style={{ marginTop: '16px' }}>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Scheduled Sync Configuration</h3>
             <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-              Select which projects to sync. If no projects are selected, all projects will be synced (backward compatible).
+              Configure the scheduled sync settings. The sync runs automatically every hour to catch any changes that weren't synced in real-time (like links added after issue creation).
             </p>
 
-            {config.allowedProjects && config.allowedProjects.length > 0 && localProjects.length === 0 && (
-              <div style={{ marginBottom: '16px', padding: '12px', background: '#e3fcef', borderRadius: '3px' }}>
-                <h4 style={{ marginTop: 0 }}>Currently Selected Projects:</h4>
-                <ul style={{ marginBottom: 0 }}>
-                  {config.allowedProjects.map(projectKey => (
-                    <li key={projectKey}><strong>{projectKey}</strong></li>
-                  ))}
-                </ul>
-                <p style={{ color: '#6B778C', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
-                  Click "Load Projects" below to see all available projects and modify selection
-                </p>
+            <div style={{ marginBottom: '16px', padding: '12px', background: '#deebff', borderRadius: '3px' }}>
+              <p style={{ margin: 0, fontSize: '13px', color: '#0052CC' }}>
+                <strong>ℹ️ Note:</strong> Atlassian Forge limits scheduled triggers to predefined intervals. The sync will run <strong>once per hour</strong> and cannot be customized to run more or less frequently.
+              </p>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={scheduledSyncConfig.enabled}
+                  onChange={(e) => setScheduledSyncConfig({ ...scheduledSyncConfig, enabled: e.target.checked })}
+                  style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                <span style={{ fontWeight: '600' }}>Enable Scheduled Sync (Hourly)</span>
+              </label>
+              <p style={{ marginLeft: '24px', marginTop: '4px', fontSize: '13px', color: '#6B778C' }}>
+                When enabled, the app will automatically sync issues every hour
+              </p>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
+                Sync Scope
+              </label>
+              <select
+                value={scheduledSyncConfig.syncScope}
+                onChange={(e) => setScheduledSyncConfig({ ...scheduledSyncConfig, syncScope: e.target.value })}
+                style={selectStyle}
+              >
+                <option value="recent">Recent Changes (last 24 hours)</option>
+                <option value="all">All Issues</option>
+              </select>
+              <p style={{ marginTop: '4px', fontSize: '13px', color: '#6B778C' }}>
+                <strong>Recent Changes:</strong> Only syncs issues updated in the last 24 hours (faster, recommended)<br />
+                <strong>All Issues:</strong> Syncs all issues in selected projects (slower but comprehensive)
+              </p>
+            </div>
+
+            <Button appearance="primary" onClick={handleSaveScheduledSyncConfig} isLoading={saving}>
+              Save Scheduled Sync Configuration
+            </Button>
+          </div>
+        </TabPanel>
+
+        <TabPanel>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Sync Health & Statistics</h3>
+            <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+              View synchronization statistics and health metrics.
+            </p>
+
+            <Button appearance="primary" onClick={loadSyncStats} isLoading={statsLoading} style={{ marginBottom: '16px' }}>
+              Refresh Stats
+            </Button>
+
+            {webhookStats && (
+              <div style={{ marginBottom: '24px' }}>
+                <h4 style={{ marginTop: 0, marginBottom: '16px', color: '#172B4D' }}>Real-time Webhook Syncs</h4>
+
+                {webhookStats.lastSync ? (
+                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Last Activity:</strong> {new Date(webhookStats.lastSync).toLocaleString()}
+                    </p>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Total Syncs:</strong> {webhookStats.totalSyncs || 0}
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: 0 }}>No webhook syncs have occurred yet.</p>
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.issuesCreated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.issuesUpdated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#deebff', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#0052CC' }}>Comments Synced</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{webhookStats.commentsSynced || 0}</p>
+                  </div>
+                </div>
+
+                {webhookStats.errors && webhookStats.errors.length > 0 && (
+                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Webhook Errors ({webhookStats.errors.length})</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                      {webhookStats.errors.slice(0, 5).map((err, index) => (
+                        <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>
+                          <strong>{new Date(err.timestamp).toLocaleTimeString()}:</strong> {err.error}
+                        </li>
+                      ))}
+                    </ul>
+                    {webhookStats.errors.length > 5 && (
+                      <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
+                        ... and {webhookStats.errors.length - 5} more errors
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
-            <Button appearance="primary" onClick={loadLocalProjects} isLoading={dataLoading} style={{ marginBottom: '16px' }}>
-              Load Projects
-            </Button>
+            {scheduledStats && (
+              <div>
+                <h4 style={{ marginTop: 0, marginBottom: '16px', color: '#172B4D' }}>Scheduled Bulk Syncs (Hourly)</h4>
 
-            {localProjects.length > 0 && (
-              <>
-                <h4>Available Projects</h4>
-                <div style={{ marginBottom: '16px' }}>
-                  {localProjects.map(project => {
-                    const isSelected = config.allowedProjects?.includes(project.key);
-                    return (
-                      <div
-                        key={project.key}
-                        style={{
-                          padding: '12px',
-                          background: isSelected ? '#e3fcef' : '#f4f5f7',
-                          borderRadius: '3px',
-                          marginBottom: '8px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          cursor: 'pointer',
-                          border: isSelected ? '2px solid #00875A' : '2px solid transparent'
-                        }}
-                        onClick={() => toggleProjectSelection(project.key)}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected || false}
-                          readOnly
-                          style={{ marginRight: '12px', cursor: 'pointer', pointerEvents: 'none' }}
-                        />
-                        <div>
-                          <strong>{project.key}</strong> - {project.name}
-                        </div>
-                      </div>
-                    );
-                  })}
+                {scheduledStats.lastRun ? (
+                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Last Run:</strong> {new Date(scheduledStats.lastRun).toLocaleString()}
+                    </p>
+                    <p style={{ margin: '4px 0' }}>
+                      <strong>Time Ago:</strong> {Math.round((Date.now() - new Date(scheduledStats.lastRun).getTime()) / 1000 / 60)} minutes ago
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <p style={{ margin: 0 }}>No scheduled sync has run yet. First run will occur within 1 hour of deployment.</p>
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Checked</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesChecked || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Created</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesCreated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#00875A' }}>Issues Updated</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesUpdated || 0}</p>
+                  </div>
+
+                  <div style={{ padding: '16px', background: '#fff4e6', borderRadius: '3px' }}>
+                    <h4 style={{ marginTop: 0, fontSize: '14px', color: '#FF8B00' }}>Issues Skipped</h4>
+                    <p style={{ fontSize: '28px', fontWeight: 'bold', margin: 0 }}>{scheduledStats.issuesSkipped || 0}</p>
+                  </div>
                 </div>
 
-                <Button appearance="primary" onClick={handleSaveProjectFilter} isLoading={saving}>
-                  Save Project Filter
-                </Button>
-              </>
+                {scheduledStats.errors && scheduledStats.errors.length > 0 && (
+                  <div style={{ padding: '16px', background: '#ffebe6', borderRadius: '3px', marginBottom: '16px' }}>
+                    <h4 style={{ marginTop: 0, color: '#DE350B' }}>Recent Scheduled Sync Errors ({scheduledStats.errors.length})</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                      {scheduledStats.errors.slice(0, 5).map((error, index) => (
+                        <li key={index} style={{ fontSize: '13px', marginBottom: '4px' }}>{error}</li>
+                      ))}
+                    </ul>
+                    {scheduledStats.errors.length > 5 && (
+                      <p style={{ fontSize: '12px', color: '#6B778C', marginTop: '8px', marginBottom: 0 }}>
+                        ... and {scheduledStats.errors.length - 5} more errors
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ marginTop: '16px', padding: '12px', background: '#f4f5f7', borderRadius: '3px' }}>
+                  <p style={{ fontSize: '12px', color: '#6B778C', margin: 0 }}>
+                    <strong>Success Rate:</strong> {scheduledStats.issuesChecked > 0
+                      ? `${Math.round(((scheduledStats.issuesCreated + scheduledStats.issuesUpdated) / scheduledStats.issuesChecked) * 100)}%`
+                      : 'N/A'}
+                  </p>
+                </div>
+              </div>
             )}
 
-            {localProjects.length === 0 && (!config.allowedProjects || config.allowedProjects.length === 0) && (
-              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>
-                Click "Load Projects" to see available projects
-              </p>
+            {(!webhookStats && !scheduledStats) && !statsLoading && (
+              <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px' }}>
+                <p style={{ margin: 0, color: '#6B778C' }}>Click "Refresh Stats" to load sync statistics.</p>
+              </div>
             )}
           </div>
-        )}
-      </div>
 
-      <div style={sectionStyle}>
-        <div
-          style={collapsibleHeaderStyle}
-          onClick={() => setAuditLogOpen(!auditLogOpen)}
-        >
-          <span>Audit Log (Last 100 Syncs)</span>
-          <span>{auditLogOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {auditLogOpen && (
-          <div style={{ marginTop: '16px' }}>
+          <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
+            <h3>Audit Log (Last 100 Syncs)</h3>
             <p style={{ marginBottom: '16px', color: '#6B778C' }}>
               View recent sync operations with timestamps and results.
             </p>
@@ -1134,248 +1376,8 @@ function App() {
               </div>
             )}
           </div>
-        )}
-      </div>
-
-      <div style={sectionStyle}>
-        <div
-          style={collapsibleHeaderStyle}
-          onClick={() => setUserMappingOpen(!userMappingOpen)}
-        >
-          <span>User Mapping ({Object.keys(userMappings).length})</span>
-          <span>{userMappingOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {userMappingOpen && (
-          <div style={{ marginTop: '16px' }}>
-            <h4>Add User Mapping</h4>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                Remote User
-              </label>
-              <select
-                value={newUserRemote}
-                onChange={(e) => setNewUserRemote(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="">Select remote user...</option>
-                {remoteUsers.map(user => (
-                  <option key={user.accountId} value={user.accountId}>
-                    {user.displayName}{user.emailAddress ? ` (${user.emailAddress})` : ''}
-                  </option>
-                ))}
-              </select>
-
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                Local User
-              </label>
-              <select
-                value={newUserLocal}
-                onChange={(e) => setNewUserLocal(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="">Select local user...</option>
-                {localUsers.map(user => (
-                  <option key={user.accountId} value={user.accountId}>
-                    {user.displayName}{user.emailAddress ? ` (${user.emailAddress})` : ''}
-                  </option>
-                ))}
-              </select>
-
-              <Button appearance="primary" onClick={addUserMapping}>
-                Add Mapping
-              </Button>
-            </div>
-
-            <h4>Current Mappings</h4>
-            {Object.keys(userMappings).length === 0 && (
-              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No user mappings yet</p>
-            )}
-            {Object.entries(userMappings).map(([remoteId, mapping]) => {
-              const localId = typeof mapping === 'string' ? mapping : mapping.localId;
-              const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
-              const localName = typeof mapping === 'object' ? mapping.localName : localId;
-              
-              return (
-                <div key={remoteId} style={mappingItemStyle}>
-                  <span>
-                    <strong>{remoteName}</strong> → {localName}
-                  </span>
-                  <Button appearance="subtle" onClick={() => deleteUserMapping(remoteId)}>
-                    Delete
-                  </Button>
-                </div>
-              );
-            })}
-
-            <div style={{ marginTop: '16px' }}>
-              <Button appearance="primary" onClick={handleSaveUserMappings} isLoading={saving}>
-                Save User Mappings
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div style={sectionStyle}>
-        <div 
-          style={collapsibleHeaderStyle}
-          onClick={() => setFieldMappingOpen(!fieldMappingOpen)}
-        >
-          <span>Field Mapping ({Object.keys(fieldMappings).length})</span>
-          <span>{fieldMappingOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {fieldMappingOpen && (
-          <div style={{ marginTop: '16px' }}>
-            <h4>Add Field Mapping</h4>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                Remote Field
-              </label>
-              <select
-                value={newFieldRemote}
-                onChange={(e) => setNewFieldRemote(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="">Select remote field...</option>
-                {remoteFields.map(field => (
-                  <option key={field.id} value={field.id}>
-                    {field.name} ({field.id})
-                  </option>
-                ))}
-              </select>
-
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                Local Field
-              </label>
-              <select
-                value={newFieldLocal}
-                onChange={(e) => setNewFieldLocal(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="">Select local field...</option>
-                {localFields.map(field => (
-                  <option key={field.id} value={field.id}>
-                    {field.name} ({field.id})
-                  </option>
-                ))}
-              </select>
-
-              <Button appearance="primary" onClick={addFieldMapping}>
-                Add Mapping
-              </Button>
-            </div>
-
-            <h4>Current Mappings</h4>
-            {Object.keys(fieldMappings).length === 0 && (
-              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No field mappings yet</p>
-            )}
-            {Object.entries(fieldMappings).map(([remoteId, mapping]) => {
-              const localId = typeof mapping === 'string' ? mapping : mapping.localId;
-              const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
-              const localName = typeof mapping === 'object' ? mapping.localName : localId;
-              
-              return (
-                <div key={remoteId} style={mappingItemStyle}>
-                  <span>
-                    <strong>{remoteName}</strong> → {localName}
-                  </span>
-                  <Button appearance="subtle" onClick={() => deleteFieldMapping(remoteId)}>
-                    Delete
-                  </Button>
-                </div>
-              );
-            })}
-
-            <div style={{ marginTop: '16px' }}>
-              <Button appearance="primary" onClick={handleSaveFieldMappings} isLoading={saving}>
-                Save Field Mappings
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div style={sectionStyle}>
-        <div 
-          style={collapsibleHeaderStyle}
-          onClick={() => setStatusMappingOpen(!statusMappingOpen)}
-        >
-          <span>Status Mapping ({Object.keys(statusMappings).length})</span>
-          <span>{statusMappingOpen ? '▼' : '▶'}</span>
-        </div>
-
-        {statusMappingOpen && (
-          <div style={{ marginTop: '16px' }}>
-            <h4>Add Status Mapping</h4>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                Remote Status
-              </label>
-              <select
-                value={newStatusRemote}
-                onChange={(e) => setNewStatusRemote(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="">Select remote status...</option>
-                {remoteStatuses.map(status => (
-                  <option key={status.id} value={status.id}>
-                    {status.name}
-                  </option>
-                ))}
-              </select>
-
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                Local Status
-              </label>
-              <select
-                value={newStatusLocal}
-                onChange={(e) => setNewStatusLocal(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="">Select local status...</option>
-                {localStatuses.map(status => (
-                  <option key={status.id} value={status.id}>
-                    {status.name}
-                  </option>
-                ))}
-              </select>
-
-              <Button appearance="primary" onClick={addStatusMapping}>
-                Add Mapping
-              </Button>
-            </div>
-
-            <h4>Current Mappings</h4>
-            {Object.keys(statusMappings).length === 0 && (
-              <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No status mappings yet</p>
-            )}
-            {Object.entries(statusMappings).map(([remoteId, mapping]) => {
-              const localId = typeof mapping === 'string' ? mapping : mapping.localId;
-              const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
-              const localName = typeof mapping === 'object' ? mapping.localName : localId;
-              
-              return (
-                <div key={remoteId} style={mappingItemStyle}>
-                  <span>
-                    <strong>{remoteName}</strong> → {localName}
-                  </span>
-                  <Button appearance="subtle" onClick={() => deleteStatusMapping(remoteId)}>
-                    Delete
-                  </Button>
-                </div>
-              );
-            })}
-
-            <div style={{ marginTop: '16px' }}>
-              <Button appearance="primary" onClick={handleSaveStatusMappings} isLoading={saving}>
-                Save Status Mappings
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
+        </TabPanel>
+      </Tabs>
     </div>
   );
 }
