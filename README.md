@@ -2,7 +2,7 @@
 
 Production-ready Atlassian Forge app for real-time one-way synchronization between two Jira Cloud organizations.
 
-## ✨ Features
+## Features
 
 ### Core Sync Capabilities
 ✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
@@ -22,15 +22,15 @@ Production-ready Atlassian Forge app for real-time one-way synchronization betwe
 ✅ **Infinite loop prevention** - Safe one-way architecture with sync detection  
 
 ### Admin Interface
-🎛️ **Collapsible UI sections** - Clean, organized configuration
-🔄 **Live data loading** - Fetch users, fields, statuses, projects from both orgs
-📋 **Visual mapping management** - Add/delete mappings with real names
-🎯 **Project filter selector** - Multi-select checkboxes to choose which projects to sync
-🔧 **Manual sync controls** - Force sync specific issues + clear error history
-📊 **Sync health dashboard** - Real-time webhook stats + scheduled bulk sync stats
-💾 **Persistent storage** - All configurations saved in Forge storage  
+**Collapsible UI sections** - Clean, organized configuration
+**Live data loading** - Fetch users, fields, statuses, projects from both orgs
+**Visual mapping management** - Add/delete mappings with real names
+**Project filter selector** - Multi-select checkboxes to choose which projects to sync
+**Manual sync controls** - Force sync specific issues + clear error history
+**Sync health dashboard** - Real-time webhook stats + scheduled bulk sync stats
+**Persistent storage** - All configurations saved in Forge storage  
 
-## 🚀 Installation
+## Installation
 
 ### Prerequisites
 - Node.js 20.x or 22.x
@@ -164,7 +164,7 @@ Take manual control when needed:
 2. Enter issue key and click "Sync Now" for on-demand sync
 3. Click error clear buttons to reset error history
 
-## 🏗️ Architecture
+## Architecture
 
 ### File Structure
 ```
@@ -231,7 +231,7 @@ SyncApp/
 - Any custom field via field mapping
 - Sprint fields (with automatic ID extraction)
 
-## 🔧 Development
+## Development
 
 ### Build React UI
 ```bash
@@ -255,7 +255,7 @@ forge logs
 forge tunnel
 ```
 
-## 📋 Configuration
+## Configuration
 
 ### Remote Jira Setup
 1. Get API token: https://id.atlassian.com/manage-profile/security/api-tokens
@@ -270,7 +270,7 @@ forge tunnel
 2. **Auto-selection** - First items auto-selected for quick mapping
 3. **Save required** - Must click "Save" buttons to persist mappings
 
-## 🚦 Current Status
+## Current Status
 
 ### Phase 1: Complete ✅
 - ✅ One-way sync (Org A → Org B)
@@ -308,7 +308,7 @@ forge tunnel
 - 🔮 **Loop detection mechanism** - Prevent infinite sync loops
 - 🔮 **Conflict resolution** - Last-write-wins vs manual merge strategies
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Issues not syncing?
 - **Check Sync Health Dashboard** - Open admin UI → "Sync Health & Statistics" → "Refresh Stats"
@@ -369,7 +369,7 @@ forge tunnel
 - Jira UI may cache and delay display
 - Hard refresh (Ctrl+Shift+R) to force update
 
-## 📚 Documentation
+## Documentation
 
 See `/docs` folder for detailed documentation:
 - `ARCHITECTURE.md` - System design & data flow
@@ -379,11 +379,11 @@ See `/docs` folder for detailed documentation:
 - `TROUBLESHOOTING.md` - Common issues
 - `CONTRIBUTING.md` - Contribution guidelines
 
-## 📄 License
+## License
 
 MIT License - See LICENSE file
 
-## 🙋 Support
+## Support
 
 - **GitHub Issues:** https://github.com/SerdarAbali/jira-sync-connector/issues
 - **Forge Docs:** https://developer.atlassian.com/platform/forge/
