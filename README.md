@@ -5,21 +5,21 @@ Production-ready Atlassian Forge app for real-time one-way synchronization betwe
 ## Features
 
 ### Core Sync Capabilities
-✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
-✅ **Issue creation & updates** - Summary, description, priority, labels, due date
-✅ **Status synchronization** - Configurable status mappings with transitions
-✅ **Epic/Parent relationships** - Preserves hierarchy across orgs
-✅ **Comment sync** - With author attribution: `[Comment from orgname - User: Name]`
-✅ **Attachment sync** - Binary file transfer with 10MB limit and duplicate prevention
-✅ **Issue Links** - Syncs all link types (blocks, relates to, duplicates, etc.)
-✅ **Components** - Component sync with clearing support
-✅ **Fix Versions** - Version sync with clearing support
-✅ **Affects Versions** - Affected version sync with clearing support
-✅ **Time Tracking** - Original estimate and remaining estimate sync
-✅ **Custom field mapping** - Map custom fields (including sprints) between organizations
-✅ **User mapping** - Map assignee & reporter between organizations
-✅ **Project filtering** - Selectively sync specific projects/spaces via admin UI
-✅ **Infinite loop prevention** - Safe one-way architecture with sync detection  
+-✅ **Dual sync strategy** - Real-time webhooks + hourly scheduled bulk sync
+-✅ **Issue creation & updates** - Summary, description, priority, labels, due date
+-✅ **Status synchronization** - Configurable status mappings with transitions
+-✅ **Epic/Parent relationships** - Preserves hierarchy across orgs
+-✅ **Comment sync** - With author attribution: `[Comment from orgname - User: Name]`
+-✅ **Attachment sync** - Binary file transfer with 10MB limit and duplicate prevention
+-✅ **Issue Links** - Syncs all link types (blocks, relates to, duplicates, etc.)
+-✅ **Components** - Component sync with clearing support
+-✅ **Fix Versions** - Version sync with clearing support
+-✅ **Affects Versions** - Affected version sync with clearing support
+-✅ **Time Tracking** - Original estimate and remaining estimate sync
+-✅ **Custom field mapping** - Map custom fields (including sprints) between organizations
+-✅ **User mapping** - Map assignee & reporter between organizations
+-✅ **Project filtering** - Selectively sync specific projects/spaces via admin UI
+-✅ **Infinite loop prevention** - Safe one-way architecture with sync detection  
 
 ### Admin Interface
 **Collapsible UI sections** - Clean, organized configuration
