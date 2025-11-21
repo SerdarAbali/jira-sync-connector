@@ -1,5 +1,5 @@
 import Resolver from '@forge/resolver';
-import api, { route, storage, fetch } from '@forge/api';
+import api, { route, storage, fetch, startsWith } from '@forge/api';
 import {
   MAX_RETRY_ATTEMPTS,
   RETRY_BASE_DELAY_MS,

@@ -1,9 +1,18 @@
 {
-  "name": "jira-issue-panel-custom-ui",
+  "name": "jira-sync-connector",
   "version": "1.2.20",
+  "type": "module",
   "main": "index.js",
   "license": "MIT",
   "private": true,
+  "scripts": {
+    "lint": "eslint src/**/*.js",
+    "lint:fix": "eslint src/**/*.js --fix",
+    "build:ui": "cd static/admin-page && npm run build",
+    "deploy": "forge deploy",
+    "logs": "forge logs",
+    "tunnel": "forge tunnel"
+  },
   "devDependencies": {
     "eslint": "^8.56.0",
     "eslint-plugin-react-hooks": "^4.6.0"
