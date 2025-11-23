@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Forge
+.forge/
+.tunnel/
+
+# Environment files (contains sensitive data!)
+.env
+.env.local
+*.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build outputs
+dist/
+build/
+static/admin-page/.parcel-cache/
+static/admin-page/package-lock.json

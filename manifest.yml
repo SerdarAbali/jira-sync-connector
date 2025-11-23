@@ -1,0 +1,78 @@
+modules:
+  jira:adminPage:
+    - key: sync-connector-admin
+      resource: admin-ui
+      resolver:
+        function: resolver
+      title: Sync Connector Configuration
+
+  trigger:
+    - key: issue-created
+      function: sync-trigger
+      events:
+        - avi:jira:created:issue
+
+    - key: issue-updated
+      function: sync-trigger
+      events:
+        - avi:jira:updated:issue
+
+    - key: issue-commented
+      function: comment-trigger
+      events:
+        - avi:jira:commented:issue
+
+    - key: issue-link-created
+      function: link-trigger
+      events:
+        - avi:jira-issue-link:created
+
+  scheduledTrigger:
+    - key: scheduled-sync
+      interval: hour
+      function: scheduled-sync-function
+
+  function:
+    - key: sync-trigger
+      handler: index.run
+
+    - key: comment-trigger
+      handler: index.runComment
+
+    - key: link-trigger
+      handler: index.runLinkCreated
+
+    - key: scheduled-sync-function
+      handler: index.runScheduledSync
+
+    - key: resolver
+      handler: index.handler
+
+resources:
+  - key: admin-ui
+    path: static/admin-page/build
+
+app:
+  id: ari:cloud:ecosystem::app/362d8e6b-b68c-4403-8020-d32ddcc02716
+  name: jira-sync-connector
+  runtime:
+    name: nodejs20.x
+
+permissions:
+  scopes:
+    - storage:app
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+    - read:comment:jira
+    - write:comment:jira
+    - read:issue-link:jira
+    - write:issue-link:jira
+    - read:issue-meta:jira
+    - read:project:jira
+  external:
+    fetch:
+      backend:
+        - '*.atlassian.net'
+  content:
+    styles: []

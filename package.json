@@ -1,0 +1,26 @@
+{
+  "name": "jira-sync-connector",
+  "version": "1.2.20",
+  "description": "Production-ready Atlassian Forge app for real-time one-way synchronization between two Jira Cloud organizations",
+  "main": "src/index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "deploy": "forge deploy",
+    "install": "forge install",
+    "tunnel": "forge tunnel",
+    "logs": "forge logs --tail",
+    "lint": "eslint src/"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "eslint-plugin-react-hooks": "^4.6.0"
+  },
+  "dependencies": {
+    "@forge/resolver": "1.7.1",
+    "@forge/api": "6.2.0"
+  }
+}
