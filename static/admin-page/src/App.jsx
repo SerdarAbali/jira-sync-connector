@@ -705,6 +705,10 @@ const MappingsPanel = ({
     const itemKey = type === 'user' ? 'accountId' : 'id';
     const itemLabel = type === 'user' ? (item) => `${item.displayName}${item.emailAddress ? ` (${item.emailAddress})` : ''}` : (item) => `${item.name}`;
 
+    // Sort items alphabetically
+    const sortedRemoteItems = [...remoteItems].sort((a, b) => itemLabel(a).localeCompare(itemLabel(b)));
+    const sortedLocalItems = [...localItems].sort((a, b) => itemLabel(a).localeCompare(itemLabel(b)));
+
     return (
       <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
         <h4 style={{ margin: '0 0 16px 0' }}>{title} ({Object.keys(mappings).length})</h4>
@@ -713,15 +717,15 @@ const MappingsPanel = ({
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '8px', marginBottom: '16px' }}>
               <Select
-                options={remoteItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
-                value={remoteItems.find(i => i[itemKey] === newRemote) ? { label: itemLabel(remoteItems.find(i => i[itemKey] === newRemote)), value: newRemote } : null}
+                options={sortedRemoteItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
+                value={sortedRemoteItems.find(i => i[itemKey] === newRemote) ? { label: itemLabel(sortedRemoteItems.find(i => i[itemKey] === newRemote)), value: newRemote } : null}
                 onChange={(option) => setNewRemote(option?.value || '')}
                 placeholder={remotePlaceholder}
                 isClearable
               />
               <Select
-                options={localItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
-                value={localItems.find(i => i[itemKey] === newLocal) ? { label: itemLabel(localItems.find(i => i[itemKey] === newLocal)), value: newLocal } : null}
+                options={sortedLocalItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
+                value={sortedLocalItems.find(i => i[itemKey] === newLocal) ? { label: itemLabel(sortedLocalItems.find(i => i[itemKey] === newLocal)), value: newLocal } : null}
                 onChange={(option) => setNewLocal(option?.value || '')}
                 placeholder={localPlaceholder}
                 isClearable
@@ -930,11 +934,35 @@ const SyncActivityPanel = ({
               {syncStats.webhook.errors && syncStats.webhook.errors.length > 0 && (
                 <div style={{ marginTop: '16px' }}>
                   <h5 style={{ color: '#DE350B' }}>Recent Errors ({syncStats.webhook.errors.length}):</h5>
-                  <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                  <div style={{ maxHeight: '300px', overflow: 'auto' }}>
                     {syncStats.webhook.errors.slice(0, 10).map((err, idx) => (
-                      <div key={idx} style={{ padding: '8px', background: '#FFEBE6', borderRadius: '3px', marginBottom: '4px', fontSize: '12px' }}>
-                        <div><strong>{new Date(err.timestamp).toLocaleString()}</strong></div>
-                        <div>{err.error}</div>
+                      <div key={idx} style={{ padding: '12px', background: '#FFEBE6', borderRadius: '3px', marginBottom: '8px', fontSize: '12px', border: '1px solid #DE350B' }}>
+                        <div style={{ marginBottom: '8px' }}>
+                          <strong style={{ fontSize: '13px' }}>{new Date(err.timestamp).toLocaleString()}</strong>
+                        </div>
+                        <div style={{ marginBottom: '4px' }}>
+                          <strong>Error:</strong> {err.error}
+                        </div>
+                        {err.issueKey && (
+                          <div style={{ marginBottom: '4px' }}>
+                            <strong>Issue:</strong> {err.issueKey}
+                          </div>
+                        )}
+                        {err.orgId && (
+                          <div style={{ marginBottom: '4px' }}>
+                            <strong>Organization:</strong> {organizations.find(o => o.id === err.orgId)?.name || err.orgId}
+                          </div>
+                        )}
+                        {err.operation && (
+                          <div style={{ marginBottom: '4px' }}>
+                            <strong>Operation:</strong> {err.operation}
+                          </div>
+                        )}
+                        {err.details && (
+                          <div style={{ marginTop: '8px', padding: '8px', background: '#FFF', borderRadius: '3px', fontSize: '11px', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {typeof err.details === 'string' ? err.details : JSON.stringify(err.details, null, 2)}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
