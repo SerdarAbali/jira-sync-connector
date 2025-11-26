@@ -8,15 +8,44 @@ import Tabs, { Tab, TabList, TabPanel } from '@atlaskit/tabs';
 import Select from '@atlaskit/select';
 import Spinner from '@atlaskit/spinner';
 import SectionMessage from '@atlaskit/section-message';
+import Checkbox from '@atlaskit/checkbox';
+import ModalDialog, { ModalTransition } from '@atlaskit/modal-dialog';
+import Lozenge from '@atlaskit/lozenge';
+import { token } from '@atlaskit/tokens';
 import '@atlaskit/css-reset';
 import ErrorBoundary from './components/ErrorBoundary';
+
+const surfaceCard = (overrides = {}) => ({
+  background: token('color.background.neutral', '#FFFFFF'),
+  borderRadius: token('border.radius', '8px'),
+  border: `1px solid ${token('color.border', '#DFE1E6')}`,
+  boxShadow: token('elevation.shadow.raised', '0 1px 2px rgba(9, 30, 66, 0.15)'),
+  padding: token('space.300', '24px'),
+  ...overrides
+});
+
+const lozengeButtonStyle = {
+  borderRadius: token('border.radius', '4px'),
+  border: `1px solid ${token('color.border.brand', '#4C9AFF')}`,
+  background: token('color.background.neutral', '#FFFFFF'),
+  color: token('color.text', '#172B4D'),
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
+  fontSize: '11px',
+  fontWeight: 700,
+  padding: `0 ${token('space.150', '12px')}`,
+  height: '28px',
+  lineHeight: '26px',
+  boxShadow: 'none'
+};
+
 
 const App = () => {
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(null);
 
   // Add/Edit org modal state
   const [showOrgModal, setShowOrgModal] = useState(false);
@@ -165,7 +194,7 @@ const App = () => {
 
   const showMessage = (msg, type = 'success') => {
     setMessage({ text: msg, type });
-    setTimeout(() => setMessage(''), 5000);
+    setTimeout(() => setMessage(null), 5000);
   };
 
   const handleSaveOrg = async (data) => {
@@ -388,27 +417,30 @@ const App = () => {
 
   const selectedOrg = organizations.find(o => o.id === selectedOrgId);
 
-  const CONTENT_HORIZONTAL_PADDING = 32;
+  const contentHorizontalPadding = token('space.500', '40px');
+  const canvasBackground = token('color.background.canvas', '#F7F8F9');
+  const borderColor = token('color.border', '#DFE1E6');
   const tabPanelContainerStyle = {
-    padding: '20px 0 32px',
+    padding: `${token('space.300', '24px')} 0 ${token('space.500', '40px')}`,
     width: '100%',
     boxSizing: 'border-box'
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: canvasBackground }}>
       {/* Top Header with Organization Selector */}
       <div style={{
-        background: '#F4F5F7',
-        borderBottom: '2px solid #DFE1E6',
-        padding: '12px 20px',
+        background: token('color.background.neutral', '#FFFFFF'),
+        borderBottom: `1px solid ${borderColor}`,
+        padding: `${token('space.200', '16px')} ${token('space.400', '32px')}`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         flexWrap: 'wrap',
-        gap: '12px'
+        gap: token('space.200', '16px'),
+        boxShadow: token('elevation.shadow.raised', '0 2px 4px rgba(9, 30, 66, 0.13)')
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, minWidth: '300px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: token('space.200', '16px'), flex: 1, minWidth: '320px' }}>
           <h3 style={{ margin: 0, fontSize: '18px' }}>Jira Sync Connector</h3>
           <div style={{ width: '250px' }}>
             <Select
@@ -426,11 +458,11 @@ const App = () => {
             />
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'center' }}>
           <Button
-            appearance="primary"
+            appearance="subtle"
             onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
-            compact
+            style={lozengeButtonStyle}
           >
             + Add Org
           </Button>
@@ -438,12 +470,13 @@ const App = () => {
       </div>
 
       {/* Main Content */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: canvasBackground }}>
         {message && (
-          <div style={{ padding: '12px 20px', background: message.type === 'error' ? '#FFEBE6' : '#E3FCEF', borderBottom: '1px solid #DFE1E6' }}>
-            <div style={{ color: message.type === 'error' ? '#DE350B' : '#00875A', fontSize: '14px' }}>
-              {message.text}
-            </div>
+          <div style={{ padding: token('space.200', '16px') }}>
+            <SectionMessage
+              appearance={message.type === 'error' ? 'error' : 'success'}
+              title={message.text}
+            />
           </div>
         )}
 
@@ -456,8 +489,9 @@ const App = () => {
                 Get started by adding your first organization.
               </p>
               <Button
-                appearance="primary"
+                appearance="subtle"
                 onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
+                style={lozengeButtonStyle}
               >
                 Add Your First Organization
               </Button>
@@ -466,24 +500,29 @@ const App = () => {
         ) : (
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {/* Organization Header */}
-            <div style={{ padding: '20px', borderBottom: '2px solid #DFE1E6', background: 'white' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
+            <div style={{ padding: `${token('space.300', '24px')} ${contentHorizontalPadding}` }}>
+              <div style={surfaceCard({ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: token('space.300', '24px') })}>
+                <div style={{ flex: 1 }}>
                   <h2 style={{ margin: '0 0 8px 0' }}>{selectedOrg.name}</h2>
-                  <div style={{ color: '#6B778C', fontSize: '14px' }}>
-                    {selectedOrg.remoteUrl || 'Not configured'}
+                  <div style={{ color: '#6B778C', fontSize: '14px', display: 'flex', alignItems: 'center', gap: token('space.150', '12px') }}>
+                    <Lozenge appearance={selectedOrg.remoteUrl ? 'success' : 'removed'} isBold>
+                      {selectedOrg.remoteUrl ? 'Connected' : 'Not Configured'}
+                    </Lozenge>
+                    <span>{selectedOrg.remoteUrl || 'Add Jira details to start syncing.'}</span>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: token('space.150', '12px') }}>
                   <Button
-                    appearance="default"
+                    appearance="subtle"
                     onClick={() => { setEditingOrg(selectedOrg); setShowOrgModal(true); }}
+                    style={lozengeButtonStyle}
                   >
                     Edit
                   </Button>
                   <Button
-                    appearance="danger"
+                    appearance="subtle"
                     onClick={() => handleDeleteOrg(selectedOrgId)}
+                    style={lozengeButtonStyle}
                   >
                     Delete
                   </Button>
@@ -492,13 +531,14 @@ const App = () => {
             </div>
 
             {/* Tabs */}
-            <div style={{ padding: `0 ${CONTENT_HORIZONTAL_PADDING}px` }}>
+            <div style={{ padding: `0 ${contentHorizontalPadding}` }}>
               <Tabs id="org-tabs">
                 <TabList
                   style={{
-                    padding: 0,
-                    background: 'white',
-                    borderBottom: '1px solid #DFE1E6'
+                    padding: `0 0 ${token('space.100', '8px')} 0`,
+                    background: 'transparent',
+                    borderBottom: `1px solid ${borderColor}`,
+                    gap: token('space.200', '16px')
                   }}
                 >
                   <Tab>Sync Activity</Tab>
@@ -572,14 +612,16 @@ const App = () => {
       </div>
 
       {/* Org Modal */}
-      {showOrgModal && (
-        <OrgModal
-          editingOrg={editingOrg}
-          onClose={() => { setShowOrgModal(false); setEditingOrg(null); }}
-          onSave={handleSaveOrg}
-          saving={saving}
-        />
-      )}
+      <ModalTransition>
+        {showOrgModal && (
+          <OrgModal
+            editingOrg={editingOrg}
+            onClose={() => { setShowOrgModal(false); setEditingOrg(null); }}
+            onSave={handleSaveOrg}
+            saving={saving}
+          />
+        )}
+      </ModalTransition>
     </div>
   );
 };
@@ -591,111 +633,147 @@ const ConfigurationPanel = ({
   setSyncOptions, handleSaveSyncOptions, saving
 }) => {
   const [projectsExpanded, setProjectsExpanded] = useState(false);
-  const cardGridStyle = {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
-    gap: '20px',
-    alignItems: 'start'
+  const gridGap = token('space.300', '24px');
+
+  const toggleProjects = () => {
+    const next = !projectsExpanded;
+    setProjectsExpanded(next);
+    if (next && localProjects.length === 0) {
+      loadProjects();
+    }
+  };
+
+  const renderProjectCard = (project) => {
+    const isSelected = selectedOrg.allowedProjects?.includes(project.key);
+    return (
+      <div
+        key={project.key}
+        onClick={() => toggleProjectSelection(project.key)}
+        style={{
+          padding: token('space.200', '16px'),
+          background: isSelected
+            ? token('color.background.accent.green.subtler', '#E3FCEF')
+            : token('color.background.neutral.subtle', '#F4F5F7'),
+          border: `2px solid ${isSelected ? token('color.border.accent.green', '#00875A') : 'transparent'}`,
+          borderRadius: token('border.radius', '8px'),
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: token('space.150', '12px'),
+          fontSize: '13px'
+        }}
+      >
+        <Checkbox
+          isChecked={isSelected}
+          onChange={(event) => {
+            event.stopPropagation();
+            toggleProjectSelection(project.key);
+          }}
+          label=""
+          name={`project-${project.key}`}
+          aria-label={`${project.key} ${project.name}`}
+        />
+        <div>
+          <strong>{project.key}</strong>
+          <div style={{ color: '#6B778C', fontSize: '12px' }}>{project.name}</div>
+        </div>
+      </div>
+    );
   };
 
   return (
     <div style={{ width: '100%' }}>
-      <div style={cardGridStyle}>
-        {/* Connection Info */}
-        <div style={{ padding: '16px', background: '#F4F5F7', borderRadius: '3px' }}>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+        gap: gridGap,
+        alignItems: 'start'
+      }}>
+        <div style={surfaceCard()}>
           <h4 style={{ margin: '0 0 12px 0' }}>Connection Settings</h4>
-          <div style={{ fontSize: '13px', color: '#6B778C' }}>
-            <div><strong>URL:</strong> {selectedOrg.remoteUrl}</div>
-            <div><strong>Email:</strong> {selectedOrg.remoteEmail}</div>
-            <div><strong>Project Key:</strong> {selectedOrg.remoteProjectKey}</div>
-          </div>
+          <dl style={{
+            margin: 0,
+            display: 'grid',
+            gridTemplateColumns: '120px 1fr',
+            rowGap: token('space.100', '8px'),
+            columnGap: token('space.150', '12px'),
+            fontSize: '13px',
+            color: '#6B778C'
+          }}>
+            <dt style={{ fontWeight: 600 }}>URL</dt>
+            <dd style={{ margin: 0 }}>{selectedOrg.remoteUrl || '—'}</dd>
+            <dt style={{ fontWeight: 600 }}>Email</dt>
+            <dd style={{ margin: 0 }}>{selectedOrg.remoteEmail || '—'}</dd>
+            <dt style={{ fontWeight: 600 }}>Project</dt>
+            <dd style={{ margin: 0 }}>{selectedOrg.remoteProjectKey || '—'}</dd>
+          </dl>
         </div>
 
-        {/* Sync Options */}
-        <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px' }}>
-          <h4 style={{ margin: '0 0 16px 0' }}>Sync Options</h4>
-          {[
-            { key: 'syncComments', label: 'Sync Comments' },
-            { key: 'syncAttachments', label: 'Sync Attachments' },
-            { key: 'syncLinks', label: 'Sync Issue Links' },
-            { key: 'syncSprints', label: 'Sync Sprints' }
-          ].map(option => (
-            <label key={option.key} style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={syncOptions[option.key]}
-                onChange={(e) => setSyncOptions({ ...syncOptions, [option.key]: e.target.checked })}
-                style={{ marginRight: '8px', cursor: 'pointer' }}
+        <div style={surfaceCard({ display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') })}>
+          <h4 style={{ margin: 0 }}>Sync Options</h4>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
+            {[
+              { key: 'syncComments', label: 'Sync Comments' },
+              { key: 'syncAttachments', label: 'Sync Attachments' },
+              { key: 'syncLinks', label: 'Sync Issue Links' },
+              { key: 'syncSprints', label: 'Sync Sprints' }
+            ].map(option => (
+              <Checkbox
+                key={option.key}
+                label={option.label}
+                name={option.key}
+                isChecked={!!syncOptions[option.key]}
+                onChange={(event) => setSyncOptions({ ...syncOptions, [option.key]: event.target.checked })}
               />
-              <span style={{ fontSize: '14px' }}>{option.label}</span>
-            </label>
-          ))}
+            ))}
+          </div>
           <Button
-            appearance="primary"
+            appearance="subtle"
             onClick={handleSaveSyncOptions}
             isLoading={saving}
-            style={{ marginTop: '8px' }}
+            style={lozengeButtonStyle}
           >
             Save Sync Options
           </Button>
         </div>
 
-        {/* Project Filter */}
-        <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', gridColumn: '1 / -1' }}>
+        <div style={surfaceCard({ gridColumn: '1 / -1' })}>
           <div
-            onClick={() => { setProjectsExpanded(!projectsExpanded); if (!projectsExpanded && localProjects.length === 0) loadProjects(); }}
+            onClick={toggleProjects}
             style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
           >
-            <h4 style={{ margin: 0 }}>Project Filter ({selectedOrg.allowedProjects?.length || 0} selected)</h4>
-            <span>{projectsExpanded ? '▼' : '▶'}</span>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0' }}>Project Filter</h4>
+              <div style={{ color: '#6B778C', fontSize: '13px' }}>Control which projects participate in scheduled syncs.</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px') }}>
+              <Lozenge appearance="inprogress">
+                {selectedOrg.allowedProjects?.length || 0} selected
+              </Lozenge>
+              <span style={{ fontSize: '13px', color: '#6B778C' }}>{projectsExpanded ? 'Hide' : 'Show'}</span>
+            </div>
           </div>
 
           {projectsExpanded && (
-            <div style={{ marginTop: '16px' }}>
+            <div style={{ marginTop: token('space.200', '16px') }}>
               {dataLoading.projects ? (
-                <div style={{ textAlign: 'center', padding: '20px' }}><Spinner /></div>
+                <div style={{ textAlign: 'center', padding: token('space.300', '24px') }}><Spinner /></div>
               ) : localProjects.length === 0 ? (
-                <div style={{ color: '#6B778C', fontSize: '13px' }}>No projects loaded</div>
+                <div style={{ color: '#6B778C', fontSize: '13px' }}>No projects loaded yet.</div>
               ) : (
                 <>
                   <div style={{
                     display: 'grid',
                     gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-                    gap: '12px'
+                    gap: token('space.200', '16px')
                   }}>
-                    {localProjects.map(project => {
-                      const isSelected = selectedOrg.allowedProjects?.includes(project.key);
-                      return (
-                        <div
-                          key={project.key}
-                          onClick={() => toggleProjectSelection(project.key)}
-                          style={{
-                            padding: '10px 14px',
-                            background: isSelected ? '#E3FCEF' : '#F4F5F7',
-                            border: `2px solid ${isSelected ? '#00875A' : 'transparent'}`,
-                            borderRadius: '3px',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            fontSize: '13px'
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            readOnly
-                            style={{ marginRight: '8px', pointerEvents: 'none' }}
-                          />
-                          <strong>{project.key}</strong>&nbsp;- {project.name}
-                        </div>
-                      );
-                    })}
+                    {localProjects.map(renderProjectCard)}
                   </div>
                   <Button
-                    appearance="primary"
+                    appearance="subtle"
                     onClick={handleSaveProjectFilter}
                     isLoading={saving}
-                    style={{ marginTop: '12px' }}
+                    style={{ ...lozengeButtonStyle, marginTop: token('space.200', '16px') }}
                   >
                     Save Project Filter
                   </Button>
@@ -734,12 +812,12 @@ const MappingsPanel = ({
     const sortedLocalItems = [...localItems].sort((a, b) => itemLabel(a).localeCompare(itemLabel(b)));
 
     return (
-      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+      <div style={surfaceCard({ marginBottom: token('space.250', '20px') })}>
         <h4 style={{ margin: '0 0 16px 0' }}>{title} ({Object.keys(mappings).length})</h4>
 
         {hasData && (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '8px', marginBottom: '16px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: token('space.150', '12px'), marginBottom: token('space.200', '16px') }}>
               <Select
                 options={sortedRemoteItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
                 value={sortedRemoteItems.find(i => i[itemKey] === newRemote) ? { label: itemLabel(sortedRemoteItems.find(i => i[itemKey] === newRemote)), value: newRemote } : null}
@@ -755,15 +833,16 @@ const MappingsPanel = ({
                 isClearable
               />
               <Button
-                appearance="primary"
+                appearance="subtle"
                 onClick={() => { addMapping(type, newRemote, newLocal); setNewRemote(''); setNewLocal(''); }}
                 isDisabled={!newRemote || !newLocal}
+                style={lozengeButtonStyle}
               >
                 Add
               </Button>
             </div>
 
-            <div style={{ marginBottom: '16px' }}>
+            <div style={{ marginBottom: token('space.200', '16px') }}>
               {Object.keys(mappings).length === 0 ? (
                 <div style={{ color: '#6B778C', fontSize: '13px', fontStyle: 'italic' }}>No mappings yet</div>
               ) : (
@@ -775,8 +854,8 @@ const MappingsPanel = ({
                   return (
                     <div key={remoteId} style={{
                       padding: '8px 12px',
-                      background: '#F4F5F7',
-                      borderRadius: '3px',
+                      background: token('color.background.neutral.subtle', '#F4F5F7'),
+                      borderRadius: token('border.radius', '8px'),
                       marginBottom: '4px',
                       display: 'flex',
                       justifyContent: 'space-between',
@@ -784,14 +863,14 @@ const MappingsPanel = ({
                       fontSize: '13px'
                     }}>
                       <span><strong>{remoteName}</strong> → {localName}</span>
-                      <Button appearance="subtle" onClick={() => deleteMapping(type, remoteId)}>Delete</Button>
+                      <Button appearance="subtle" onClick={() => deleteMapping(type, remoteId)} style={lozengeButtonStyle}>Delete</Button>
                     </div>
                   );
                 })
               )}
             </div>
 
-            <Button appearance="primary" onClick={() => handleSaveMappings(type)} isLoading={saving}>
+            <Button appearance="subtle" onClick={() => handleSaveMappings(type)} isLoading={saving} style={lozengeButtonStyle}>
               Save {title}
             </Button>
           </>
@@ -802,21 +881,24 @@ const MappingsPanel = ({
 
   return (
     <div style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.250', '20px') }}>
         <h3>Mappings</h3>
         <Button
-          appearance="primary"
+          appearance="subtle"
           onClick={loadMappingData}
           isLoading={isLoading}
+          style={lozengeButtonStyle}
         >
           {hasData ? 'Reload Data' : 'Load Mapping Data'}
         </Button>
       </div>
 
       {!hasData && !isLoading && (
-        <SectionMessage appearance="info" title="Load mapping data first">
-          <p>Click "Load Mapping Data" to fetch users, fields, and statuses from both organizations.</p>
-        </SectionMessage>
+        <div style={surfaceCard()}>
+          <SectionMessage appearance="info" title="Load mapping data first">
+            <p>Click "Load Mapping Data" to fetch users, fields, and statuses from both organizations.</p>
+          </SectionMessage>
+        </div>
       )}
 
       {isLoading && (
@@ -824,7 +906,7 @@ const MappingsPanel = ({
       )}
 
       {hasData && (
-        <>
+        <div>
           <MappingSection
             title="User Mappings"
             type="user"
@@ -866,7 +948,7 @@ const MappingsPanel = ({
             newLocal={newStatusLocal}
             setNewLocal={setNewStatusLocal}
           />
-        </>
+        </div>
       )}
     </div>
   );
@@ -908,53 +990,50 @@ const SyncActivityPanel = ({
   };
 
   return (
-    <div style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <h3>Sync Activity</h3>
-        <Button appearance="default" onClick={loadStats} isLoading={statsLoading}>
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: token('space.300', '24px') }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h3 style={{ margin: 0 }}>Sync Activity</h3>
+          <p style={{ margin: '4px 0 0 0', color: '#6B778C', fontSize: '13px' }}>Monitor scheduled jobs, webhook throughput, and manual syncs.</p>
+        </div>
+        <Button appearance="subtle" onClick={loadStats} isLoading={statsLoading} style={lozengeButtonStyle}>
           Refresh Stats
         </Button>
       </div>
 
-      {/* Manual Sync */}
-      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
-        <h4 style={{ margin: '0 0 8px 0' }}>Manual Sync</h4>
-        <p style={{ fontSize: '13px', color: '#6B778C', marginBottom: '12px' }}>
-          Sync a specific issue to all {organizations.length} organization(s)
+      <div style={surfaceCard()}>
+        <h4 style={{ margin: '0 0 4px 0' }}>Manual Sync</h4>
+        <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 16px 0' }}>
+          Sync a specific issue to all <strong>{organizations.length}</strong> organization(s).
         </p>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <input
-            type="text"
-            value={manualIssueKey}
-            onChange={(e) => setManualIssueKey(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleManualSync()}
-            placeholder="e.g., PROJ-123"
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              border: '2px solid #DFE1E6',
-              borderRadius: '3px',
-              fontSize: '14px'
-            }}
-          />
+        <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <TextField
+              value={manualIssueKey}
+              onChange={(event) => setManualIssueKey(event.target.value)}
+              onKeyDown={(event) => event.key === 'Enter' && handleManualSync()}
+              placeholder="e.g., PROJ-123"
+              width="100%"
+            />
+          </div>
           <Button
-            appearance="primary"
+            appearance="subtle"
             onClick={handleManualSync}
             isLoading={manualSyncLoading}
             isDisabled={!manualIssueKey.trim()}
+            style={lozengeButtonStyle}
           >
             Sync Now
           </Button>
         </div>
       </div>
 
-      {/* Stats */}
       {syncStats && (
         <>
           {syncStats.webhook && (
-            <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+            <div style={surfaceCard()}>
               <h4 style={{ margin: '0 0 16px 0' }}>Webhook Sync Statistics</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px'), marginBottom: token('space.200', '16px') }}>
                 <StatCard label="Total Syncs" value={syncStats.webhook.totalSyncs || 0} color="#0052CC" />
                 <StatCard label="Issues Created" value={syncStats.webhook.issuesCreated || 0} color="#00875A" />
                 <StatCard label="Issues Updated" value={syncStats.webhook.issuesUpdated || 0} color="#0052CC" />
@@ -968,12 +1047,18 @@ const SyncActivityPanel = ({
               )}
 
               {syncStats.webhook.byOrg && Object.keys(syncStats.webhook.byOrg).length > 0 && (
-                <div style={{ marginTop: '16px' }}>
-                  <h5 style={{ marginBottom: '8px' }}>By Organization:</h5>
+                <div style={{ marginTop: token('space.200', '16px') }}>
+                  <h5 style={{ marginBottom: '8px' }}>By Organization</h5>
                   {Object.entries(syncStats.webhook.byOrg).map(([orgId, orgStats]) => {
                     const org = organizations.find(o => o.id === orgId);
                     return (
-                      <div key={orgId} style={{ padding: '8px', background: '#F4F5F7', borderRadius: '3px', marginBottom: '4px', fontSize: '13px' }}>
+                      <div key={orgId} style={{
+                        padding: token('space.150', '12px'),
+                        background: token('color.background.neutral.subtle', '#F4F5F7'),
+                        borderRadius: token('border.radius', '8px'),
+                        marginBottom: '4px',
+                        fontSize: '13px'
+                      }}>
                         <strong>{org?.name || orgId}</strong>: {orgStats.totalSyncs} syncs ({orgStats.issuesCreated} created, {orgStats.issuesUpdated} updated)
                       </div>
                     );
@@ -982,11 +1067,18 @@ const SyncActivityPanel = ({
               )}
 
               {syncStats.webhook.errors && syncStats.webhook.errors.length > 0 && (
-                <div style={{ marginTop: '16px' }}>
-                  <h5 style={{ color: '#DE350B' }}>Recent Errors ({syncStats.webhook.errors.length}):</h5>
+                <div style={{ marginTop: token('space.200', '16px') }}>
+                  <h5 style={{ color: '#DE350B', marginBottom: '8px' }}>Recent Errors ({syncStats.webhook.errors.length})</h5>
                   <div style={{ maxHeight: '300px', overflow: 'auto' }}>
                     {syncStats.webhook.errors.slice(0, 10).map((err, idx) => (
-                      <div key={idx} style={{ padding: '12px', background: '#FFEBE6', borderRadius: '3px', marginBottom: '8px', fontSize: '12px', border: '1px solid #DE350B' }}>
+                      <div key={idx} style={{
+                        padding: token('space.200', '16px'),
+                        background: token('color.background.danger', '#FFEBE6'),
+                        borderRadius: token('border.radius', '8px'),
+                        marginBottom: '8px',
+                        fontSize: '12px',
+                        border: `1px solid ${token('color.border.danger', '#DE350B')}`
+                      }}>
                         <div style={{ marginBottom: '8px' }}>
                           <strong style={{ fontSize: '13px' }}>{new Date(err.timestamp).toLocaleString()}</strong>
                         </div>
@@ -1009,14 +1101,18 @@ const SyncActivityPanel = ({
                           </div>
                         )}
                         {err.details && (
-                          <div style={{ marginTop: '8px', padding: '8px', background: '#FFF', borderRadius: '3px', fontSize: '11px', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          <div style={{ marginTop: '8px', padding: token('space.150', '12px'), background: '#FFF', borderRadius: token('border.radius', '8px'), fontSize: '11px', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                             {typeof err.details === 'string' ? err.details : JSON.stringify(err.details, null, 2)}
                           </div>
                         )}
                       </div>
                     ))}
                   </div>
-                  <Button appearance="danger" onClick={handleClearWebhookErrors} style={{ marginTop: '12px' }}>
+                  <Button
+                    appearance="subtle"
+                    onClick={handleClearWebhookErrors}
+                    style={{ ...lozengeButtonStyle, marginTop: token('space.150', '12px') }}
+                  >
                     Clear Errors
                   </Button>
                 </div>
@@ -1025,9 +1121,9 @@ const SyncActivityPanel = ({
           )}
 
           {syncStats.scheduled && (
-            <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+            <div style={surfaceCard()}>
               <h4 style={{ margin: '0 0 16px 0' }}>Scheduled Sync Statistics</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px'), marginBottom: token('space.200', '16px') }}>
                 <StatCard label="Issues Checked" value={syncStats.scheduled.issuesChecked || 0} color="#0052CC" />
                 <StatCard label="Issues Created" value={syncStats.scheduled.issuesCreated || 0} color="#00875A" />
                 <StatCard label="Issues Updated" value={syncStats.scheduled.issuesUpdated || 0} color="#0052CC" />
@@ -1042,12 +1138,12 @@ const SyncActivityPanel = ({
           )}
 
           {syncStats?.scheduled && (
-            <div style={{ padding: '16px', background: '#F4F5F7', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+            <div style={surfaceCard({ background: token('color.background.neutral.subtle', '#F4F5F7') })}>
               <h4 style={{ margin: '0 0 8px 0' }}>Hourly Sync Timeline</h4>
               <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
                 Timestamps are shown in Helsinki time (Europe/Helsinki).
               </p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.200', '16px') }}>
                 <div>
                   <div style={{ fontSize: '12px', color: '#6B778C' }}>Last automatic run</div>
                   <div style={{ fontSize: '16px', fontWeight: 'bold' }}>{formatHelsinkiTime(syncStats.scheduled.lastRun)}</div>
@@ -1070,13 +1166,18 @@ const SyncActivityPanel = ({
         </>
       )}
 
-      {/* Pending Links */}
-      <div style={{ padding: '16px', background: '#E3FCEF', border: '2px solid #00875A', borderRadius: '3px' }}>
-        <h4 style={{ margin: '0 0 8px 0', color: '#00875A' }}>Pending Link Sync</h4>
-        <p style={{ fontSize: '13px', color: '#006644', marginBottom: '12px' }}>
-          Retry syncing all pending links across all organizations. Runs automatically every hour during scheduled sync.
+      <div style={surfaceCard({
+        background: token('color.background.accent.green.subtlest', '#E3FCEF'),
+        border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
+      })}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.150', '12px') }}>
+          <h4 style={{ margin: 0, color: '#006644' }}>Pending Link Sync</h4>
+          <Lozenge appearance="success">Automated hourly</Lozenge>
+        </div>
+        <p style={{ fontSize: '13px', color: '#006644', marginBottom: token('space.200', '16px') }}>
+          Retry syncing all pending links across every organization. The scheduled job already attempts this each hour; trigger an on-demand retry if needed.
         </p>
-        <Button appearance="primary" onClick={handleRetryPendingLinks}>
+        <Button appearance="subtle" onClick={handleRetryPendingLinks} style={lozengeButtonStyle}>
           Retry All Pending Links
         </Button>
       </div>
@@ -1085,115 +1186,97 @@ const SyncActivityPanel = ({
 };
 
 const StatCard = ({ label, value, color }) => (
-  <div>
-    <div style={{ fontSize: '24px', fontWeight: 'bold', color }}>{value}</div>
-    <div style={{ fontSize: '12px', color: '#6B778C' }}>{label}</div>
+  <div style={{
+    padding: token('space.200', '16px'),
+    borderRadius: token('border.radius', '8px'),
+    background: token('color.background.neutral.subtle', '#F4F5F7')
+  }}>
+    <div style={{ fontSize: '12px', color: '#6B778C', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '4px' }}>{label}</div>
+    <div style={{ fontSize: '28px', fontWeight: 600, color: color || token('color.text', '#172B4D') }}>{value}</div>
   </div>
 );
 
 // Org Modal Component
-const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
-  return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      background: 'rgba(0, 0, 0, 0.5)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 1000
-    }}>
-      <div style={{
-        background: 'white',
-        borderRadius: '3px',
-        padding: '24px',
-        maxWidth: '500px',
-        width: '90%',
-        maxHeight: '90vh',
-        overflow: 'auto'
-      }}>
-        <h3 style={{ margin: '0 0 16px 0' }}>
-          {editingOrg ? `Edit ${editingOrg.name}` : 'Add Organization'}
-        </h3>
-        <Form onSubmit={onSave}>
-          {({ formProps }) => (
-            <form {...formProps}>
-              <Field
-                name="name"
-                defaultValue={editingOrg?.name || ''}
-                isRequired
-                label="Organization Name"
-              >
-                {({ fieldProps }) => (
-                  <TextField {...fieldProps} placeholder="e.g., Production Org" />
-                )}
-              </Field>
-              <Field
-                name="remoteUrl"
-                defaultValue={editingOrg?.remoteUrl || ''}
-                isRequired
-                label="Remote Jira URL"
-              >
-                {({ fieldProps }) => (
-                  <TextField {...fieldProps} placeholder="https://yourorg.atlassian.net" />
-                )}
-              </Field>
-              <Field
-                name="remoteEmail"
-                defaultValue={editingOrg?.remoteEmail || ''}
-                isRequired
-                label="Remote Admin Email"
-              >
-                {({ fieldProps }) => (
-                  <TextField {...fieldProps} placeholder="admin@example.com" />
-                )}
-              </Field>
-              <Field
-                name="remoteApiToken"
-                defaultValue={editingOrg?.remoteApiToken || ''}
-                isRequired
-                label="Remote API Token"
-              >
-                {({ fieldProps }) => (
-                  <TextField {...fieldProps} type="password" placeholder="API token" />
-                )}
-              </Field>
-              <Field
-                name="remoteProjectKey"
-                defaultValue={editingOrg?.remoteProjectKey || ''}
-                isRequired
-                label="Remote Project Key"
-              >
-                {({ fieldProps }) => (
-                  <TextField {...fieldProps} placeholder="PROJ" />
-                )}
-              </Field>
-              {editingOrg && (
-                <Field
-                  name="allowedProjects"
-                  defaultValue={editingOrg?.allowedProjects || []}
-                >
-                  {({ fieldProps }) => <input {...fieldProps} type="hidden" />}
-                </Field>
-              )}
-              <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-                <Button type="submit" appearance="primary" isLoading={saving}>
-                  {editingOrg ? 'Update' : 'Add'}
-                </Button>
-                <Button appearance="subtle" onClick={onClose}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
+const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
+  <ModalDialog
+    heading={editingOrg ? `Edit ${editingOrg.name}` : 'Add Organization'}
+    onClose={onClose}
+    width="medium"
+  >
+    <Form onSubmit={onSave}>
+      {({ formProps }) => (
+        <form {...formProps}>
+          <Field
+            name="name"
+            defaultValue={editingOrg?.name || ''}
+            isRequired
+            label="Organization Name"
+          >
+            {({ fieldProps }) => (
+              <TextField {...fieldProps} placeholder="e.g., Production Org" autoFocus />
+            )}
+          </Field>
+          <Field
+            name="remoteUrl"
+            defaultValue={editingOrg?.remoteUrl || ''}
+            isRequired
+            label="Remote Jira URL"
+          >
+            {({ fieldProps }) => (
+              <TextField {...fieldProps} placeholder="https://yourorg.atlassian.net" />
+            )}
+          </Field>
+          <Field
+            name="remoteEmail"
+            defaultValue={editingOrg?.remoteEmail || ''}
+            isRequired
+            label="Remote Admin Email"
+          >
+            {({ fieldProps }) => (
+              <TextField {...fieldProps} placeholder="admin@example.com" />
+            )}
+          </Field>
+          <Field
+            name="remoteApiToken"
+            defaultValue={editingOrg?.remoteApiToken || ''}
+            isRequired
+            label="Remote API Token"
+          >
+            {({ fieldProps }) => (
+              <TextField {...fieldProps} type="password" placeholder="API token" />
+            )}
+          </Field>
+          <Field
+            name="remoteProjectKey"
+            defaultValue={editingOrg?.remoteProjectKey || ''}
+            isRequired
+            label="Remote Project Key"
+          >
+            {({ fieldProps }) => (
+              <TextField {...fieldProps} placeholder="PROJ" />
+            )}
+          </Field>
+          {editingOrg && (
+            <Field
+              name="allowedProjects"
+              defaultValue={editingOrg?.allowedProjects || []}
+            >
+              {({ fieldProps }) => <input {...fieldProps} type="hidden" />}
+            </Field>
           )}
-        </Form>
-      </div>
-    </div>
-  );
-};
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: token('space.150', '12px'), marginTop: token('space.300', '24px') }}>
+            <Button type="submit" appearance="subtle" isLoading={saving} style={lozengeButtonStyle}>
+              {editingOrg ? 'Update' : 'Add'}
+            </Button>
+            <Button appearance="subtle" onClick={onClose} type="button" style={lozengeButtonStyle}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+    </Form>
+  </ModalDialog>
+);
 
 // Wait for DOM to be ready
 if (document.readyState === 'loading') {

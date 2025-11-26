@@ -154,8 +154,19 @@ export async function retryAllPendingLinks(config, mappings) {
 export async function performScheduledSync() {
   console.log(`⏰ Scheduled sync starting...`);
 
-  const scheduledConfig = await storage.get('scheduledSyncConfig');
-  if (!scheduledConfig || !scheduledConfig.enabled) {
+  let scheduledConfig = await storage.get('scheduledSyncConfig');
+
+  if (!scheduledConfig) {
+    scheduledConfig = {
+      enabled: true,
+      syncScope: 'recent',
+      createdAt: new Date().toISOString()
+    };
+    await storage.set('scheduledSyncConfig', scheduledConfig);
+    console.log(`⚙️ Created default scheduled sync config (enabled, recent scope)`);
+  }
+
+  if (!scheduledConfig.enabled) {
     console.log(`⏭️ Scheduled sync disabled`);
     return;
   }

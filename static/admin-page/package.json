@@ -10,16 +10,18 @@
     "@atlaskit/form": "^9.1.4",
     "@atlaskit/textfield": "^5.3.4",
     "parcel": "^2.8.3",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
   },
   "dependencies": {
     "@atlaskit/checkbox": "^17.1.21",
+    "@atlaskit/modal-dialog": "^14.7.2",
     "@atlaskit/lozenge": "^13.1.1",
     "@atlaskit/section-message": "^8.9.3",
     "@atlaskit/select": "^21.4.0",
     "@atlaskit/spinner": "^19.0.7",
     "@atlaskit/tabs": "^18.2.4",
+    "@atlaskit/tokens": "^8.4.0",
     "@forge/bridge": "^3.0.0"
   }
 }
