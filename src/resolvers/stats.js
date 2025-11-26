@@ -3,13 +3,18 @@ import { storage } from '@forge/api';
 export function defineStatsResolvers(resolver) {
   resolver.define('getScheduledSyncStats', async () => {
     const stats = await storage.get('scheduledSyncStats');
-    return stats || {
+    if (stats) {
+      stats.events = Array.isArray(stats.events) ? stats.events : [];
+      return stats;
+    }
+    return {
       lastRun: null,
       issuesChecked: 0,
       issuesCreated: 0,
       issuesUpdated: 0,
       issuesSkipped: 0,
-      errors: []
+      errors: [],
+      events: []
     };
   });
 

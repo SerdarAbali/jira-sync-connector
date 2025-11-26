@@ -101,7 +101,7 @@ export function defineSyncResolvers(resolver) {
           statusMappings: statusMappings || {}
         };
 
-        const results = await retryAllPendingLinks(org, mappings);
+        const results = await retryAllPendingLinks(org, mappings, null);
         
         totalResults.retried += results.retried;
         totalResults.success += results.success;

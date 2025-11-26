@@ -959,6 +959,7 @@ const SyncActivityPanel = ({
   manualIssueKey, setManualIssueKey, handleManualSync, manualSyncLoading,
   syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors, organizations
 }) => {
+  const [eventsExpanded, setEventsExpanded] = useState(false);
   useEffect(() => {
     loadStats();
   }, []);
@@ -987,6 +988,47 @@ const SyncActivityPanel = ({
     const next = new Date(lastRun);
     next.setHours(next.getHours() + 1);
     return next;
+  };
+
+  const scheduledEvents = Array.isArray(syncStats?.scheduled?.events) ? syncStats.scheduled.events : [];
+  const hasScheduledEvents = scheduledEvents.length > 0;
+
+  const eventTypeMeta = {
+    create: { label: 'Created', appearance: 'success' },
+    update: { label: 'Updated', appearance: 'moved' },
+    error: { label: 'Error', appearance: 'removed' },
+    'link-synced': { label: 'Link Synced', appearance: 'success' },
+    'link-error': { label: 'Link Error', appearance: 'removed' },
+    'link-pending': { label: 'Link Pending', appearance: 'inprogress' },
+    'link-dropped': { label: 'Link Dropped', appearance: 'default' }
+  };
+
+  const describeScheduledEvent = (event) => {
+    switch (event.type) {
+      case 'create':
+        return `Created ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'}`;
+      case 'update':
+        return `Updated ${event.issueKey || 'issue'} → ${event.remoteKey || 'remote key'}`;
+      case 'link-synced':
+        return `Linked ${event.issueKey || 'issue'} with ${event.linkedIssueKey || 'peer'}`;
+      case 'link-error':
+        return `Link error on ${event.issueKey || 'issue'}`;
+      case 'link-pending':
+        return `Link pending for ${event.issueKey || 'issue'}`;
+      case 'link-dropped':
+        return `Dropped pending link for ${event.issueKey || 'issue'}`;
+      case 'error':
+        return `Sync error${event.issueKey ? ' on ' + event.issueKey : ''}`;
+      default:
+        return 'Scheduled event';
+    }
+  };
+
+  const formatDirection = (direction) => {
+    if (!direction) return null;
+    if (direction === 'outward') return 'Outward (source → target)';
+    if (direction === 'inward') return 'Inward (target → source)';
+    return direction;
   };
 
   return (
@@ -1160,6 +1202,82 @@ const SyncActivityPanel = ({
               </div>
               <div style={{ marginTop: '12px', fontSize: '12px', color: '#6B778C' }}>
                 Runs every 60 minutes; next run is calculated from the last completed execution.
+              </div>
+              <div style={{ marginTop: token('space.300', '24px') }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.150', '12px') }}>
+                  <strong style={{ fontSize: '13px' }}>Recent events ({scheduledEvents.length})</strong>
+                  {hasScheduledEvents && (
+                    <Button
+                      appearance="subtle"
+                      onClick={() => setEventsExpanded(!eventsExpanded)}
+                      style={lozengeButtonStyle}
+                    >
+                      {eventsExpanded ? 'Hide Log' : 'Show Log'}
+                    </Button>
+                  )}
+                </div>
+                {!hasScheduledEvents && (
+                  <div style={{ fontSize: '12px', color: '#6B778C' }}>
+                    No events recorded yet. The next hourly run will populate this log.
+                  </div>
+                )}
+                {hasScheduledEvents && eventsExpanded && (
+                  <div style={{ borderRadius: token('border.radius', '8px'), border: `1px solid ${token('color.border', '#DFE1E6')}`, background: token('color.background.neutral', '#FFFFFF'), maxHeight: '320px', overflowY: 'auto' }}>
+                    {scheduledEvents.map((event, index) => {
+                      const meta = eventTypeMeta[event.type] || { label: event.type || 'Event', appearance: 'default' };
+                      const detailPairs = [
+                        event.issueKey ? { label: 'Issue', value: event.issueKey } : null,
+                        event.remoteKey ? { label: 'Remote', value: event.remoteKey } : null,
+                        event.linkedIssueKey ? { label: 'Linked', value: event.linkedIssueKey } : null,
+                        event.direction ? { label: 'Direction', value: formatDirection(event.direction) } : null
+                      ].filter(Boolean);
+
+                      return (
+                        <div
+                          key={`${event.timestamp || 'event'}-${index}`}
+                          style={{
+                            padding: token('space.200', '16px'),
+                            borderBottom: index === scheduledEvents.length - 1 ? 'none' : `1px solid ${token('color.border', '#DFE1E6')}`
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: token('space.150', '12px') }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
+                              <Lozenge appearance={meta.appearance} isBold>{meta.label}</Lozenge>
+                              <div style={{ fontWeight: 600, fontSize: '13px' }}>{describeScheduledEvent(event)}</div>
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#6B778C', whiteSpace: 'nowrap' }}>
+                              {event.timestamp ? formatHelsinkiTime(event.timestamp) : '—'}
+                            </div>
+                          </div>
+                          {detailPairs.length > 0 && (
+                            <div style={{ marginTop: token('space.150', '12px'), fontSize: '12px', color: '#6B778C', display: 'flex', flexWrap: 'wrap', gap: token('space.150', '12px') }}>
+                              {detailPairs.map(({ label, value }) => (
+                                <div key={`${label}-${value}`} style={{ minWidth: '120px' }}>
+                                  <strong>{label}:</strong> {value}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {event.message && (
+                            <div style={{
+                              marginTop: token('space.150', '12px'),
+                              fontSize: '12px',
+                              color: '#172B4D',
+                              background: token('color.background.neutral.subtle', '#F4F5F7'),
+                              borderRadius: token('border.radius', '6px'),
+                              padding: token('space.150', '12px'),
+                              fontFamily: 'monospace',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word'
+                            }}>
+                              {event.message}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}

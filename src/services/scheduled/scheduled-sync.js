@@ -26,13 +26,28 @@ async function checkIfIssueNeedsSync(issueKey, issue, config, mappings) {
   return { needsSync: true, action: 'update', remoteKey };
 }
 
+const MAX_SCHEDULED_EVENTS = 25;
+
+function recordEvent(stats, event) {
+  if (!stats || !stats.events) {
+    return;
+  }
+  stats.events.unshift({
+    timestamp: new Date().toISOString(),
+    ...event
+  });
+  if (stats.events.length > MAX_SCHEDULED_EVENTS) {
+    stats.events = stats.events.slice(0, MAX_SCHEDULED_EVENTS);
+  }
+}
+
 async function removeIssueFromPendingLinksIndex(issueKey) {
   const pendingLinksIndex = await storage.get('pending-links-index') || [];
   const updatedIndex = pendingLinksIndex.filter(key => key !== issueKey);
   await storage.set('pending-links-index', updatedIndex);
 }
 
-export async function retryAllPendingLinks(config, mappings) {
+export async function retryAllPendingLinks(config, mappings, stats) {
   console.log(`🔄 Starting pending link retry...`);
 
   let totalRetried = 0;
@@ -81,11 +96,28 @@ export async function retryAllPendingLinks(config, mappings) {
           console.log(`⏭️ ${pendingLink.linkedIssueKey} still not synced - keeping as pending`);
           totalStillPending++;
 
+          if (stats) {
+            recordEvent(stats, {
+              type: 'link-pending',
+              issueKey: localIssueKey,
+              linkedIssueKey: pendingLink.linkedIssueKey,
+              direction: pendingLink.direction
+            });
+          }
+
           // Update attempts counter (remove after MAX_PENDING_LINK_ATTEMPTS to prevent infinite storage)
           if (pendingLink.attempts >= MAX_PENDING_LINK_ATTEMPTS) {
             console.log(`❌ Removing ${pendingLink.linkedIssueKey} from pending - max attempts reached`);
             await removePendingLink(localIssueKey, pendingLink.linkId);
             totalFailed++;
+            if (stats) {
+              recordEvent(stats, {
+                type: 'link-dropped',
+                issueKey: localIssueKey,
+                linkedIssueKey: pendingLink.linkedIssueKey,
+                reason: 'max-attempts'
+              });
+            }
           }
           continue;
         }
@@ -125,15 +157,39 @@ export async function retryAllPendingLinks(config, mappings) {
             await storeLinkMapping(pendingLink.linkId, 'synced');
             await removePendingLink(localIssueKey, pendingLink.linkId);
             totalSuccess++;
+            if (stats) {
+              recordEvent(stats, {
+                type: 'link-synced',
+                issueKey: localIssueKey,
+                linkedIssueKey: pendingLink.linkedIssueKey,
+                direction: pendingLink.direction
+              });
+            }
           } else {
             const errorText = await response.text();
             console.error(`${LOG_EMOJI.ERROR} Failed to create pending link: ${errorText}`);
             totalFailed++;
+            if (stats) {
+              recordEvent(stats, {
+                type: 'link-error',
+                issueKey: localIssueKey,
+                linkedIssueKey: pendingLink.linkedIssueKey,
+                message: errorText
+              });
+            }
             // Keep as pending for next retry
           }
         } catch (error) {
           console.error(`${LOG_EMOJI.ERROR} Error creating pending link:`, error);
           totalFailed++;
+          if (stats) {
+            recordEvent(stats, {
+              type: 'link-error',
+              issueKey: localIssueKey,
+              linkedIssueKey: pendingLink.linkedIssueKey,
+              message: error.message
+            });
+          }
           // Keep as pending for next retry
         }
 
@@ -183,7 +239,8 @@ export async function performScheduledSync() {
     issuesCreated: 0,
     issuesUpdated: 0,
     issuesSkipped: 0,
-    errors: []
+    errors: [],
+    events: []
   };
   
   try {
@@ -254,13 +311,28 @@ export async function performScheduledSync() {
           const remoteKey = await createRemoteIssue(issue, config, mappings);
           if (remoteKey) {
             stats.issuesCreated++;
+            recordEvent(stats, {
+              type: 'create',
+              issueKey,
+              remoteKey
+            });
           } else {
             stats.errors.push(`Failed to create ${issueKey}`);
+            recordEvent(stats, {
+              type: 'error',
+              issueKey,
+              message: 'Failed to create'
+            });
           }
         } else if (syncCheck.action === 'update') {
           console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
           await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings);
           stats.issuesUpdated++;
+          recordEvent(stats, {
+            type: 'update',
+            issueKey,
+            remoteKey: syncCheck.remoteKey
+          });
         }
         
         // Small delay to avoid rate limiting
@@ -269,12 +341,21 @@ export async function performScheduledSync() {
       } catch (error) {
         console.error(`Error syncing ${issueKey}:`, error);
         stats.errors.push(`${issueKey}: ${error.message}`);
+        recordEvent(stats, {
+          type: 'error',
+          issueKey,
+          message: error.message
+        });
       }
     }
     
   } catch (error) {
     console.error('Scheduled sync error:', error);
     stats.errors.push(`General error: ${error.message}`);
+    recordEvent(stats, {
+      type: 'error',
+      message: error.message
+    });
   }
 
   // Retry pending links after main sync
@@ -293,7 +374,7 @@ export async function performScheduledSync() {
         statusMappings: statusMappings || {}
       };
 
-      const pendingLinkResults = await retryAllPendingLinks(config, mappings);
+      const pendingLinkResults = await retryAllPendingLinks(config, mappings, stats);
       console.log(`🔗 Pending links: ${pendingLinkResults.success} synced, ${pendingLinkResults.stillPending} still pending`);
     }
   } catch (error) {
