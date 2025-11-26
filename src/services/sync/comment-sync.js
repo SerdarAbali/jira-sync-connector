@@ -28,7 +28,10 @@ export async function syncComment(event) {
 
   if (organizations.length === 0) {
     console.log('Comment sync skipped: no organizations configured');
-    await trackWebhookSync('comment', false, 'No organizations configured');
+    await trackWebhookSync('comment', false, 'No organizations configured', null, issueKey, {
+      reason: 'No target organizations configured in settings',
+      commentId
+    });
     return;
   }
 
@@ -36,7 +39,10 @@ export async function syncComment(event) {
   const issue = await getFullIssue(issueKey);
   if (!issue) {
     console.log('Could not fetch issue data for comment sync');
-    await trackWebhookSync('comment', false, 'Could not fetch issue data');
+    await trackWebhookSync('comment', false, 'Could not fetch issue data', null, issueKey, {
+      reason: 'Failed to retrieve issue from Jira API',
+      commentId
+    });
     return;
   }
 
@@ -44,7 +50,11 @@ export async function syncComment(event) {
   const fullComment = await getFullComment(issueKey, commentId);
   if (!fullComment) {
     console.log('Could not fetch full comment data');
-    await trackWebhookSync('comment', false, 'Could not fetch comment data');
+    await trackWebhookSync('comment', false, 'Could not fetch comment data', null, issueKey, {
+      reason: 'Failed to retrieve comment from Jira API',
+      commentId,
+      projectKey
+    });
     return;
   }
 
@@ -108,19 +118,38 @@ export async function syncComment(event) {
       if (response.ok) {
         console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.name} (${remoteKey})`);
         syncResult.details.comments.success++;
-        await trackWebhookSync('comment', true, null, org.id);
+        await trackWebhookSync('comment', true, null, org.id, issueKey, {
+          remoteKey,
+          projectKey,
+          commentId,
+          author: userName
+        });
       } else {
         const errorText = await response.text();
         console.error(`${LOG_EMOJI.ERROR} Comment sync failed for ${org.name}: ${errorText}`);
         syncResult.details.comments.failed++;
         syncResult.addError(`Comment sync failed: ${errorText}`);
-        await trackWebhookSync('comment', false, errorText, org.id);
+        await trackWebhookSync('comment', false, errorText, org.id, issueKey, {
+          remoteKey,
+          projectKey,
+          commentId,
+          author: userName,
+          httpStatus: response.status,
+          errorDetails: errorText
+        });
       }
     } catch (error) {
       console.error(`${LOG_EMOJI.ERROR} Error syncing comment to ${org.name}:`, error);
       syncResult.details.comments.failed++;
       syncResult.addError(`Error syncing comment: ${error.message}`);
-      await trackWebhookSync('comment', false, error.message, org.id);
+      await trackWebhookSync('comment', false, error.message, org.id, issueKey, {
+        remoteKey,
+        projectKey,
+        commentId,
+        author: userName,
+        errorStack: error.stack,
+        errorDetails: error.toString()
+      });
     }
 
     // Log summary for this org

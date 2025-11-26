@@ -1,7 +1,7 @@
 import { storage } from '@forge/api';
 import { MAX_AUDIT_LOG_ENTRIES } from '../../constants.js';
 
-export async function trackWebhookSync(type, success, error = null, orgId = null) {
+export async function trackWebhookSync(type, success, error = null, orgId = null, issueKey = null, details = null) {
   try {
     const stats = await storage.get('webhookSyncStats') || {
       totalSyncs: 0,
@@ -49,12 +49,22 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
     } else {
       stats.issuesSkipped++;
       if (error) {
-        // Keep only last 50 errors
-        stats.errors.unshift({ 
+        // Enhanced error tracking with detailed context
+        const errorEntry = { 
           timestamp: new Date().toISOString(), 
-          error,
-          orgId: orgId || 'unknown'
-        });
+          error: typeof error === 'string' ? error : error.message || String(error),
+          orgId: orgId || 'unknown',
+          issueKey: issueKey || 'unknown',
+          operation: type || 'unknown'
+        };
+
+        // Add additional details if provided
+        if (details) {
+          errorEntry.details = details;
+        }
+
+        // Keep only last 50 errors
+        stats.errors.unshift(errorEntry);
         if (stats.errors.length > 50) stats.errors = stats.errors.slice(0, 50);
       }
     }

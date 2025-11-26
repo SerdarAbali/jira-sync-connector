@@ -364,6 +364,20 @@ const App = () => {
     }
   };
 
+  const handleClearWebhookErrors = async () => {
+    try {
+      const result = await invoke('clearWebhookErrors');
+      if (result.success) {
+        showMessage('Webhook errors cleared successfully', 'success');
+        await loadStats();
+      } else {
+        showMessage(`Error: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error: ' + error.message, 'error');
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -374,62 +388,52 @@ const App = () => {
 
   const selectedOrg = organizations.find(o => o.id === selectedOrgId);
 
+  const CONTENT_HORIZONTAL_PADDING = 32;
+  const tabPanelContainerStyle = {
+    padding: '20px 0 32px',
+    width: '100%',
+    boxSizing: 'border-box'
+  };
+
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
-      {/* Sidebar */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+      {/* Top Header with Organization Selector */}
       <div style={{
-        width: '280px',
         background: '#F4F5F7',
-        borderRight: '2px solid #DFE1E6',
+        borderBottom: '2px solid #DFE1E6',
+        padding: '12px 20px',
         display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden'
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '12px'
       }}>
-        <div style={{ padding: '20px', borderBottom: '2px solid #DFE1E6' }}>
-          <h3 style={{ margin: '0 0 8px 0', fontSize: '16px' }}>Organizations</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, minWidth: '300px' }}>
+          <h3 style={{ margin: 0, fontSize: '18px' }}>Jira Sync Connector</h3>
+          <div style={{ width: '250px' }}>
+            <Select
+              options={organizations.map(org => ({
+                label: `${org.name}${org.remoteUrl ? ' - ' + org.remoteUrl : ''}`,
+                value: org.id
+              }))}
+              value={selectedOrgId ? {
+                label: selectedOrg ? `${selectedOrg.name}${selectedOrg.remoteUrl ? ' - ' + selectedOrg.remoteUrl : ''}` : '',
+                value: selectedOrgId
+              } : null}
+              onChange={(option) => setSelectedOrgId(option?.value || null)}
+              placeholder="Select organization"
+              isClearable={false}
+            />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <Button
             appearance="primary"
             onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
-            style={{ width: '100%' }}
+            compact
           >
-            + Add Organization
+            + Add Org
           </Button>
-        </div>
-
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
-          {organizations.length === 0 ? (
-            <div style={{ padding: '20px', textAlign: 'center', color: '#6B778C', fontSize: '13px' }}>
-              No organizations yet. Add one to get started.
-            </div>
-          ) : (
-            organizations.map(org => (
-              <div
-                key={org.id}
-                onClick={() => setSelectedOrgId(org.id)}
-                style={{
-                  padding: '12px',
-                  margin: '4px 0',
-                  background: selectedOrgId === org.id ? '#DEEBFF' : 'white',
-                  border: `2px solid ${selectedOrgId === org.id ? '#0052CC' : '#DFE1E6'}`,
-                  borderRadius: '3px',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>
-                  {org.name}
-                </div>
-                <div style={{ fontSize: '12px', color: '#6B778C', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {org.remoteUrl || 'Not configured'}
-                </div>
-                {org.allowedProjects && org.allowedProjects.length > 0 && (
-                  <div style={{ fontSize: '11px', color: '#00875A', marginTop: '4px' }}>
-                    {org.allowedProjects.length} project(s) filtered
-                  </div>
-                )}
-              </div>
-            ))
-          )}
         </div>
       </div>
 
@@ -488,16 +492,41 @@ const App = () => {
             </div>
 
             {/* Tabs */}
-            <Tabs id="org-tabs">
-              <TabList>
-                <Tab>Configuration</Tab>
-                <Tab>Mappings</Tab>
-                <Tab>Sync Activity</Tab>
-              </TabList>
+            <div style={{ padding: `0 ${CONTENT_HORIZONTAL_PADDING}px` }}>
+              <Tabs id="org-tabs">
+                <TabList
+                  style={{
+                    padding: 0,
+                    background: 'white',
+                    borderBottom: '1px solid #DFE1E6'
+                  }}
+                >
+                  <Tab>Sync Activity</Tab>
+                  <Tab>Configuration</Tab>
+                  <Tab>Mappings</Tab>
+                </TabList>
+
+              {/* Sync Activity Tab */}
+              <TabPanel>
+                <div style={tabPanelContainerStyle}>
+                  <SyncActivityPanel
+                    manualIssueKey={manualIssueKey}
+                    setManualIssueKey={setManualIssueKey}
+                    handleManualSync={handleManualSync}
+                    manualSyncLoading={manualSyncLoading}
+                    syncStats={syncStats}
+                    loadStats={loadStats}
+                    statsLoading={statsLoading}
+                    handleRetryPendingLinks={handleRetryPendingLinks}
+                    handleClearWebhookErrors={handleClearWebhookErrors}
+                    organizations={organizations}
+                  />
+                </div>
+              </TabPanel>
 
               {/* Configuration Tab */}
               <TabPanel>
-                <div style={{ padding: '20px' }}>
+                <div style={tabPanelContainerStyle}>
                   <ConfigurationPanel
                     selectedOrg={selectedOrg}
                     localProjects={localProjects}
@@ -515,7 +544,7 @@ const App = () => {
 
               {/* Mappings Tab */}
               <TabPanel>
-                <div style={{ padding: '20px' }}>
+                <div style={tabPanelContainerStyle}>
                   <MappingsPanel
                     selectedOrg={selectedOrg}
                     remoteUsers={remoteUsers}
@@ -536,24 +565,8 @@ const App = () => {
                   />
                 </div>
               </TabPanel>
-
-              {/* Sync Activity Tab */}
-              <TabPanel>
-                <div style={{ padding: '20px' }}>
-                  <SyncActivityPanel
-                    manualIssueKey={manualIssueKey}
-                    setManualIssueKey={setManualIssueKey}
-                    handleManualSync={handleManualSync}
-                    manualSyncLoading={manualSyncLoading}
-                    syncStats={syncStats}
-                    loadStats={loadStats}
-                    statsLoading={statsLoading}
-                    handleRetryPendingLinks={handleRetryPendingLinks}
-                    organizations={organizations}
-                  />
-                </div>
-              </TabPanel>
-            </Tabs>
+              </Tabs>
+            </div>
           </div>
         )}
       </div>
@@ -578,108 +591,119 @@ const ConfigurationPanel = ({
   setSyncOptions, handleSaveSyncOptions, saving
 }) => {
   const [projectsExpanded, setProjectsExpanded] = useState(false);
+  const cardGridStyle = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+    gap: '20px',
+    alignItems: 'start'
+  };
 
   return (
-    <div style={{ maxWidth: '800px' }}>
-      <h3>Configuration</h3>
-
-      {/* Connection Info */}
-      <div style={{ padding: '16px', background: '#F4F5F7', borderRadius: '3px', marginBottom: '20px' }}>
-        <h4 style={{ margin: '0 0 12px 0' }}>Connection Settings</h4>
-        <div style={{ fontSize: '13px', color: '#6B778C' }}>
-          <div><strong>URL:</strong> {selectedOrg.remoteUrl}</div>
-          <div><strong>Email:</strong> {selectedOrg.remoteEmail}</div>
-          <div><strong>Project Key:</strong> {selectedOrg.remoteProjectKey}</div>
-        </div>
-      </div>
-
-      {/* Project Filter */}
-      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
-        <div
-          onClick={() => { setProjectsExpanded(!projectsExpanded); if (!projectsExpanded && localProjects.length === 0) loadProjects(); }}
-          style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-        >
-          <h4 style={{ margin: 0 }}>Project Filter ({selectedOrg.allowedProjects?.length || 0} selected)</h4>
-          <span>{projectsExpanded ? '▼' : '▶'}</span>
-        </div>
-
-        {projectsExpanded && (
-          <div style={{ marginTop: '16px' }}>
-            {dataLoading.projects ? (
-              <div style={{ textAlign: 'center', padding: '20px' }}><Spinner /></div>
-            ) : localProjects.length === 0 ? (
-              <div style={{ color: '#6B778C', fontSize: '13px' }}>No projects loaded</div>
-            ) : (
-              <>
-                {localProjects.map(project => {
-                  const isSelected = selectedOrg.allowedProjects?.includes(project.key);
-                  return (
-                    <div
-                      key={project.key}
-                      onClick={() => toggleProjectSelection(project.key)}
-                      style={{
-                        padding: '8px 12px',
-                        background: isSelected ? '#E3FCEF' : '#F4F5F7',
-                        border: `2px solid ${isSelected ? '#00875A' : 'transparent'}`,
-                        borderRadius: '3px',
-                        marginBottom: '8px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        fontSize: '13px'
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        readOnly
-                        style={{ marginRight: '8px', pointerEvents: 'none' }}
-                      />
-                      <strong>{project.key}</strong>&nbsp;- {project.name}
-                    </div>
-                  );
-                })}
-                <Button
-                  appearance="primary"
-                  onClick={handleSaveProjectFilter}
-                  isLoading={saving}
-                  style={{ marginTop: '12px' }}
-                >
-                  Save Project Filter
-                </Button>
-              </>
-            )}
+    <div style={{ width: '100%' }}>
+      <div style={cardGridStyle}>
+        {/* Connection Info */}
+        <div style={{ padding: '16px', background: '#F4F5F7', borderRadius: '3px' }}>
+          <h4 style={{ margin: '0 0 12px 0' }}>Connection Settings</h4>
+          <div style={{ fontSize: '13px', color: '#6B778C' }}>
+            <div><strong>URL:</strong> {selectedOrg.remoteUrl}</div>
+            <div><strong>Email:</strong> {selectedOrg.remoteEmail}</div>
+            <div><strong>Project Key:</strong> {selectedOrg.remoteProjectKey}</div>
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Sync Options */}
-      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px' }}>
-        <h4 style={{ margin: '0 0 16px 0' }}>Sync Options</h4>
-        {[
-          { key: 'syncComments', label: 'Sync Comments' },
-          { key: 'syncAttachments', label: 'Sync Attachments' },
-          { key: 'syncLinks', label: 'Sync Issue Links' },
-          { key: 'syncSprints', label: 'Sync Sprints' }
-        ].map(option => (
-          <label key={option.key} style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={syncOptions[option.key]}
-              onChange={(e) => setSyncOptions({ ...syncOptions, [option.key]: e.target.checked })}
-              style={{ marginRight: '8px', cursor: 'pointer' }}
-            />
-            <span style={{ fontSize: '14px' }}>{option.label}</span>
-          </label>
-        ))}
-        <Button
-          appearance="primary"
-          onClick={handleSaveSyncOptions}
-          isLoading={saving}
-          style={{ marginTop: '8px' }}
-        >
-          Save Sync Options
-        </Button>
+        {/* Sync Options */}
+        <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px' }}>
+          <h4 style={{ margin: '0 0 16px 0' }}>Sync Options</h4>
+          {[
+            { key: 'syncComments', label: 'Sync Comments' },
+            { key: 'syncAttachments', label: 'Sync Attachments' },
+            { key: 'syncLinks', label: 'Sync Issue Links' },
+            { key: 'syncSprints', label: 'Sync Sprints' }
+          ].map(option => (
+            <label key={option.key} style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={syncOptions[option.key]}
+                onChange={(e) => setSyncOptions({ ...syncOptions, [option.key]: e.target.checked })}
+                style={{ marginRight: '8px', cursor: 'pointer' }}
+              />
+              <span style={{ fontSize: '14px' }}>{option.label}</span>
+            </label>
+          ))}
+          <Button
+            appearance="primary"
+            onClick={handleSaveSyncOptions}
+            isLoading={saving}
+            style={{ marginTop: '8px' }}
+          >
+            Save Sync Options
+          </Button>
+        </div>
+
+        {/* Project Filter */}
+        <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', gridColumn: '1 / -1' }}>
+          <div
+            onClick={() => { setProjectsExpanded(!projectsExpanded); if (!projectsExpanded && localProjects.length === 0) loadProjects(); }}
+            style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+          >
+            <h4 style={{ margin: 0 }}>Project Filter ({selectedOrg.allowedProjects?.length || 0} selected)</h4>
+            <span>{projectsExpanded ? '▼' : '▶'}</span>
+          </div>
+
+          {projectsExpanded && (
+            <div style={{ marginTop: '16px' }}>
+              {dataLoading.projects ? (
+                <div style={{ textAlign: 'center', padding: '20px' }}><Spinner /></div>
+              ) : localProjects.length === 0 ? (
+                <div style={{ color: '#6B778C', fontSize: '13px' }}>No projects loaded</div>
+              ) : (
+                <>
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                    gap: '12px'
+                  }}>
+                    {localProjects.map(project => {
+                      const isSelected = selectedOrg.allowedProjects?.includes(project.key);
+                      return (
+                        <div
+                          key={project.key}
+                          onClick={() => toggleProjectSelection(project.key)}
+                          style={{
+                            padding: '10px 14px',
+                            background: isSelected ? '#E3FCEF' : '#F4F5F7',
+                            border: `2px solid ${isSelected ? '#00875A' : 'transparent'}`,
+                            borderRadius: '3px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            fontSize: '13px'
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            readOnly
+                            style={{ marginRight: '8px', pointerEvents: 'none' }}
+                          />
+                          <strong>{project.key}</strong>&nbsp;- {project.name}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <Button
+                    appearance="primary"
+                    onClick={handleSaveProjectFilter}
+                    isLoading={saving}
+                    style={{ marginTop: '12px' }}
+                  >
+                    Save Project Filter
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -777,7 +801,7 @@ const MappingsPanel = ({
   };
 
   return (
-    <div style={{ maxWidth: '800px' }}>
+    <div style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h3>Mappings</h3>
         <Button
@@ -851,14 +875,40 @@ const MappingsPanel = ({
 // Sync Activity Panel Component
 const SyncActivityPanel = ({
   manualIssueKey, setManualIssueKey, handleManualSync, manualSyncLoading,
-  syncStats, loadStats, statsLoading, handleRetryPendingLinks, organizations
+  syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors, organizations
 }) => {
   useEffect(() => {
     loadStats();
   }, []);
 
+  const formatHelsinkiTime = (timestamp) => {
+    if (!timestamp) return 'Not available';
+    try {
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Europe/Helsinki',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      }).format(new Date(timestamp));
+    } catch (error) {
+      console.error('Error formatting Helsinki time:', error);
+      return new Date(timestamp).toLocaleString();
+    }
+  };
+
+  const getNextRunTime = () => {
+    const lastRun = syncStats?.scheduled?.lastRun;
+    if (!lastRun) return null;
+    const next = new Date(lastRun);
+    next.setHours(next.getHours() + 1);
+    return next;
+  };
+
   return (
-    <div style={{ maxWidth: '1000px' }}>
+    <div style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h3>Sync Activity</h3>
         <Button appearance="default" onClick={loadStats} isLoading={statsLoading}>
@@ -966,6 +1016,9 @@ const SyncActivityPanel = ({
                       </div>
                     ))}
                   </div>
+                  <Button appearance="danger" onClick={handleClearWebhookErrors} style={{ marginTop: '12px' }}>
+                    Clear Errors
+                  </Button>
                 </div>
               )}
             </div>
@@ -985,6 +1038,33 @@ const SyncActivityPanel = ({
                   Last run: {new Date(syncStats.scheduled.lastRun).toLocaleString()}
                 </div>
               )}
+            </div>
+          )}
+
+          {syncStats?.scheduled && (
+            <div style={{ padding: '16px', background: '#F4F5F7', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 8px 0' }}>Hourly Sync Timeline</h4>
+              <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
+                Timestamps are shown in Helsinki time (Europe/Helsinki).
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                <div>
+                  <div style={{ fontSize: '12px', color: '#6B778C' }}>Last automatic run</div>
+                  <div style={{ fontSize: '16px', fontWeight: 'bold' }}>{formatHelsinkiTime(syncStats.scheduled.lastRun)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: '#6B778C' }}>Next scheduled run</div>
+                  <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                    {(() => {
+                      const nextRun = getNextRunTime();
+                      return nextRun ? formatHelsinkiTime(nextRun) : 'Pending first schedule';
+                    })()}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: '12px', fontSize: '12px', color: '#6B778C' }}>
+                Runs every 60 minutes; next run is calculated from the last completed execution.
+              </div>
             </div>
           )}
         </>

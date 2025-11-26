@@ -19,7 +19,10 @@ export async function syncIssue(event) {
   // Check if LOCAL issue is syncing
   if (await isSyncing(issueKey)) {
     console.log(`⏭️ Skipping ${issueKey} - currently syncing`);
-    await trackWebhookSync('skip', false, 'Already syncing');
+    await trackWebhookSync('skip', false, 'Already syncing', null, issueKey, {
+      reason: 'Issue is currently being synced by another process',
+      eventType: event.eventType
+    });
     return;
   }
 
@@ -39,14 +42,19 @@ export async function syncIssue(event) {
 
   if (organizations.length === 0) {
     console.log('Sync skipped: no organizations configured');
-    await trackWebhookSync('skip', false, 'No organizations configured');
+    await trackWebhookSync('skip', false, 'No organizations configured', null, issueKey, {
+      reason: 'No target organizations configured in settings'
+    });
     return;
   }
 
   const issue = await getFullIssue(issueKey);
   if (!issue) {
     console.error('Could not fetch issue data');
-    await trackWebhookSync('skip', false, `Could not fetch issue data for ${issueKey}`);
+    await trackWebhookSync('skip', false, `Could not fetch issue data`, null, issueKey, {
+      reason: 'Failed to retrieve issue from Jira API',
+      eventType: event.eventType
+    });
     return;
   }
 
@@ -89,7 +97,13 @@ export async function syncIssue(event) {
       if (existingRemoteKey) {
         console.log(`${LOG_EMOJI.UPDATE} UPDATE for ${org.name}: ${issueKey} → ${existingRemoteKey}`);
         await updateRemoteIssueForOrg(issueKey, existingRemoteKey, issue, org, mappings, syncOptions, syncResult);
-        await trackWebhookSync('update', syncResult.success, syncResult.errors.join('; '), org.id);
+        await trackWebhookSync('update', syncResult.success, syncResult.errors.join('; '), org.id, issueKey, {
+          remoteKey: existingRemoteKey,
+          projectKey,
+          issueType: issue.fields.issuetype.name,
+          fieldsUpdated: Object.keys(syncResult.fieldsUpdated || {}),
+          warnings: syncResult.warnings
+        });
         await logAuditEntry({
           action: 'update',
           sourceIssue: issueKey,
@@ -102,7 +116,13 @@ export async function syncIssue(event) {
       } else {
         console.log(`${LOG_EMOJI.CREATE} CREATE for ${org.name}: ${issueKey}`);
         remoteKey = await createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncResult);
-        await trackWebhookSync('create', syncResult.success && remoteKey, syncResult.errors.join('; '), org.id);
+        await trackWebhookSync('create', syncResult.success && remoteKey, syncResult.errors.join('; '), org.id, issueKey, {
+          remoteKey: remoteKey || 'failed',
+          projectKey,
+          issueType: issue.fields.issuetype.name,
+          fieldsCreated: Object.keys(syncResult.fieldsUpdated || {}),
+          warnings: syncResult.warnings
+        });
         await logAuditEntry({
           action: 'create',
           sourceIssue: issueKey,
@@ -118,7 +138,13 @@ export async function syncIssue(event) {
       syncResult.logSummary(issueKey, remoteKey, org.name);
     } catch (error) {
       console.error(`${LOG_EMOJI.ERROR} Error syncing to ${org.name}:`, error);
-      await trackWebhookSync(existingRemoteKey ? 'update' : 'create', false, error.message, org.id);
+      await trackWebhookSync(existingRemoteKey ? 'update' : 'create', false, error.message, org.id, issueKey, {
+        remoteKey: existingRemoteKey || 'none',
+        projectKey,
+        issueType: issue.fields.issuetype?.name || 'unknown',
+        errorStack: error.stack,
+        errorDetails: error.toString()
+      });
       await logAuditEntry({
         action: existingRemoteKey ? 'update' : 'create',
         sourceIssue: issueKey,
