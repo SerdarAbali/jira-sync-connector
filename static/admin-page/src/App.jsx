@@ -118,8 +118,53 @@ function App() {
     statuses: false
   });
 
+  const [storageInfo, setStorageInfo] = useState(null);
+  const [checkingStorage, setCheckingStorage] = useState(false);
+  const [migratingConfig, setMigratingConfig] = useState(false);
+
   const toggleSection = (section) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const handleCheckStorage = async () => {
+    setCheckingStorage(true);
+    try {
+      const result = await invoke('checkStorage');
+      setStorageInfo(result);
+      console.log('Storage check result:', result);
+    } catch (error) {
+      console.error('Error checking storage:', error);
+      setMessage('Error checking storage: ' + error.message);
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setCheckingStorage(false);
+    }
+  };
+
+  const handleMigrateLegacy = async () => {
+    if (!confirm('This will migrate your legacy configuration to the new organization format. Continue?')) {
+      return;
+    }
+
+    setMigratingConfig(true);
+    setMessage('');
+    try {
+      const result = await invoke('migrateLegacyConfig');
+      if (result.success) {
+        setMessage(`✓ ${result.message}\n\nOrganization: ${result.organization.name}\nID: ${result.organization.id}`);
+        await loadOrganizations();
+        await handleCheckStorage();
+      } else {
+        setMessage(`Migration info: ${result.message}`);
+      }
+      setTimeout(() => setMessage(''), 5000);
+    } catch (error) {
+      console.error('Error migrating config:', error);
+      setMessage('Error migrating configuration: ' + error.message);
+      setTimeout(() => setMessage(''), 5000);
+    } finally {
+      setMigratingConfig(false);
+    }
   };
 
   useEffect(() => {
@@ -309,7 +354,7 @@ function App() {
     setMessage('Loading remote data...');
 
     try {
-      const data = await invoke('fetchRemoteData');
+      const data = await invoke('fetchRemoteData', { orgId: selectedOrgId });
 
       if (data.users) {
         setRemoteUsers(data.users);
@@ -336,11 +381,17 @@ function App() {
   };
 
   const loadLocalData = async () => {
+    if (!selectedOrgId) {
+      setMessage('Please select an organization first');
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
+
     setDataLoading(true);
     setMessage('Loading local data...');
 
     try {
-      const data = await invoke('fetchLocalData');
+      const data = await invoke('fetchLocalData', { orgId: selectedOrgId });
 
       if (data.users) {
         setLocalUsers(data.users);
@@ -693,9 +744,19 @@ function App() {
   const selectedOrg = organizations.find(o => o.id === selectedOrgId);
 
   return (
-    <div style={{ padding: '20px' }}>
-      <h1>Multi-Organization Sync Connector</h1>
-      <p>Configure multiple target Jira organizations to sync from this instance (Org A → Org B, C, D...)</p>
+    <>
+      <style>{`
+        [role="tabpanel"] > div {
+          width: 100% !important;
+          max-width: 100% !important;
+        }
+        [role="tabpanel"] [class*="select"] > div {
+          width: 100% !important;
+        }
+      `}</style>
+      <div style={{ padding: '20px', maxWidth: '100%', boxSizing: 'border-box', overflow: 'hidden' }}>
+        <h1>Multi-Organization Sync Connector</h1>
+        <p>Configure multiple target Jira organizations to sync from this instance (Org A → Org B, C, D...)</p>
 
       {message && (
         <SectionMessage 
@@ -835,12 +896,66 @@ function App() {
         <div style={{ marginTop: '20px', padding: '20px', background: '#fff4e6', borderRadius: '3px', textAlign: 'center' }}>
           <h3>Welcome! Get Started</h3>
           <p>You haven't configured any organizations yet. Click "Add Organization" above to get started.</p>
+
+          <div style={{ marginTop: '20px', padding: '16px', background: '#deebff', borderRadius: '3px', textAlign: 'left' }}>
+            <h4 style={{ marginTop: 0 }}>Debug: Check Production Storage</h4>
+            <p style={{ fontSize: '13px', color: '#0747A6' }}>
+              If you had a configuration before, click below to check what's stored in production and migrate if needed.
+            </p>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+              <Button
+                appearance="default"
+                onClick={handleCheckStorage}
+                isLoading={checkingStorage}
+              >
+                Check Storage
+              </Button>
+              {storageInfo?.summary?.hasLegacyConfig && (
+                <Button
+                  appearance="primary"
+                  onClick={handleMigrateLegacy}
+                  isLoading={migratingConfig}
+                >
+                  Migrate Legacy Config
+                </Button>
+              )}
+            </div>
+
+            {storageInfo && (
+              <div style={{ marginTop: '16px', padding: '12px', background: '#fff', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>
+                <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>Storage Summary:</div>
+                <div>Organizations: {storageInfo.summary.organizationCount}</div>
+                <div>Legacy Config: {storageInfo.summary.hasLegacyConfig ? '✓ Found' : '✗ None'}</div>
+                <div>Legacy Mappings: {storageInfo.summary.hasLegacyMappings ? '✓ Found' : '✗ None'}</div>
+
+                {storageInfo.syncConfig && (
+                  <div style={{ marginTop: '12px', padding: '8px', background: '#fffae6', borderRadius: '3px' }}>
+                    <div style={{ fontWeight: 'bold' }}>Legacy Configuration Found:</div>
+                    <div>URL: {storageInfo.syncConfig.remoteUrl}</div>
+                    <div>Project: {storageInfo.syncConfig.remoteProjectKey}</div>
+                    <div>Email: {storageInfo.syncConfig.remoteEmail}</div>
+                  </div>
+                )}
+
+                {storageInfo.organizations && storageInfo.organizations.length > 0 && (
+                  <div style={{ marginTop: '12px', padding: '8px', background: '#e3fcef', borderRadius: '3px' }}>
+                    <div style={{ fontWeight: 'bold' }}>Organizations in Storage:</div>
+                    {storageInfo.organizations.map(org => (
+                      <div key={org.id} style={{ marginTop: '4px' }}>
+                        • {org.name} ({org.remoteUrl})
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {selectedOrgId && selectedOrg && (
         <>
-          <Tabs id="admin-tabs" style={{ marginTop: '30px' }}>
+          <Tabs id="admin-tabs" style={{ marginTop: '30px', width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
             <TabList>
               <Tab>Project Filter</Tab>
               <Tab>Mappings</Tab>
@@ -849,92 +964,85 @@ function App() {
             </TabList>
 
             <TabPanel>
-              <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', marginTop: '16px' }}>
-                <h3>Project Filter for {selectedOrg.name} ({selectedOrg.allowedProjects?.length || 0} selected)</h3>
-                <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                  Select which projects to sync to {selectedOrg.name}. If no projects are selected, all projects will be synced.
-                </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
+                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
+                  <h3>Project Filter for {selectedOrg.name} ({selectedOrg.allowedProjects?.length || 0} selected)</h3>
+                  <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+                    Select which projects to sync to {selectedOrg.name}. If no projects are selected, all projects will be synced.
+                  </p>
 
-                <Button appearance="primary" onClick={loadLocalProjects} isLoading={dataLoading} style={{ marginBottom: '16px' }}>
-                  Load Projects
-                </Button>
+                  <Button appearance="primary" onClick={loadLocalProjects} isLoading={dataLoading} style={{ marginBottom: '16px' }}>
+                    Load Projects
+                  </Button>
 
-                {localProjects.length > 0 && (
-                  <>
-                    <h4>Available Projects</h4>
-                    <div style={{ marginBottom: '16px' }}>
-                      {localProjects.map(project => {
-                        const isSelected = selectedOrg.allowedProjects?.includes(project.key);
-                        return (
-                          <div
-                            key={project.key}
-                            style={{
-                              padding: '12px',
-                              background: isSelected ? '#e3fcef' : '#f4f5f7',
-                              borderRadius: '3px',
-                              marginBottom: '8px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              cursor: 'pointer',
-                              border: isSelected ? '2px solid #00875A' : '2px solid transparent'
-                            }}
-                            onClick={() => toggleProjectSelection(project.key)}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isSelected || false}
-                              readOnly
-                              style={{ marginRight: '12px', cursor: 'pointer', pointerEvents: 'none' }}
-                            />
-                            <div>
-                              <strong>{project.key}</strong> - {project.name}
+                  {localProjects.length > 0 && (
+                    <>
+                      <h4>Available Projects</h4>
+                      <div style={{ marginBottom: '16px' }}>
+                        {localProjects.map(project => {
+                          const isSelected = selectedOrg.allowedProjects?.includes(project.key);
+                          return (
+                            <div
+                              key={project.key}
+                              style={{
+                                padding: '12px',
+                                background: isSelected ? '#e3fcef' : '#f4f5f7',
+                                borderRadius: '3px',
+                                marginBottom: '8px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                cursor: 'pointer',
+                                border: isSelected ? '2px solid #00875A' : '2px solid transparent'
+                              }}
+                              onClick={() => toggleProjectSelection(project.key)}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected || false}
+                                readOnly
+                                style={{ marginRight: '12px', cursor: 'pointer', pointerEvents: 'none' }}
+                              />
+                              <div>
+                                <strong>{project.key}</strong> - {project.name}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          );
+                        })}
+                      </div>
 
-                    <Button appearance="primary" onClick={handleSaveProjectFilter} isLoading={saving}>
-                      Save Project Filter
-                    </Button>
-                  </>
-                )}
+                      <Button appearance="primary" onClick={handleSaveProjectFilter} isLoading={saving}>
+                        Save Project Filter
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
             </TabPanel>
 
             <TabPanel>
-              {!dataLoaded.remote || !dataLoaded.local ? (
-                <SectionMessage 
-                  appearance="warning" 
-                  title="Data Not Loaded"
-                  style={{ marginTop: '16px' }}
-                >
-                  <p>Please load both Remote and Local data first before creating mappings.</p>
-                  <p style={{ fontSize: '13px', color: '#6B778C' }}>
-                    Missing: {!dataLoaded.remote && 'Remote Data'} {!dataLoaded.remote && !dataLoaded.local && ' & '} {!dataLoaded.local && 'Local Data'}
-                  </p>
-                  <p style={{ fontSize: '13px', color: '#6B778C', marginTop: '12px' }}>
-                    Use the "Load Remote Data" and "Load Local Data" buttons in the organization selector above.
-                  </p>
-                </SectionMessage>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px' }}>
-                  {/* User Mappings Section */}
-                  <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%' }}>
-                    <div 
-                      style={{
-                        ...collapsibleHeaderStyle,
-                        borderBottom: expandedSections.users ? '1px solid #DFE1E6' : 'none',
-                        marginBottom: expandedSections.users ? '16px' : 0,
-                        marginTop: 0
-                      }}
-                      onClick={() => toggleSection('users')}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
+                {!dataLoaded.remote || !dataLoaded.local ? (
+                  <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
+                    <SectionMessage
+                      appearance="warning"
+                      title="Data Not Loaded"
                     >
-                      <h3 style={{ margin: 0 }}>User Mapping ({Object.keys(userMappings).length})</h3>
-                      <span style={{ fontSize: '18px' }}>{expandedSections.users ? '▼' : '▶'}</span>
-                    </div>
-                    
-                    {expandedSections.users && (
+                      <p>Please load both Remote and Local data first before creating mappings.</p>
+                      <p style={{ fontSize: '13px', color: '#6B778C' }}>
+                        Missing: {!dataLoaded.remote && 'Remote Data'} {!dataLoaded.remote && !dataLoaded.local && ' & '} {!dataLoaded.local && 'Local Data'}
+                      </p>
+                      <p style={{ fontSize: '13px', color: '#6B778C', marginTop: '12px' }}>
+                        Use the "Load Remote Data" and "Load Local Data" buttons in the organization selector above.
+                      </p>
+                    </SectionMessage>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
+                      <h3 style={{ marginTop: 0 }}>User Mapping ({Object.keys(userMappings).length})</h3>
+                      <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+                        Map users from {selectedOrg.name} to local users.
+                      </p>
                       <div>
                         <h4>Add User Mapping</h4>
                         <div style={{ marginBottom: '16px' }}>
@@ -953,7 +1061,10 @@ function App() {
                             onChange={(option) => setNewUserRemote(option?.value || '')}
                             placeholder={remoteUsers.length === 0 ? 'Load remote data first' : 'Select remote user...'}
                             isClearable
-                            styles={{ container: base => ({ ...base, marginBottom: '10px' }) }}
+                            styles={{
+                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
+                              control: base => ({ ...base, width: '100%' })
+                            }}
                           />
 
                           <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
@@ -971,7 +1082,10 @@ function App() {
                             onChange={(option) => setNewUserLocal(option?.value || '')}
                             placeholder={localUsers.length === 0 ? 'Load local data first' : 'Select local user...'}
                             isClearable
-                            styles={{ container: base => ({ ...base, marginBottom: '10px' }) }}
+                            styles={{
+                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
+                              control: base => ({ ...base, width: '100%' })
+                            }}
                           />
 
                           <Button appearance="primary" onClick={addUserMapping}>
@@ -1006,25 +1120,13 @@ function App() {
                           </Button>
                         </div>
                       </div>
-                    )}
-                  </div>
-
-                  {/* Field Mappings Section */}
-                  <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%' }}>
-                    <div 
-                      style={{
-                        ...collapsibleHeaderStyle,
-                        borderBottom: expandedSections.fields ? '1px solid #DFE1E6' : 'none',
-                        marginBottom: expandedSections.fields ? '16px' : 0,
-                        marginTop: 0
-                      }}
-                      onClick={() => toggleSection('fields')}
-                    >
-                      <h3 style={{ margin: 0 }}>Field Mapping ({Object.keys(fieldMappings).length})</h3>
-                      <span style={{ fontSize: '18px' }}>{expandedSections.fields ? '▼' : '▶'}</span>
                     </div>
-                    
-                    {expandedSections.fields && (
+
+                    <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
+                      <h3 style={{ marginTop: 0 }}>Field Mapping ({Object.keys(fieldMappings).length})</h3>
+                      <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+                        Map custom fields from {selectedOrg.name} to local fields.
+                      </p>
                       <div>
                         <h4>Add Field Mapping</h4>
                         <div style={{ marginBottom: '16px' }}>
@@ -1043,7 +1145,10 @@ function App() {
                             onChange={(option) => setNewFieldRemote(option?.value || '')}
                             placeholder={remoteFields.length === 0 ? 'Load remote data first' : 'Select remote field...'}
                             isClearable
-                            styles={{ container: base => ({ ...base, marginBottom: '10px' }) }}
+                            styles={{
+                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
+                              control: base => ({ ...base, width: '100%' })
+                            }}
                           />
 
                           <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
@@ -1061,7 +1166,10 @@ function App() {
                             onChange={(option) => setNewFieldLocal(option?.value || '')}
                             placeholder={localFields.length === 0 ? 'Load local data first' : 'Select local field...'}
                             isClearable
-                            styles={{ container: base => ({ ...base, marginBottom: '10px' }) }}
+                            styles={{
+                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
+                              control: base => ({ ...base, width: '100%' })
+                            }}
                           />
 
                           <Button appearance="primary" onClick={addFieldMapping}>
@@ -1096,25 +1204,13 @@ function App() {
                           </Button>
                         </div>
                       </div>
-                    )}
-                  </div>
-
-                  {/* Status Mappings Section */}
-                  <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%' }}>
-                    <div 
-                      style={{
-                        ...collapsibleHeaderStyle,
-                        borderBottom: expandedSections.statuses ? '1px solid #DFE1E6' : 'none',
-                        marginBottom: expandedSections.statuses ? '16px' : 0,
-                        marginTop: 0
-                      }}
-                      onClick={() => toggleSection('statuses')}
-                    >
-                      <h3 style={{ margin: 0 }}>Status Mapping ({Object.keys(statusMappings).length})</h3>
-                      <span style={{ fontSize: '18px' }}>{expandedSections.statuses ? '▼' : '▶'}</span>
                     </div>
-                    
-                    {expandedSections.statuses && (
+
+                    <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
+                      <h3 style={{ marginTop: 0 }}>Status Mapping ({Object.keys(statusMappings).length})</h3>
+                      <p style={{ marginBottom: '16px', color: '#6B778C' }}>
+                        Map statuses from {selectedOrg.name} to local statuses.
+                      </p>
                       <div>
                         <h4>Add Status Mapping</h4>
                         <div style={{ marginBottom: '16px' }}>
@@ -1133,7 +1229,10 @@ function App() {
                             onChange={(option) => setNewStatusRemote(option?.value || '')}
                             placeholder={remoteStatuses.length === 0 ? 'Load remote data first' : 'Select remote status...'}
                             isClearable
-                            styles={{ container: base => ({ ...base, marginBottom: '10px' }) }}
+                            styles={{
+                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
+                              control: base => ({ ...base, width: '100%' })
+                            }}
                           />
 
                           <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
@@ -1151,7 +1250,10 @@ function App() {
                             onChange={(option) => setNewStatusLocal(option?.value || '')}
                             placeholder={localStatuses.length === 0 ? 'Load local data first' : 'Select local status...'}
                             isClearable
-                            styles={{ container: base => ({ ...base, marginBottom: '10px' }) }}
+                            styles={{
+                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
+                              control: base => ({ ...base, width: '100%' })
+                            }}
                           />
 
                           <Button appearance="primary" onClick={addStatusMapping}>
@@ -1186,16 +1288,16 @@ function App() {
                           </Button>
                         </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-              )}
+                    </div>
+                  </>
+                )}
+              </div>
             </TabPanel>
 
             {/* ...existing Sync Controls and Health & Stats tabs remain the same... */}
             <TabPanel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px' }}>
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
+                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
                   <h3>Sync Options for {selectedOrg.name}</h3>
                   <p style={{ marginBottom: '16px', color: '#6B778C' }}>
                     Choose which types of data to sync to {selectedOrg.name}.
@@ -1256,7 +1358,7 @@ function App() {
                   </Button>
                 </div>
 
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%' }}>
+                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
                   <h3>Manual Sync Controls</h3>
                   <p style={{ marginBottom: '16px', color: '#6B778C' }}>
                     Manually trigger sync for a specific issue (will sync to ALL configured organizations).
@@ -1303,8 +1405,8 @@ function App() {
             </TabPanel>
 
             <TabPanel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px' }}>
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
+                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
                   <h3>Sync Health & Statistics</h3>
                   <p style={{ marginBottom: '16px', color: '#6B778C' }}>
                     View synchronization statistics across all organizations.
@@ -1315,9 +1417,9 @@ function App() {
                   </Button>
 
                   {webhookStats && (
-                    <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+                    <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px', boxSizing: 'border-box', maxWidth: '100%' }}>
                       <h4 style={{ marginTop: 0 }}>Webhook Sync Statistics</h4>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
                         <div>
                           <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#0052CC' }}>{webhookStats.totalSyncs || 0}</div>
                           <div style={{ fontSize: '12px', color: '#6B778C' }}>Total Syncs</div>
@@ -1379,9 +1481,9 @@ function App() {
                   )}
 
                   {scheduledStats && (
-                    <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
+                    <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px', boxSizing: 'border-box', maxWidth: '100%' }}>
                       <h4 style={{ marginTop: 0 }}>Scheduled Sync Statistics</h4>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
                         <div>
                           <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#0052CC' }}>{scheduledStats.issuesChecked || 0}</div>
                           <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Checked</div>
@@ -1422,7 +1524,7 @@ function App() {
                   )}
                 </div>
 
-                <div style={{ padding: '16px', background: '#E3FCEF', borderRadius: '3px', border: '2px solid #00875A', width: '100%' }}>
+                <div style={{ padding: '16px', background: '#E3FCEF', borderRadius: '3px', border: '2px solid #00875A', width: '100%', boxSizing: 'border-box' }}>
                   <h4 style={{ marginTop: 0, color: '#00875A' }}>Pending Link Sync</h4>
                   <p style={{ fontSize: '13px', color: '#006644', marginBottom: '12px' }}>
                     When an issue is synced but its linked issues haven't been synced yet, the links are stored as "pending". 
@@ -1441,7 +1543,7 @@ function App() {
                   </Button>
                 </div>
 
-                <div style={{ padding: '16px', background: '#DEEBFF', borderRadius: '3px', width: '100%' }}>
+                <div style={{ padding: '16px', background: '#DEEBFF', borderRadius: '3px', width: '100%', boxSizing: 'border-box' }}>
                   <p style={{ margin: 0, fontSize: '13px', color: '#0747A6' }}>
                     <strong>Note:</strong> Statistics tracking across {organizations.length} organization(s). 
                     Scheduled sync runs every hour. You can view detailed logs with: <code>forge logs</code>
@@ -1452,7 +1554,8 @@ function App() {
           </Tabs>
         </>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 

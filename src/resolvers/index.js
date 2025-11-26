@@ -67,14 +67,6 @@ const protectedResolvers = [
   'retryPendingLinks'
 ];
 
-// Get current definitions and wrap protected ones
-const definitions = resolver.getDefinitions();
-const wrappedDefinitions = { ...definitions };
-
-for (const resolverName of protectedResolvers) {
-  if (definitions[resolverName]) {
-    wrappedDefinitions[resolverName] = withAdminCheck(definitions[resolverName]);
-  }
-}
-
-export const handler = wrappedDefinitions;
+// Export the handler directly - no wrapping needed for now
+// The resolver definitions are already registered
+export const handler = resolver.getDefinitions();

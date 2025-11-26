@@ -21,11 +21,38 @@ export function defineDataResolvers(resolver) {
     }
   });
 
-  resolver.define('fetchLocalData', async () => {
+  resolver.define('fetchLocalData', async (req) => {
     try {
-      const config = await storage.get('syncConfig');
-      if (!config || !config.remoteProjectKey) {
-        throw new Error('Project key not configured');
+      // Log everything for debugging
+      console.log('fetchLocalData FULL REQUEST:', JSON.stringify(req));
+      console.log('fetchLocalData payload:', req.payload);
+
+      // Get organization config
+      const orgId = req?.payload?.orgId;
+      let projectKey;
+
+      console.log('fetchLocalData extracted orgId:', orgId);
+
+      if (orgId) {
+        // Use new organization format
+        const orgs = await storage.get('organizations') || [];
+        console.log('Found organizations:', orgs);
+        const org = orgs.find(o => o.id === orgId);
+        if (!org) {
+          throw new Error(`Organization with ID ${orgId} not found`);
+        }
+        if (!org.remoteProjectKey) {
+          throw new Error('Organization missing remoteProjectKey');
+        }
+        projectKey = org.remoteProjectKey;
+      } else {
+        // Fallback to legacy format
+        console.log('No orgId provided, falling back to legacy config');
+        const config = await storage.get('syncConfig');
+        if (!config || !config.remoteProjectKey) {
+          throw new Error('Project key not configured');
+        }
+        projectKey = config.remoteProjectKey;
       }
 
       const usersResponse = await api.asApp().requestJira(
@@ -46,7 +73,7 @@ export function defineDataResolvers(resolver) {
       const customFields = allFields.filter(f => f.custom);
 
       const statusesResponse = await api.asApp().requestJira(
-        route`/rest/api/3/project/${config.remoteProjectKey}/statuses`
+        route`/rest/api/3/project/${projectKey}/statuses`
       );
       const statusData = await statusesResponse.json();
 
@@ -81,11 +108,38 @@ export function defineDataResolvers(resolver) {
     }
   });
 
-  resolver.define('fetchRemoteData', async () => {
+  resolver.define('fetchRemoteData', async ({ payload }) => {
     try {
-      const config = await storage.get('syncConfig');
-      if (!config || !config.remoteUrl || !config.remoteEmail || !config.remoteApiToken) {
-        throw new Error('Remote configuration not complete');
+      // Get organization config
+      const orgId = payload?.orgId;
+      let config;
+
+      console.log('fetchRemoteData called with orgId:', orgId);
+
+      if (orgId) {
+        // Use new organization format
+        const orgs = await storage.get('organizations') || [];
+        console.log('Found organizations:', orgs);
+        const org = orgs.find(o => o.id === orgId);
+        if (!org) {
+          throw new Error(`Organization with ID ${orgId} not found`);
+        }
+        if (!org.remoteUrl || !org.remoteEmail || !org.remoteApiToken || !org.remoteProjectKey) {
+          throw new Error('Organization missing required fields');
+        }
+        config = {
+          remoteUrl: org.remoteUrl,
+          remoteEmail: org.remoteEmail,
+          remoteApiToken: org.remoteApiToken,
+          remoteProjectKey: org.remoteProjectKey
+        };
+      } else {
+        // Fallback to legacy format
+        console.log('No orgId provided, falling back to legacy config');
+        config = await storage.get('syncConfig');
+        if (!config || !config.remoteUrl || !config.remoteEmail || !config.remoteApiToken) {
+          throw new Error('Remote configuration not complete');
+        }
       }
 
       const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -99,9 +153,9 @@ export function defineDataResolvers(resolver) {
         { headers }
       );
       const allUsers = await usersResponse.json();
-      
-      const users = allUsers.filter(u => 
-        u.accountType === 'atlassian' && 
+
+      const users = allUsers.filter(u =>
+        u.accountType === 'atlassian' &&
         u.active === true &&
         !u.displayName.includes('(')
       );
@@ -118,7 +172,7 @@ export function defineDataResolvers(resolver) {
         { headers }
       );
       const statusData = await statusesResponse.json();
-      
+
       const statusMap = new Map();
       statusData.forEach(issueType => {
         issueType.statuses.forEach(status => {
