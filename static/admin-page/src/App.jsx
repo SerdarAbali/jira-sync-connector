@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { render } from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
 import Form, { Field } from '@atlaskit/form';
@@ -11,63 +11,18 @@ import SectionMessage from '@atlaskit/section-message';
 import '@atlaskit/css-reset';
 import ErrorBoundary from './components/ErrorBoundary';
 
-const sectionStyle = {
-  marginTop: '30px',
-  padding: '20px',
-  background: 'white',
-  borderRadius: '3px',
-  border: '1px solid #dfe1e6'
-};
-
-const collapsibleHeaderStyle = {
-  padding: '12px 16px',
-  background: '#f4f5f7',
-  borderRadius: '3px',
-  cursor: 'pointer',
-  fontWeight: 600,
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center'
-};
-
-const mappingItemStyle = {
-  padding: '12px',
-  background: '#f4f5f7',
-  borderRadius: '3px',
-  marginBottom: '8px',
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center'
-};
-
-function App() {
+const App = () => {
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState(null);
-  const [showAddOrgForm, setShowAddOrgForm] = useState(false);
-  const [editingOrg, setEditingOrg] = useState(null);
-
-  const [config, setConfig] = useState({
-    remoteUrl: '',
-    remoteEmail: '',
-    remoteApiToken: '',
-    remoteProjectKey: '',
-    allowedProjects: []
-  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  const [userMappings, setUserMappings] = useState({});
-  const [fieldMappings, setFieldMappings] = useState({});
-  const [statusMappings, setStatusMappings] = useState({});
+  // Add/Edit org modal state
+  const [showOrgModal, setShowOrgModal] = useState(false);
+  const [editingOrg, setEditingOrg] = useState(null);
 
-  const [newUserRemote, setNewUserRemote] = useState('');
-  const [newUserLocal, setNewUserLocal] = useState('');
-  const [newFieldRemote, setNewFieldRemote] = useState('');
-  const [newFieldLocal, setNewFieldLocal] = useState('');
-  const [newStatusRemote, setNewStatusRemote] = useState('');
-  const [newStatusLocal, setNewStatusLocal] = useState('');
-
+  // Auto-loaded data
   const [remoteUsers, setRemoteUsers] = useState([]);
   const [localUsers, setLocalUsers] = useState([]);
   const [remoteFields, setRemoteFields] = useState([]);
@@ -76,16 +31,12 @@ function App() {
   const [localStatuses, setLocalStatuses] = useState([]);
   const [localProjects, setLocalProjects] = useState([]);
 
-  const [dataLoading, setDataLoading] = useState(false);
-  const [scheduledStats, setScheduledStats] = useState(null);
-  const [webhookStats, setWebhookStats] = useState(null);
-  const [statsLoading, setStatsLoading] = useState(false);
+  // Mappings
+  const [userMappings, setUserMappings] = useState({});
+  const [fieldMappings, setFieldMappings] = useState({});
+  const [statusMappings, setStatusMappings] = useState({});
 
-  const [manualSyncOpen, setManualSyncOpen] = useState(false);
-  const [manualIssueKey, setManualIssueKey] = useState('');
-  const [manualSyncLoading, setManualSyncLoading] = useState(false);
-
-  const [syncOptionsOpen, setSyncOptionsOpen] = useState(false);
+  // Sync options
   const [syncOptions, setSyncOptions] = useState({
     syncComments: true,
     syncAttachments: true,
@@ -93,90 +44,29 @@ function App() {
     syncSprints: false
   });
 
-  const [auditLogOpen, setAuditLogOpen] = useState(false);
-  const [auditLog, setAuditLog] = useState([]);
-  const [auditLoading, setAuditLoading] = useState(false);
+  // Stats
+  const [syncStats, setSyncStats] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(false);
 
-  const [scheduledSyncOpen, setScheduledSyncOpen] = useState(false);
-  const [scheduledSyncConfig, setScheduledSyncConfig] = useState({
-    enabled: false,
-    intervalMinutes: 60,
-    lastRun: null,
-    syncScope: 'recent'
-  });
+  // Manual sync
+  const [manualIssueKey, setManualIssueKey] = useState('');
+  const [manualSyncLoading, setManualSyncLoading] = useState(false);
 
-  const [pendingLinksLoading, setPendingLinksLoading] = useState(false);
-
-  const [dataLoaded, setDataLoaded] = useState({
-    remote: false,
-    local: false
-  });
-
-  const [expandedSections, setExpandedSections] = useState({
-    users: true,
+  // Data loading states
+  const [dataLoading, setDataLoading] = useState({
+    projects: false,
+    users: false,
     fields: false,
     statuses: false
   });
 
-  const [storageInfo, setStorageInfo] = useState(null);
-  const [checkingStorage, setCheckingStorage] = useState(false);
-  const [migratingConfig, setMigratingConfig] = useState(false);
-
-  const toggleSection = (section) => {
-    setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
-  };
-
-  const handleCheckStorage = async () => {
-    setCheckingStorage(true);
-    try {
-      const result = await invoke('checkStorage');
-      setStorageInfo(result);
-      console.log('Storage check result:', result);
-    } catch (error) {
-      console.error('Error checking storage:', error);
-      setMessage('Error checking storage: ' + error.message);
-      setTimeout(() => setMessage(''), 3000);
-    } finally {
-      setCheckingStorage(false);
-    }
-  };
-
-  const handleMigrateLegacy = async () => {
-    if (!confirm('This will migrate your legacy configuration to the new organization format. Continue?')) {
-      return;
-    }
-
-    setMigratingConfig(true);
-    setMessage('');
-    try {
-      const result = await invoke('migrateLegacyConfig');
-      if (result.success) {
-        setMessage(`✓ ${result.message}\n\nOrganization: ${result.organization.name}\nID: ${result.organization.id}`);
-        await loadOrganizations();
-        await handleCheckStorage();
-      } else {
-        setMessage(`Migration info: ${result.message}`);
-      }
-      setTimeout(() => setMessage(''), 5000);
-    } catch (error) {
-      console.error('Error migrating config:', error);
-      setMessage('Error migrating configuration: ' + error.message);
-      setTimeout(() => setMessage(''), 5000);
-    } finally {
-      setMigratingConfig(false);
-    }
-  };
-
   useEffect(() => {
     loadOrganizations();
-    loadConfiguration();
-    loadScheduledSyncConfig();
   }, []);
 
   useEffect(() => {
     if (selectedOrgId) {
-      loadAllMappingsForOrg(selectedOrgId);
-      setDataLoaded({ remote: false, local: false });
+      loadOrgData(selectedOrgId);
     }
   }, [selectedOrgId]);
 
@@ -189,283 +79,161 @@ function App() {
       }
     } catch (error) {
       console.error('Error loading organizations:', error);
-    }
-  };
-
-  const loadConfiguration = async () => {
-    try {
-      const savedConfig = await invoke('getConfig');
-      if (savedConfig) {
-        setConfig(savedConfig);
-      }
-    } catch (error) {
-      console.error('Error loading config:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const loadAllMappingsForOrg = async (orgId) => {
-    if (!orgId) return;
-
+  const loadOrgData = async (orgId) => {
     try {
-      const userMappingData = await invoke('getUserMappings', { orgId });
-      if (userMappingData && userMappingData.mappings) {
-        setUserMappings(userMappingData.mappings);
-      }
+      // Load mappings
+      const [userMappingData, fieldMappingData, statusMappingData, syncOptionsData] = await Promise.all([
+        invoke('getUserMappings', { orgId }),
+        invoke('getFieldMappings', { orgId }),
+        invoke('getStatusMappings', { orgId }),
+        invoke('getSyncOptions', { orgId })
+      ]);
 
-      const fieldMappingData = await invoke('getFieldMappings', { orgId });
-      if (fieldMappingData) {
-        setFieldMappings(fieldMappingData);
-      }
-
-      const statusMappingData = await invoke('getStatusMappings', { orgId });
-      if (statusMappingData) {
-        setStatusMappings(statusMappingData);
-      }
-
-      const syncOptionsData = await invoke('getSyncOptions', { orgId });
-      if (syncOptionsData) {
-        setSyncOptions(syncOptionsData);
-      }
+      if (userMappingData?.mappings) setUserMappings(userMappingData.mappings);
+      if (fieldMappingData) setFieldMappings(fieldMappingData);
+      if (statusMappingData) setStatusMappings(statusMappingData);
+      if (syncOptionsData) setSyncOptions(syncOptionsData);
     } catch (error) {
-      console.error('Error loading mappings:', error);
+      console.error('Error loading org data:', error);
     }
   };
 
-  const loadScheduledSyncConfig = async () => {
+  const loadProjects = async () => {
+    if (localProjects.length > 0) return;
+    setDataLoading(prev => ({ ...prev, projects: true }));
     try {
-      const config = await invoke('getScheduledSyncConfig');
-      if (config) {
-        setScheduledSyncConfig(config);
-      }
+      const data = await invoke('fetchLocalProjects');
+      if (data.projects) setLocalProjects(data.projects);
     } catch (error) {
-      console.error('Error loading scheduled sync config:', error);
-    }
-  };
-
-  const handleAddOrganization = async (data) => {
-    setSaving(true);
-    setMessage('');
-
-    try {
-      const result = await invoke('addOrganization', {
-        name: data.name,
-        remoteUrl: data.remoteUrl,
-        remoteEmail: data.remoteEmail,
-        remoteApiToken: data.remoteApiToken,
-        remoteProjectKey: data.remoteProjectKey,
-        allowedProjects: []
-      });
-
-      if (result.success) {
-        setMessage(`Organization "${data.name}" added successfully!`);
-        await loadOrganizations();
-        setShowAddOrgForm(false);
-        setSelectedOrgId(result.organization.id);
-      } else {
-        setMessage(`Error: ${result.error}`);
-      }
-      setTimeout(() => setMessage(''), 3000);
-    } catch (error) {
-      setMessage('Error adding organization: ' + error.message);
-      setTimeout(() => setMessage(''), 3000);
+      showMessage('Error loading projects: ' + error.message, 'error');
     } finally {
-      setSaving(false);
+      setDataLoading(prev => ({ ...prev, projects: false }));
     }
   };
 
-  const handleUpdateOrganization = async (data) => {
-    if (!editingOrg) return;
-
-    setSaving(true);
-    setMessage('');
-
-    try {
-      const result = await invoke('updateOrganization', {
-        id: editingOrg.id,
-        name: data.name,
-        remoteUrl: data.remoteUrl,
-        remoteEmail: data.remoteEmail,
-        remoteApiToken: data.remoteApiToken,
-        remoteProjectKey: data.remoteProjectKey,
-        allowedProjects: editingOrg.allowedProjects || []
-      });
-
-      if (result.success) {
-        setMessage(`Organization "${data.name}" updated successfully!`);
-        await loadOrganizations();
-        setEditingOrg(null);
-      } else {
-        setMessage(`Error: ${result.error}`);
-      }
-      setTimeout(() => setMessage(''), 3000);
-    } catch (error) {
-      setMessage('Error updating organization: ' + error.message);
-      setTimeout(() => setMessage(''), 3000);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDeleteOrganization = async (orgId) => {
-    if (!confirm('Are you sure you want to delete this organization? Mappings will be preserved.')) {
+  const loadMappingData = async () => {
+    if (!selectedOrgId) return;
+    const selectedOrg = organizations.find(o => o.id === selectedOrgId);
+    if (!selectedOrg?.remoteUrl) {
+      showMessage('Please configure the organization first', 'error');
       return;
     }
 
-    setSaving(true);
-    setMessage('');
+    setDataLoading(prev => ({ ...prev, users: true, fields: true, statuses: true }));
 
+    try {
+      const [remoteData, localData] = await Promise.all([
+        invoke('fetchRemoteData', { orgId: selectedOrgId }),
+        invoke('fetchLocalData', { orgId: selectedOrgId })
+      ]);
+
+      if (remoteData.users) setRemoteUsers(remoteData.users);
+      if (remoteData.fields) setRemoteFields(remoteData.fields);
+      if (remoteData.statuses) setRemoteStatuses(remoteData.statuses);
+
+      if (localData.users) setLocalUsers(localData.users);
+      if (localData.fields) setLocalFields(localData.fields);
+      if (localData.statuses) setLocalStatuses(localData.statuses);
+
+      showMessage('Mapping data loaded successfully', 'success');
+    } catch (error) {
+      showMessage('Error loading mapping data: ' + error.message, 'error');
+    } finally {
+      setDataLoading(prev => ({ ...prev, users: false, fields: false, statuses: false }));
+    }
+  };
+
+  const loadStats = async () => {
+    setStatsLoading(true);
+    try {
+      const [scheduled, webhook] = await Promise.all([
+        invoke('getScheduledSyncStats'),
+        invoke('getWebhookSyncStats')
+      ]);
+      setSyncStats({ scheduled, webhook });
+    } catch (error) {
+      showMessage('Error loading stats: ' + error.message, 'error');
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const showMessage = (msg, type = 'success') => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(''), 5000);
+  };
+
+  const handleSaveOrg = async (data) => {
+    setSaving(true);
+    try {
+      const result = editingOrg
+        ? await invoke('updateOrganization', { id: editingOrg.id, ...data })
+        : await invoke('addOrganization', { ...data, allowedProjects: [] });
+
+      if (result.success) {
+        showMessage(`Organization ${editingOrg ? 'updated' : 'added'} successfully`, 'success');
+        await loadOrganizations();
+        setShowOrgModal(false);
+        setEditingOrg(null);
+        if (!editingOrg) setSelectedOrgId(result.organization.id);
+      } else {
+        showMessage(`Error: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error saving organization: ' + error.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteOrg = async (orgId) => {
+    if (!confirm('Delete this organization? Mappings will be preserved.')) return;
+
+    setSaving(true);
     try {
       const result = await invoke('deleteOrganization', { id: orgId });
       if (result.success) {
-        setMessage('Organization deleted successfully!');
+        showMessage('Organization deleted successfully', 'success');
         await loadOrganizations();
         if (selectedOrgId === orgId) {
           setSelectedOrgId(organizations[0]?.id || null);
         }
       } else {
-        setMessage(`Error: ${result.error}`);
+        showMessage(`Error: ${result.error}`, 'error');
       }
-      setTimeout(() => setMessage(''), 3000);
     } catch (error) {
-      setMessage('Error deleting organization: ' + error.message);
-      setTimeout(() => setMessage(''), 3000);
+      showMessage('Error deleting organization: ' + error.message, 'error');
     } finally {
       setSaving(false);
     }
   };
 
-  const loadRemoteData = async () => {
-    if (!selectedOrgId) {
-      setMessage('Please select an organization first');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    const selectedOrg = organizations.find(o => o.id === selectedOrgId);
-    if (!selectedOrg || !selectedOrg.remoteUrl || !selectedOrg.remoteEmail || !selectedOrg.remoteApiToken || !selectedOrg.remoteProjectKey) {
-      setMessage('Please configure the selected organization first');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    setDataLoading(true);
-    setMessage('Loading remote data...');
-
-    try {
-      const data = await invoke('fetchRemoteData', { orgId: selectedOrgId });
-
-      if (data.users) {
-        setRemoteUsers(data.users);
-        if (data.users.length > 0) setNewUserRemote(data.users[0].accountId);
-      }
-      if (data.fields) {
-        setRemoteFields(data.fields);
-        if (data.fields.length > 0) setNewFieldRemote(data.fields[0].id);
-      }
-      if (data.statuses) {
-        setRemoteStatuses(data.statuses);
-        if (data.statuses.length > 0) setNewStatusRemote(data.statuses[0].id);
-      }
-
-      setMessage('Remote data loaded successfully!');
-      setDataLoaded(prev => ({ ...prev, remote: true }));
-    } catch (error) {
-      setMessage('Error loading remote data: ' + error.message);
-      console.error(error);
-    } finally {
-      setDataLoading(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
-  const loadLocalData = async () => {
-    if (!selectedOrgId) {
-      setMessage('Please select an organization first');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    setDataLoading(true);
-    setMessage('Loading local data...');
-
-    try {
-      const data = await invoke('fetchLocalData', { orgId: selectedOrgId });
-
-      if (data.users) {
-        setLocalUsers(data.users);
-        if (data.users.length > 0) setNewUserLocal(data.users[0].accountId);
-      }
-      if (data.fields) {
-        setLocalFields(data.fields);
-        if (data.fields.length > 0) setNewFieldLocal(data.fields[0].id);
-      }
-      if (data.statuses) {
-        setLocalStatuses(data.statuses);
-        if (data.statuses.length > 0) setNewStatusLocal(data.statuses[0].id);
-      }
-
-      setMessage('Local data loaded successfully!');
-      setDataLoaded(prev => ({ ...prev, local: true }));
-    } catch (error) {
-      setMessage('Error loading local data: ' + error.message);
-      console.error(error);
-    } finally {
-      setDataLoading(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
-  const loadLocalProjects = async () => {
-    setDataLoading(true);
-    setMessage('Loading local projects...');
-
-    try {
-      const data = await invoke('fetchLocalProjects');
-
-      if (data.projects) {
-        setLocalProjects(data.projects);
-        setMessage(`Loaded ${data.projects.length} project(s) successfully!`);
-      }
-    } catch (error) {
-      setMessage('Error loading local projects: ' + error.message);
-      console.error(error);
-    } finally {
-      setDataLoading(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
   const toggleProjectSelection = (projectKey) => {
     if (!selectedOrgId) return;
-
-    setOrganizations(orgs => {
-      return orgs.map(org => {
-        if (org.id !== selectedOrgId) return org;
-
-        const currentProjects = org.allowedProjects || [];
-        const isSelected = currentProjects.includes(projectKey);
-        const newProjects = isSelected
+    setOrganizations(orgs => orgs.map(org => {
+      if (org.id !== selectedOrgId) return org;
+      const currentProjects = org.allowedProjects || [];
+      const isSelected = currentProjects.includes(projectKey);
+      return {
+        ...org,
+        allowedProjects: isSelected
           ? currentProjects.filter(p => p !== projectKey)
-          : [...currentProjects, projectKey];
-
-        return {
-          ...org,
-          allowedProjects: newProjects
-        };
-      });
-    });
+          : [...currentProjects, projectKey]
+      };
+    }));
   };
 
   const handleSaveProjectFilter = async () => {
     if (!selectedOrgId) return;
-
     const selectedOrg = organizations.find(o => o.id === selectedOrgId);
     if (!selectedOrg) return;
 
     setSaving(true);
-    setMessage('');
     try {
       const result = await invoke('updateOrganization', {
         id: selectedOrg.id,
@@ -478,264 +246,127 @@ function App() {
       });
 
       if (result.success) {
-        setMessage('Project filter saved successfully!');
+        showMessage('Project filter saved', 'success');
       } else {
-        setMessage(`Error: ${result.error}`);
+        showMessage(`Error: ${result.error}`, 'error');
       }
     } catch (error) {
-      setMessage('Error saving project filter: ' + error.message);
+      showMessage('Error saving project filter: ' + error.message, 'error');
     } finally {
       setSaving(false);
-      setTimeout(() => setMessage(''), 3000);
     }
   };
 
-  const loadSyncStats = async () => {
-    setStatsLoading(true);
+  const addMapping = (type, remoteId, localId) => {
+    if (!remoteId || !localId) return;
+
+    const getItems = () => {
+      switch(type) {
+        case 'user': return { remote: remoteUsers, local: localUsers, setter: setUserMappings };
+        case 'field': return { remote: remoteFields, local: localFields, setter: setFieldMappings };
+        case 'status': return { remote: remoteStatuses, local: localStatuses, setter: setStatusMappings };
+      }
+    };
+
+    const { remote, local, setter } = getItems();
+    const remoteItem = remote.find(i => (i.accountId || i.id) === remoteId);
+    const localItem = local.find(i => (i.accountId || i.id) === localId);
+
+    setter(prev => ({
+      ...prev,
+      [remoteId]: {
+        localId,
+        remoteName: remoteItem?.displayName || remoteItem?.name || remoteId,
+        localName: localItem?.displayName || localItem?.name || localId
+      }
+    }));
+  };
+
+  const deleteMapping = (type, remoteId) => {
+    const setter = type === 'user' ? setUserMappings : type === 'field' ? setFieldMappings : setStatusMappings;
+    setter(prev => {
+      const updated = { ...prev };
+      delete updated[remoteId];
+      return updated;
+    });
+  };
+
+  const handleSaveMappings = async (type) => {
+    if (!selectedOrgId) return;
+
+    setSaving(true);
     try {
-      const [scheduled, webhook] = await Promise.all([
-        invoke('getScheduledSyncStats'),
-        invoke('getWebhookSyncStats')
-      ]);
-      setScheduledStats(scheduled);
-      setWebhookStats(webhook);
+      const mappings = type === 'user' ? userMappings : type === 'field' ? fieldMappings : statusMappings;
+      const method = type === 'user' ? 'saveUserMappings' : type === 'field' ? 'saveFieldMappings' : 'saveStatusMappings';
+
+      const payload = type === 'user'
+        ? { orgId: selectedOrgId, mappings, config: { autoMapUsers: false, fallbackUser: 'unassigned' } }
+        : { orgId: selectedOrgId, mappings };
+
+      await invoke(method, payload);
+      showMessage(`${type} mappings saved`, 'success');
     } catch (error) {
-      console.error('Error loading sync stats:', error);
-      setMessage('Error loading sync stats: ' + error.message);
-      setTimeout(() => setMessage(''), 3000);
+      showMessage(`Error saving ${type} mappings: ` + error.message, 'error');
     } finally {
-      setStatsLoading(false);
+      setSaving(false);
+    }
+  };
+
+  const handleSaveSyncOptions = async () => {
+    if (!selectedOrgId) return;
+
+    setSaving(true);
+    try {
+      const result = await invoke('saveSyncOptions', { orgId: selectedOrgId, options: syncOptions });
+      if (result.success) {
+        showMessage('Sync options saved', 'success');
+      } else {
+        showMessage(`Error: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error saving sync options: ' + error.message, 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleManualSync = async () => {
-    if (!manualIssueKey.trim()) {
-      setMessage('Please enter an issue key');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
+    if (!manualIssueKey.trim()) return;
 
     setManualSyncLoading(true);
-    setMessage('');
-
     try {
       const result = await invoke('forceSyncIssue', { issueKey: manualIssueKey.trim() });
       if (result.success) {
-        setMessage(result.message);
+        showMessage(result.message, 'success');
         setManualIssueKey('');
-        await loadSyncStats();
+        await loadStats();
       } else {
-        setMessage(`Error: ${result.error}`);
+        showMessage(`Error: ${result.error}`, 'error');
       }
-      setTimeout(() => setMessage(''), 5000);
     } catch (error) {
-      console.error('Error during manual sync:', error);
-      setMessage('Error: ' + error.message);
-      setTimeout(() => setMessage(''), 5000);
+      showMessage('Error: ' + error.message, 'error');
     } finally {
       setManualSyncLoading(false);
     }
   };
 
-  const handleSaveUserMappings = async () => {
-    if (!selectedOrgId) {
-      setMessage('Please select an organization');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    setSaving(true);
-    setMessage('');
-    try {
-      await invoke('saveUserMappings', {
-        orgId: selectedOrgId,
-        mappings: userMappings,
-        config: { autoMapUsers: false, fallbackUser: 'unassigned' }
-      });
-      setMessage('User mappings saved successfully!');
-    } catch (error) {
-      setMessage('Error saving user mappings: ' + error.message);
-    } finally {
-      setSaving(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
-  const handleSaveFieldMappings = async () => {
-    if (!selectedOrgId) {
-      setMessage('Please select an organization');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    setSaving(true);
-    setMessage('');
-    try {
-      await invoke('saveFieldMappings', {
-        orgId: selectedOrgId,
-        mappings: fieldMappings
-      });
-      setMessage('Field mappings saved successfully!');
-    } catch (error) {
-      setMessage('Error saving field mappings: ' + error.message);
-    } finally {
-      setSaving(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
-  const handleSaveStatusMappings = async () => {
-    if (!selectedOrgId) {
-      setMessage('Please select an organization');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    setSaving(true);
-    setMessage('');
-    try {
-      await invoke('saveStatusMappings', {
-        orgId: selectedOrgId,
-        mappings: statusMappings
-      });
-      setMessage('Status mappings saved successfully!');
-    } catch (error) {
-      setMessage('Error saving status mappings: ' + error.message);
-    } finally {
-      setSaving(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
-  const handleSaveSyncOptions = async () => {
-    if (!selectedOrgId) {
-      setMessage('Please select an organization');
-      setTimeout(() => setMessage(''), 3000);
-      return;
-    }
-
-    setSaving(true);
-    setMessage('');
-    try {
-      const result = await invoke('saveSyncOptions', { orgId: selectedOrgId, options: syncOptions });
-      if (result.success) {
-        setMessage('Sync options saved successfully!');
-      } else {
-        setMessage(`Error: ${result.error}`);
-      }
-      setTimeout(() => setMessage(''), 3000);
-    } catch (error) {
-      console.error('Error saving sync options:', error);
-      setMessage('Error: ' + error.message);
-      setTimeout(() => setMessage(''), 3000);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleRetryPendingLinks = async () => {
-    setPendingLinksLoading(true);
-    setMessage('');
-
     try {
       const result = await invoke('retryPendingLinks');
       if (result.success) {
-        setMessage(result.message);
-        await loadSyncStats();
+        showMessage(result.message, 'success');
+        await loadStats();
       } else {
-        setMessage(`Error: ${result.error}`);
+        showMessage(`Error: ${result.error}`, 'error');
       }
-      setTimeout(() => setMessage(''), 5000);
     } catch (error) {
-      console.error('Error retrying pending links:', error);
-      setMessage('Error: ' + error.message);
-      setTimeout(() => setMessage(''), 5000);
-    } finally {
-      setPendingLinksLoading(false);
+      showMessage('Error: ' + error.message, 'error');
     }
-  };
-
-  const addUserMapping = () => {
-    if (newUserRemote && newUserLocal) {
-      const remoteUser = remoteUsers.find(u => u.accountId === newUserRemote);
-      const localUser = localUsers.find(u => u.accountId === newUserLocal);
-
-      setUserMappings(prev => ({
-        ...prev,
-        [newUserRemote]: {
-          localId: newUserLocal,
-          remoteName: remoteUser?.displayName || newUserRemote,
-          localName: localUser?.displayName || newUserLocal
-        }
-      }));
-      setNewUserRemote('');
-      setNewUserLocal('');
-    }
-  };
-
-  const addFieldMapping = () => {
-    if (newFieldRemote && newFieldLocal) {
-      const remoteField = remoteFields.find(f => f.id === newFieldRemote);
-      const localField = localFields.find(f => f.id === newFieldLocal);
-
-      setFieldMappings(prev => ({
-        ...prev,
-        [newFieldRemote]: {
-          localId: newFieldLocal,
-          remoteName: remoteField?.name || newFieldRemote,
-          localName: localField?.name || newFieldLocal
-        }
-      }));
-      setNewFieldRemote('');
-      setNewFieldLocal('');
-    }
-  };
-
-  const addStatusMapping = () => {
-    if (newStatusRemote && newStatusLocal) {
-      const remoteStatus = remoteStatuses.find(s => s.id === newStatusRemote);
-      const localStatus = localStatuses.find(s => s.id === newStatusLocal);
-
-      setStatusMappings(prev => ({
-        ...prev,
-        [newStatusRemote]: {
-          localId: newStatusLocal,
-          remoteName: remoteStatus?.name || newStatusRemote,
-          localName: localStatus?.name || newStatusLocal
-        }
-      }));
-      setNewStatusRemote('');
-      setNewStatusLocal('');
-    }
-  };
-
-  const deleteUserMapping = (remoteId) => {
-    setUserMappings(prev => {
-      const updated = { ...prev };
-      delete updated[remoteId];
-      return updated;
-    });
-  };
-
-  const deleteFieldMapping = (remoteId) => {
-    setFieldMappings(prev => {
-      const updated = { ...prev };
-      delete updated[remoteId];
-      return updated;
-    });
-  };
-
-  const deleteStatusMapping = (remoteId) => {
-    setStatusMappings(prev => {
-      const updated = { ...prev };
-      delete updated[remoteId];
-      return updated;
-    });
   };
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
         <Spinner size="large" />
       </div>
     );
@@ -744,824 +375,735 @@ function App() {
   const selectedOrg = organizations.find(o => o.id === selectedOrgId);
 
   return (
-    <>
-      <style>{`
-        [role="tabpanel"] > div {
-          width: 100% !important;
-          max-width: 100% !important;
-        }
-        [role="tabpanel"] [class*="select"] > div {
-          width: 100% !important;
-        }
-      `}</style>
-      <div style={{ padding: '20px', maxWidth: '100%', boxSizing: 'border-box', overflow: 'hidden' }}>
-        <h1>Multi-Organization Sync Connector</h1>
-        <p>Configure multiple target Jira organizations to sync from this instance (Org A → Org B, C, D...)</p>
-
-      {message && (
-        <SectionMessage 
-          appearance={message.includes('Error') || message.includes('❌') ? 'error' : 'success'}
-        >
-          <p style={{ whiteSpace: 'pre-line' }}>{message}</p>
-        </SectionMessage>
-      )}
-
-      <div style={{ marginTop: '20px', padding: '16px', background: '#deebff', borderRadius: '3px' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div>
-            <label style={{ fontWeight: 600, marginRight: '10px', display: 'block', marginBottom: '8px' }}>Selected Organization:</label>
-            <Select
-              inputId="org-select"
-              className="single-select"
-              classNamePrefix="react-select"
-              options={organizations.map(org => ({
-                label: `${org.name} (${org.remoteUrl})`,
-                value: org.id
-              }))}
-              value={selectedOrg ? { label: `${selectedOrg.name} (${selectedOrg.remoteUrl})`, value: selectedOrg.id } : null}
-              onChange={(option) => setSelectedOrgId(option?.value || null)}
-              placeholder="-- Select Organization --"
-              isClearable
-            />
-          </div>
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-            {selectedOrg && (
-              <>
-                <Button appearance="default" onClick={() => setEditingOrg(selectedOrg)}>
-                  Edit
-                </Button>
-                <Button appearance="danger" onClick={() => handleDeleteOrganization(selectedOrgId)}>
-                  Delete
-                </Button>
-              </>
-            )}
-            <Button appearance="primary" onClick={() => setShowAddOrgForm(true)}>
-              Add Organization
-            </Button>
-          </div>
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+      {/* Sidebar */}
+      <div style={{
+        width: '280px',
+        background: '#F4F5F7',
+        borderRight: '2px solid #DFE1E6',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden'
+      }}>
+        <div style={{ padding: '20px', borderBottom: '2px solid #DFE1E6' }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: '16px' }}>Organizations</h3>
+          <Button
+            appearance="primary"
+            onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
+            style={{ width: '100%' }}
+          >
+            + Add Organization
+          </Button>
         </div>
 
-        {selectedOrg && (
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', paddingTop: '12px', marginTop: '12px', borderTop: '1px solid #0052CC', flexWrap: 'wrap' }}>
-            <Button appearance="primary" onClick={loadRemoteData} isLoading={dataLoading}>
-              Load Remote Data
-            </Button>
-            {dataLoaded.remote && <span style={{ color: '#00875A', fontSize: '14px', fontWeight: 600 }}>✓ Loaded</span>}
-            
-            <Button appearance="primary" onClick={loadLocalData} isLoading={dataLoading}>
-              Load Local Data
-            </Button>
-            {dataLoaded.local && <span style={{ color: '#00875A', fontSize: '14px', fontWeight: 600 }}>✓ Loaded</span>}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+          {organizations.length === 0 ? (
+            <div style={{ padding: '20px', textAlign: 'center', color: '#6B778C', fontSize: '13px' }}>
+              No organizations yet. Add one to get started.
+            </div>
+          ) : (
+            organizations.map(org => (
+              <div
+                key={org.id}
+                onClick={() => setSelectedOrgId(org.id)}
+                style={{
+                  padding: '12px',
+                  margin: '4px 0',
+                  background: selectedOrgId === org.id ? '#DEEBFF' : 'white',
+                  border: `2px solid ${selectedOrgId === org.id ? '#0052CC' : '#DFE1E6'}`,
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>
+                  {org.name}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6B778C', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {org.remoteUrl || 'Not configured'}
+                </div>
+                {org.allowedProjects && org.allowedProjects.length > 0 && (
+                  <div style={{ fontSize: '11px', color: '#00875A', marginTop: '4px' }}>
+                    {org.allowedProjects.length} project(s) filtered
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {message && (
+          <div style={{ padding: '12px 20px', background: message.type === 'error' ? '#FFEBE6' : '#E3FCEF', borderBottom: '1px solid #DFE1E6' }}>
+            <div style={{ color: message.type === 'error' ? '#DE350B' : '#00875A', fontSize: '14px' }}>
+              {message.text}
+            </div>
+          </div>
+        )}
+
+        {!selectedOrgId ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
+            <div style={{ textAlign: 'center', maxWidth: '500px' }}>
+              <h2>Welcome to Jira Sync Connector</h2>
+              <p style={{ color: '#6B778C', marginBottom: '24px' }}>
+                Configure multiple target Jira organizations to sync from this instance.
+                Get started by adding your first organization.
+              </p>
+              <Button
+                appearance="primary"
+                onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
+              >
+                Add Your First Organization
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {/* Organization Header */}
+            <div style={{ padding: '20px', borderBottom: '2px solid #DFE1E6', background: 'white' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <h2 style={{ margin: '0 0 8px 0' }}>{selectedOrg.name}</h2>
+                  <div style={{ color: '#6B778C', fontSize: '14px' }}>
+                    {selectedOrg.remoteUrl || 'Not configured'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <Button
+                    appearance="default"
+                    onClick={() => { setEditingOrg(selectedOrg); setShowOrgModal(true); }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    appearance="danger"
+                    onClick={() => handleDeleteOrg(selectedOrgId)}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <Tabs id="org-tabs">
+              <TabList>
+                <Tab>Configuration</Tab>
+                <Tab>Mappings</Tab>
+                <Tab>Sync Activity</Tab>
+              </TabList>
+
+              {/* Configuration Tab */}
+              <TabPanel>
+                <div style={{ padding: '20px' }}>
+                  <ConfigurationPanel
+                    selectedOrg={selectedOrg}
+                    localProjects={localProjects}
+                    loadProjects={loadProjects}
+                    dataLoading={dataLoading}
+                    toggleProjectSelection={toggleProjectSelection}
+                    handleSaveProjectFilter={handleSaveProjectFilter}
+                    syncOptions={syncOptions}
+                    setSyncOptions={setSyncOptions}
+                    handleSaveSyncOptions={handleSaveSyncOptions}
+                    saving={saving}
+                  />
+                </div>
+              </TabPanel>
+
+              {/* Mappings Tab */}
+              <TabPanel>
+                <div style={{ padding: '20px' }}>
+                  <MappingsPanel
+                    selectedOrg={selectedOrg}
+                    remoteUsers={remoteUsers}
+                    localUsers={localUsers}
+                    remoteFields={remoteFields}
+                    localFields={localFields}
+                    remoteStatuses={remoteStatuses}
+                    localStatuses={localStatuses}
+                    userMappings={userMappings}
+                    fieldMappings={fieldMappings}
+                    statusMappings={statusMappings}
+                    addMapping={addMapping}
+                    deleteMapping={deleteMapping}
+                    handleSaveMappings={handleSaveMappings}
+                    loadMappingData={loadMappingData}
+                    dataLoading={dataLoading}
+                    saving={saving}
+                  />
+                </div>
+              </TabPanel>
+
+              {/* Sync Activity Tab */}
+              <TabPanel>
+                <div style={{ padding: '20px' }}>
+                  <SyncActivityPanel
+                    manualIssueKey={manualIssueKey}
+                    setManualIssueKey={setManualIssueKey}
+                    handleManualSync={handleManualSync}
+                    manualSyncLoading={manualSyncLoading}
+                    syncStats={syncStats}
+                    loadStats={loadStats}
+                    statsLoading={statsLoading}
+                    handleRetryPendingLinks={handleRetryPendingLinks}
+                    organizations={organizations}
+                  />
+                </div>
+              </TabPanel>
+            </Tabs>
           </div>
         )}
       </div>
 
-      {(showAddOrgForm || editingOrg) && (
-        <div style={{ ...sectionStyle, background: '#fffae6', border: '2px solid #FF991F' }}>
-          <h3>{editingOrg ? `Edit Organization: ${editingOrg.name}` : 'Add New Organization'}</h3>
-          <Form onSubmit={editingOrg ? handleUpdateOrganization : handleAddOrganization}>
-            {({ formProps }) => (
-              <form {...formProps}>
-                <Field
-                  name="name"
-                  defaultValue={editingOrg?.name || ''}
-                  isRequired
-                  label="Organization Name"
-                >
-                  {({ fieldProps }) => (
-                    <TextField {...fieldProps} placeholder="e.g., Production Org, Staging Org" />
-                  )}
-                </Field>
-                <Field
-                  name="remoteUrl"
-                  defaultValue={editingOrg?.remoteUrl || ''}
-                  isRequired
-                  label="Remote Jira URL"
-                >
-                  {({ fieldProps }) => (
-                    <TextField {...fieldProps} placeholder="https://yourorg.atlassian.net" />
-                  )}
-                </Field>
-                <Field
-                  name="remoteEmail"
-                  defaultValue={editingOrg?.remoteEmail || ''}
-                  isRequired
-                  label="Remote Admin Email"
-                >
-                  {({ fieldProps }) => (
-                    <TextField {...fieldProps} placeholder="admin@example.com" />
-                  )}
-                </Field>
-                <Field
-                  name="remoteApiToken"
-                  defaultValue={editingOrg?.remoteApiToken || ''}
-                  isRequired
-                  label="Remote API Token"
-                >
-                  {({ fieldProps }) => (
-                    <TextField {...fieldProps} type="password" placeholder="API token" />
-                  )}
-                </Field>
-                <Field
-                  name="remoteProjectKey"
-                  defaultValue={editingOrg?.remoteProjectKey || ''}
-                  isRequired
-                  label="Remote Project Key"
-                >
-                  {({ fieldProps }) => (
-                    <TextField {...fieldProps} placeholder="PROJ" />
-                  )}
-                </Field>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <Button type="submit" appearance="primary" isLoading={saving}>
-                    {editingOrg ? 'Update Organization' : 'Add Organization'}
-                  </Button>
-                  <Button
-                    appearance="subtle"
-                    onClick={() => {
-                      setShowAddOrgForm(false);
-                      setEditingOrg(null);
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </form>
-            )}
-          </Form>
-        </div>
+      {/* Org Modal */}
+      {showOrgModal && (
+        <OrgModal
+          editingOrg={editingOrg}
+          onClose={() => { setShowOrgModal(false); setEditingOrg(null); }}
+          onSave={handleSaveOrg}
+          saving={saving}
+        />
       )}
+    </div>
+  );
+};
 
-      {!selectedOrgId && organizations.length === 0 && !showAddOrgForm && (
-        <div style={{ marginTop: '20px', padding: '20px', background: '#fff4e6', borderRadius: '3px', textAlign: 'center' }}>
-          <h3>Welcome! Get Started</h3>
-          <p>You haven't configured any organizations yet. Click "Add Organization" above to get started.</p>
+// Configuration Panel Component
+const ConfigurationPanel = ({
+  selectedOrg, localProjects, loadProjects, dataLoading,
+  toggleProjectSelection, handleSaveProjectFilter, syncOptions,
+  setSyncOptions, handleSaveSyncOptions, saving
+}) => {
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
 
-          <div style={{ marginTop: '20px', padding: '16px', background: '#deebff', borderRadius: '3px', textAlign: 'left' }}>
-            <h4 style={{ marginTop: 0 }}>Debug: Check Production Storage</h4>
-            <p style={{ fontSize: '13px', color: '#0747A6' }}>
-              If you had a configuration before, click below to check what's stored in production and migrate if needed.
-            </p>
-            <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
-              <Button
-                appearance="default"
-                onClick={handleCheckStorage}
-                isLoading={checkingStorage}
-              >
-                Check Storage
-              </Button>
-              {storageInfo?.summary?.hasLegacyConfig && (
+  return (
+    <div style={{ maxWidth: '800px' }}>
+      <h3>Configuration</h3>
+
+      {/* Connection Info */}
+      <div style={{ padding: '16px', background: '#F4F5F7', borderRadius: '3px', marginBottom: '20px' }}>
+        <h4 style={{ margin: '0 0 12px 0' }}>Connection Settings</h4>
+        <div style={{ fontSize: '13px', color: '#6B778C' }}>
+          <div><strong>URL:</strong> {selectedOrg.remoteUrl}</div>
+          <div><strong>Email:</strong> {selectedOrg.remoteEmail}</div>
+          <div><strong>Project Key:</strong> {selectedOrg.remoteProjectKey}</div>
+        </div>
+      </div>
+
+      {/* Project Filter */}
+      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+        <div
+          onClick={() => { setProjectsExpanded(!projectsExpanded); if (!projectsExpanded && localProjects.length === 0) loadProjects(); }}
+          style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+        >
+          <h4 style={{ margin: 0 }}>Project Filter ({selectedOrg.allowedProjects?.length || 0} selected)</h4>
+          <span>{projectsExpanded ? '▼' : '▶'}</span>
+        </div>
+
+        {projectsExpanded && (
+          <div style={{ marginTop: '16px' }}>
+            {dataLoading.projects ? (
+              <div style={{ textAlign: 'center', padding: '20px' }}><Spinner /></div>
+            ) : localProjects.length === 0 ? (
+              <div style={{ color: '#6B778C', fontSize: '13px' }}>No projects loaded</div>
+            ) : (
+              <>
+                {localProjects.map(project => {
+                  const isSelected = selectedOrg.allowedProjects?.includes(project.key);
+                  return (
+                    <div
+                      key={project.key}
+                      onClick={() => toggleProjectSelection(project.key)}
+                      style={{
+                        padding: '8px 12px',
+                        background: isSelected ? '#E3FCEF' : '#F4F5F7',
+                        border: `2px solid ${isSelected ? '#00875A' : 'transparent'}`,
+                        borderRadius: '3px',
+                        marginBottom: '8px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        fontSize: '13px'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        readOnly
+                        style={{ marginRight: '8px', pointerEvents: 'none' }}
+                      />
+                      <strong>{project.key}</strong>&nbsp;- {project.name}
+                    </div>
+                  );
+                })}
                 <Button
                   appearance="primary"
-                  onClick={handleMigrateLegacy}
-                  isLoading={migratingConfig}
+                  onClick={handleSaveProjectFilter}
+                  isLoading={saving}
+                  style={{ marginTop: '12px' }}
                 >
-                  Migrate Legacy Config
+                  Save Project Filter
                 </Button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Sync Options */}
+      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px' }}>
+        <h4 style={{ margin: '0 0 16px 0' }}>Sync Options</h4>
+        {[
+          { key: 'syncComments', label: 'Sync Comments' },
+          { key: 'syncAttachments', label: 'Sync Attachments' },
+          { key: 'syncLinks', label: 'Sync Issue Links' },
+          { key: 'syncSprints', label: 'Sync Sprints' }
+        ].map(option => (
+          <label key={option.key} style={{ display: 'flex', alignItems: 'center', marginBottom: '12px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={syncOptions[option.key]}
+              onChange={(e) => setSyncOptions({ ...syncOptions, [option.key]: e.target.checked })}
+              style={{ marginRight: '8px', cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: '14px' }}>{option.label}</span>
+          </label>
+        ))}
+        <Button
+          appearance="primary"
+          onClick={handleSaveSyncOptions}
+          isLoading={saving}
+          style={{ marginTop: '8px' }}
+        >
+          Save Sync Options
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+// Mappings Panel Component
+const MappingsPanel = ({
+  selectedOrg, remoteUsers, localUsers, remoteFields, localFields,
+  remoteStatuses, localStatuses, userMappings, fieldMappings, statusMappings,
+  addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving
+}) => {
+  const [newUserRemote, setNewUserRemote] = useState('');
+  const [newUserLocal, setNewUserLocal] = useState('');
+  const [newFieldRemote, setNewFieldRemote] = useState('');
+  const [newFieldLocal, setNewFieldLocal] = useState('');
+  const [newStatusRemote, setNewStatusRemote] = useState('');
+  const [newStatusLocal, setNewStatusLocal] = useState('');
+
+  const hasData = remoteUsers.length > 0 || localUsers.length > 0;
+  const isLoading = dataLoading.users || dataLoading.fields || dataLoading.statuses;
+
+  const MappingSection = ({ title, type, remotePlaceholder, localPlaceholder, remoteItems, localItems, mappings, newRemote, setNewRemote, newLocal, setNewLocal }) => {
+    const itemKey = type === 'user' ? 'accountId' : 'id';
+    const itemLabel = type === 'user' ? (item) => `${item.displayName}${item.emailAddress ? ` (${item.emailAddress})` : ''}` : (item) => `${item.name}`;
+
+    return (
+      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+        <h4 style={{ margin: '0 0 16px 0' }}>{title} ({Object.keys(mappings).length})</h4>
+
+        {hasData && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '8px', marginBottom: '16px' }}>
+              <Select
+                options={remoteItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
+                value={remoteItems.find(i => i[itemKey] === newRemote) ? { label: itemLabel(remoteItems.find(i => i[itemKey] === newRemote)), value: newRemote } : null}
+                onChange={(option) => setNewRemote(option?.value || '')}
+                placeholder={remotePlaceholder}
+                isClearable
+              />
+              <Select
+                options={localItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
+                value={localItems.find(i => i[itemKey] === newLocal) ? { label: itemLabel(localItems.find(i => i[itemKey] === newLocal)), value: newLocal } : null}
+                onChange={(option) => setNewLocal(option?.value || '')}
+                placeholder={localPlaceholder}
+                isClearable
+              />
+              <Button
+                appearance="primary"
+                onClick={() => { addMapping(type, newRemote, newLocal); setNewRemote(''); setNewLocal(''); }}
+                isDisabled={!newRemote || !newLocal}
+              >
+                Add
+              </Button>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              {Object.keys(mappings).length === 0 ? (
+                <div style={{ color: '#6B778C', fontSize: '13px', fontStyle: 'italic' }}>No mappings yet</div>
+              ) : (
+                Object.entries(mappings).map(([remoteId, mapping]) => {
+                  const localId = typeof mapping === 'string' ? mapping : mapping.localId;
+                  const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
+                  const localName = typeof mapping === 'object' ? mapping.localName : localId;
+
+                  return (
+                    <div key={remoteId} style={{
+                      padding: '8px 12px',
+                      background: '#F4F5F7',
+                      borderRadius: '3px',
+                      marginBottom: '4px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      fontSize: '13px'
+                    }}>
+                      <span><strong>{remoteName}</strong> → {localName}</span>
+                      <Button appearance="subtle" onClick={() => deleteMapping(type, remoteId)}>Delete</Button>
+                    </div>
+                  );
+                })
               )}
             </div>
 
-            {storageInfo && (
-              <div style={{ marginTop: '16px', padding: '12px', background: '#fff', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>
-                <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>Storage Summary:</div>
-                <div>Organizations: {storageInfo.summary.organizationCount}</div>
-                <div>Legacy Config: {storageInfo.summary.hasLegacyConfig ? '✓ Found' : '✗ None'}</div>
-                <div>Legacy Mappings: {storageInfo.summary.hasLegacyMappings ? '✓ Found' : '✗ None'}</div>
+            <Button appearance="primary" onClick={() => handleSaveMappings(type)} isLoading={saving}>
+              Save {title}
+            </Button>
+          </>
+        )}
+      </div>
+    );
+  };
 
-                {storageInfo.syncConfig && (
-                  <div style={{ marginTop: '12px', padding: '8px', background: '#fffae6', borderRadius: '3px' }}>
-                    <div style={{ fontWeight: 'bold' }}>Legacy Configuration Found:</div>
-                    <div>URL: {storageInfo.syncConfig.remoteUrl}</div>
-                    <div>Project: {storageInfo.syncConfig.remoteProjectKey}</div>
-                    <div>Email: {storageInfo.syncConfig.remoteEmail}</div>
-                  </div>
-                )}
+  return (
+    <div style={{ maxWidth: '800px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <h3>Mappings</h3>
+        <Button
+          appearance="primary"
+          onClick={loadMappingData}
+          isLoading={isLoading}
+        >
+          {hasData ? 'Reload Data' : 'Load Mapping Data'}
+        </Button>
+      </div>
 
-                {storageInfo.organizations && storageInfo.organizations.length > 0 && (
-                  <div style={{ marginTop: '12px', padding: '8px', background: '#e3fcef', borderRadius: '3px' }}>
-                    <div style={{ fontWeight: 'bold' }}>Organizations in Storage:</div>
-                    {storageInfo.organizations.map(org => (
-                      <div key={org.id} style={{ marginTop: '4px' }}>
-                        • {org.name} ({org.remoteUrl})
+      {!hasData && !isLoading && (
+        <SectionMessage appearance="info" title="Load mapping data first">
+          <p>Click "Load Mapping Data" to fetch users, fields, and statuses from both organizations.</p>
+        </SectionMessage>
+      )}
+
+      {isLoading && (
+        <div style={{ textAlign: 'center', padding: '40px' }}><Spinner size="large" /></div>
+      )}
+
+      {hasData && (
+        <>
+          <MappingSection
+            title="User Mappings"
+            type="user"
+            remotePlaceholder="Select remote user"
+            localPlaceholder="Select local user"
+            remoteItems={remoteUsers}
+            localItems={localUsers}
+            mappings={userMappings}
+            newRemote={newUserRemote}
+            setNewRemote={setNewUserRemote}
+            newLocal={newUserLocal}
+            setNewLocal={setNewUserLocal}
+          />
+
+          <MappingSection
+            title="Field Mappings"
+            type="field"
+            remotePlaceholder="Select remote field"
+            localPlaceholder="Select local field"
+            remoteItems={remoteFields}
+            localItems={localFields}
+            mappings={fieldMappings}
+            newRemote={newFieldRemote}
+            setNewRemote={setNewFieldRemote}
+            newLocal={newFieldLocal}
+            setNewLocal={setNewFieldLocal}
+          />
+
+          <MappingSection
+            title="Status Mappings"
+            type="status"
+            remotePlaceholder="Select remote status"
+            localPlaceholder="Select local status"
+            remoteItems={remoteStatuses}
+            localItems={localStatuses}
+            mappings={statusMappings}
+            newRemote={newStatusRemote}
+            setNewRemote={setNewStatusRemote}
+            newLocal={newStatusLocal}
+            setNewLocal={setNewStatusLocal}
+          />
+        </>
+      )}
+    </div>
+  );
+};
+
+// Sync Activity Panel Component
+const SyncActivityPanel = ({
+  manualIssueKey, setManualIssueKey, handleManualSync, manualSyncLoading,
+  syncStats, loadStats, statsLoading, handleRetryPendingLinks, organizations
+}) => {
+  useEffect(() => {
+    loadStats();
+  }, []);
+
+  return (
+    <div style={{ maxWidth: '1000px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <h3>Sync Activity</h3>
+        <Button appearance="default" onClick={loadStats} isLoading={statsLoading}>
+          Refresh Stats
+        </Button>
+      </div>
+
+      {/* Manual Sync */}
+      <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+        <h4 style={{ margin: '0 0 8px 0' }}>Manual Sync</h4>
+        <p style={{ fontSize: '13px', color: '#6B778C', marginBottom: '12px' }}>
+          Sync a specific issue to all {organizations.length} organization(s)
+        </p>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <input
+            type="text"
+            value={manualIssueKey}
+            onChange={(e) => setManualIssueKey(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleManualSync()}
+            placeholder="e.g., PROJ-123"
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              border: '2px solid #DFE1E6',
+              borderRadius: '3px',
+              fontSize: '14px'
+            }}
+          />
+          <Button
+            appearance="primary"
+            onClick={handleManualSync}
+            isLoading={manualSyncLoading}
+            isDisabled={!manualIssueKey.trim()}
+          >
+            Sync Now
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      {syncStats && (
+        <>
+          {syncStats.webhook && (
+            <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 16px 0' }}>Webhook Sync Statistics</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+                <StatCard label="Total Syncs" value={syncStats.webhook.totalSyncs || 0} color="#0052CC" />
+                <StatCard label="Issues Created" value={syncStats.webhook.issuesCreated || 0} color="#00875A" />
+                <StatCard label="Issues Updated" value={syncStats.webhook.issuesUpdated || 0} color="#0052CC" />
+                <StatCard label="Comments Synced" value={syncStats.webhook.commentsSynced || 0} color="#403294" />
+                <StatCard label="Issues Skipped" value={syncStats.webhook.issuesSkipped || 0} color="#FF991F" />
+              </div>
+              {syncStats.webhook.lastSync && (
+                <div style={{ fontSize: '12px', color: '#6B778C' }}>
+                  Last sync: {new Date(syncStats.webhook.lastSync).toLocaleString()}
+                </div>
+              )}
+
+              {syncStats.webhook.byOrg && Object.keys(syncStats.webhook.byOrg).length > 0 && (
+                <div style={{ marginTop: '16px' }}>
+                  <h5 style={{ marginBottom: '8px' }}>By Organization:</h5>
+                  {Object.entries(syncStats.webhook.byOrg).map(([orgId, orgStats]) => {
+                    const org = organizations.find(o => o.id === orgId);
+                    return (
+                      <div key={orgId} style={{ padding: '8px', background: '#F4F5F7', borderRadius: '3px', marginBottom: '4px', fontSize: '13px' }}>
+                        <strong>{org?.name || orgId}</strong>: {orgStats.totalSyncs} syncs ({orgStats.issuesCreated} created, {orgStats.issuesUpdated} updated)
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {syncStats.webhook.errors && syncStats.webhook.errors.length > 0 && (
+                <div style={{ marginTop: '16px' }}>
+                  <h5 style={{ color: '#DE350B' }}>Recent Errors ({syncStats.webhook.errors.length}):</h5>
+                  <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                    {syncStats.webhook.errors.slice(0, 10).map((err, idx) => (
+                      <div key={idx} style={{ padding: '8px', background: '#FFEBE6', borderRadius: '3px', marginBottom: '4px', fontSize: '12px' }}>
+                        <div><strong>{new Date(err.timestamp).toLocaleString()}</strong></div>
+                        <div>{err.error}</div>
                       </div>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {syncStats.scheduled && (
+            <div style={{ padding: '16px', background: 'white', border: '1px solid #DFE1E6', borderRadius: '3px', marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 16px 0' }}>Scheduled Sync Statistics</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+                <StatCard label="Issues Checked" value={syncStats.scheduled.issuesChecked || 0} color="#0052CC" />
+                <StatCard label="Issues Created" value={syncStats.scheduled.issuesCreated || 0} color="#00875A" />
+                <StatCard label="Issues Updated" value={syncStats.scheduled.issuesUpdated || 0} color="#0052CC" />
+                <StatCard label="Issues Skipped" value={syncStats.scheduled.issuesSkipped || 0} color="#FF991F" />
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {selectedOrgId && selectedOrg && (
-        <>
-          <Tabs id="admin-tabs" style={{ marginTop: '30px', width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
-            <TabList>
-              <Tab>Project Filter</Tab>
-              <Tab>Mappings</Tab>
-              <Tab>Sync Controls</Tab>
-              <Tab>Health & Stats</Tab>
-            </TabList>
-
-            <TabPanel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                  <h3>Project Filter for {selectedOrg.name} ({selectedOrg.allowedProjects?.length || 0} selected)</h3>
-                  <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                    Select which projects to sync to {selectedOrg.name}. If no projects are selected, all projects will be synced.
-                  </p>
-
-                  <Button appearance="primary" onClick={loadLocalProjects} isLoading={dataLoading} style={{ marginBottom: '16px' }}>
-                    Load Projects
-                  </Button>
-
-                  {localProjects.length > 0 && (
-                    <>
-                      <h4>Available Projects</h4>
-                      <div style={{ marginBottom: '16px' }}>
-                        {localProjects.map(project => {
-                          const isSelected = selectedOrg.allowedProjects?.includes(project.key);
-                          return (
-                            <div
-                              key={project.key}
-                              style={{
-                                padding: '12px',
-                                background: isSelected ? '#e3fcef' : '#f4f5f7',
-                                borderRadius: '3px',
-                                marginBottom: '8px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                cursor: 'pointer',
-                                border: isSelected ? '2px solid #00875A' : '2px solid transparent'
-                              }}
-                              onClick={() => toggleProjectSelection(project.key)}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isSelected || false}
-                                readOnly
-                                style={{ marginRight: '12px', cursor: 'pointer', pointerEvents: 'none' }}
-                              />
-                              <div>
-                                <strong>{project.key}</strong> - {project.name}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <Button appearance="primary" onClick={handleSaveProjectFilter} isLoading={saving}>
-                        Save Project Filter
-                      </Button>
-                    </>
-                  )}
+              {syncStats.scheduled.lastRun && (
+                <div style={{ fontSize: '12px', color: '#6B778C' }}>
+                  Last run: {new Date(syncStats.scheduled.lastRun).toLocaleString()}
                 </div>
-              </div>
-            </TabPanel>
-
-            <TabPanel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
-                {!dataLoaded.remote || !dataLoaded.local ? (
-                  <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                    <SectionMessage
-                      appearance="warning"
-                      title="Data Not Loaded"
-                    >
-                      <p>Please load both Remote and Local data first before creating mappings.</p>
-                      <p style={{ fontSize: '13px', color: '#6B778C' }}>
-                        Missing: {!dataLoaded.remote && 'Remote Data'} {!dataLoaded.remote && !dataLoaded.local && ' & '} {!dataLoaded.local && 'Local Data'}
-                      </p>
-                      <p style={{ fontSize: '13px', color: '#6B778C', marginTop: '12px' }}>
-                        Use the "Load Remote Data" and "Load Local Data" buttons in the organization selector above.
-                      </p>
-                    </SectionMessage>
-                  </div>
-                ) : (
-                  <>
-                    <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                      <h3 style={{ marginTop: 0 }}>User Mapping ({Object.keys(userMappings).length})</h3>
-                      <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                        Map users from {selectedOrg.name} to local users.
-                      </p>
-                      <div>
-                        <h4>Add User Mapping</h4>
-                        <div style={{ marginBottom: '16px' }}>
-                          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                            Remote User ({selectedOrg.name})
-                          </label>
-                          <Select
-                            options={remoteUsers.map(user => ({
-                              label: `${user.displayName}${user.emailAddress ? ` (${user.emailAddress})` : ''}`,
-                              value: user.accountId
-                            }))}
-                            value={remoteUsers.find(u => u.accountId === newUserRemote) ? {
-                              label: `${remoteUsers.find(u => u.accountId === newUserRemote).displayName}`,
-                              value: newUserRemote
-                            } : null}
-                            onChange={(option) => setNewUserRemote(option?.value || '')}
-                            placeholder={remoteUsers.length === 0 ? 'Load remote data first' : 'Select remote user...'}
-                            isClearable
-                            styles={{
-                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
-                              control: base => ({ ...base, width: '100%' })
-                            }}
-                          />
-
-                          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                            Local User
-                          </label>
-                          <Select
-                            options={localUsers.map(user => ({
-                              label: `${user.displayName}${user.emailAddress ? ` (${user.emailAddress})` : ''}`,
-                              value: user.accountId
-                            }))}
-                            value={localUsers.find(u => u.accountId === newUserLocal) ? {
-                              label: `${localUsers.find(u => u.accountId === newUserLocal).displayName}`,
-                              value: newUserLocal
-                            } : null}
-                            onChange={(option) => setNewUserLocal(option?.value || '')}
-                            placeholder={localUsers.length === 0 ? 'Load local data first' : 'Select local user...'}
-                            isClearable
-                            styles={{
-                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
-                              control: base => ({ ...base, width: '100%' })
-                            }}
-                          />
-
-                          <Button appearance="primary" onClick={addUserMapping}>
-                            Add Mapping
-                          </Button>
-                        </div>
-
-                        <h4>Current Mappings</h4>
-                        {Object.keys(userMappings).length === 0 && (
-                          <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No user mappings yet</p>
-                        )}
-                        {Object.entries(userMappings).map(([remoteId, mapping]) => {
-                          const localId = typeof mapping === 'string' ? mapping : mapping.localId;
-                          const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
-                          const localName = typeof mapping === 'object' ? mapping.localName : localId;
-
-                          return (
-                            <div key={remoteId} style={mappingItemStyle}>
-                              <span>
-                                <strong>{remoteName}</strong> → {localName}
-                              </span>
-                              <Button appearance="subtle" onClick={() => deleteUserMapping(remoteId)}>
-                                Delete
-                              </Button>
-                            </div>
-                          );
-                        })}
-
-                        <div style={{ marginTop: '16px' }}>
-                          <Button appearance="primary" onClick={handleSaveUserMappings} isLoading={saving}>
-                            Save User Mappings
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                      <h3 style={{ marginTop: 0 }}>Field Mapping ({Object.keys(fieldMappings).length})</h3>
-                      <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                        Map custom fields from {selectedOrg.name} to local fields.
-                      </p>
-                      <div>
-                        <h4>Add Field Mapping</h4>
-                        <div style={{ marginBottom: '16px' }}>
-                          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                            Remote Field
-                          </label>
-                          <Select
-                            options={remoteFields.map(field => ({
-                              label: `${field.name} (${field.id})`,
-                              value: field.id
-                            }))}
-                            value={remoteFields.find(f => f.id === newFieldRemote) ? {
-                              label: `${remoteFields.find(f => f.id === newFieldRemote).name}`,
-                              value: newFieldRemote
-                            } : null}
-                            onChange={(option) => setNewFieldRemote(option?.value || '')}
-                            placeholder={remoteFields.length === 0 ? 'Load remote data first' : 'Select remote field...'}
-                            isClearable
-                            styles={{
-                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
-                              control: base => ({ ...base, width: '100%' })
-                            }}
-                          />
-
-                          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                            Local Field
-                          </label>
-                          <Select
-                            options={localFields.map(field => ({
-                              label: `${field.name} (${field.id})`,
-                              value: field.id
-                            }))}
-                            value={localFields.find(f => f.id === newFieldLocal) ? {
-                              label: `${localFields.find(f => f.id === newFieldLocal).name}`,
-                              value: newFieldLocal
-                            } : null}
-                            onChange={(option) => setNewFieldLocal(option?.value || '')}
-                            placeholder={localFields.length === 0 ? 'Load local data first' : 'Select local field...'}
-                            isClearable
-                            styles={{
-                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
-                              control: base => ({ ...base, width: '100%' })
-                            }}
-                          />
-
-                          <Button appearance="primary" onClick={addFieldMapping}>
-                            Add Mapping
-                          </Button>
-                        </div>
-
-                        <h4>Current Mappings</h4>
-                        {Object.keys(fieldMappings).length === 0 && (
-                          <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No field mappings yet</p>
-                        )}
-                        {Object.entries(fieldMappings).map(([remoteId, mapping]) => {
-                          const localId = typeof mapping === 'string' ? mapping : mapping.localId;
-                          const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
-                          const localName = typeof mapping === 'object' ? mapping.localName : localId;
-
-                          return (
-                            <div key={remoteId} style={mappingItemStyle}>
-                              <span>
-                                <strong>{remoteName}</strong> → {localName}
-                              </span>
-                              <Button appearance="subtle" onClick={() => deleteFieldMapping(remoteId)}>
-                                Delete
-                              </Button>
-                            </div>
-                          );
-                        })}
-
-                        <div style={{ marginTop: '16px' }}>
-                          <Button appearance="primary" onClick={handleSaveFieldMappings} isLoading={saving}>
-                            Save Field Mappings
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                      <h3 style={{ marginTop: 0 }}>Status Mapping ({Object.keys(statusMappings).length})</h3>
-                      <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                        Map statuses from {selectedOrg.name} to local statuses.
-                      </p>
-                      <div>
-                        <h4>Add Status Mapping</h4>
-                        <div style={{ marginBottom: '16px' }}>
-                          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                            Remote Status
-                          </label>
-                          <Select
-                            options={remoteStatuses.map(status => ({
-                              label: status.name,
-                              value: status.id
-                            }))}
-                            value={remoteStatuses.find(s => s.id === newStatusRemote) ? {
-                              label: remoteStatuses.find(s => s.id === newStatusRemote).name,
-                              value: newStatusRemote
-                            } : null}
-                            onChange={(option) => setNewStatusRemote(option?.value || '')}
-                            placeholder={remoteStatuses.length === 0 ? 'Load remote data first' : 'Select remote status...'}
-                            isClearable
-                            styles={{
-                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
-                              control: base => ({ ...base, width: '100%' })
-                            }}
-                          />
-
-                          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 600 }}>
-                            Local Status
-                          </label>
-                          <Select
-                            options={localStatuses.map(status => ({
-                              label: status.name,
-                              value: status.id
-                            }))}
-                            value={localStatuses.find(s => s.id === newStatusLocal) ? {
-                              label: localStatuses.find(s => s.id === newStatusLocal).name,
-                              value: newStatusLocal
-                            } : null}
-                            onChange={(option) => setNewStatusLocal(option?.value || '')}
-                            placeholder={localStatuses.length === 0 ? 'Load local data first' : 'Select local status...'}
-                            isClearable
-                            styles={{
-                              container: base => ({ ...base, marginBottom: '10px', width: '100%' }),
-                              control: base => ({ ...base, width: '100%' })
-                            }}
-                          />
-
-                          <Button appearance="primary" onClick={addStatusMapping}>
-                            Add Mapping
-                          </Button>
-                        </div>
-
-                        <h4>Current Mappings</h4>
-                        {Object.keys(statusMappings).length === 0 && (
-                          <p style={{ color: '#6B778C', fontStyle: 'italic' }}>No status mappings yet</p>
-                        )}
-                        {Object.entries(statusMappings).map(([remoteId, mapping]) => {
-                          const localId = typeof mapping === 'string' ? mapping : mapping.localId;
-                          const remoteName = typeof mapping === 'object' ? mapping.remoteName : remoteId;
-                          const localName = typeof mapping === 'object' ? mapping.localName : localId;
-
-                          return (
-                            <div key={remoteId} style={mappingItemStyle}>
-                              <span>
-                                <strong>{remoteName}</strong> → {localName}
-                              </span>
-                              <Button appearance="subtle" onClick={() => deleteStatusMapping(remoteId)}>
-                                Delete
-                              </Button>
-                            </div>
-                          );
-                        })}
-
-                        <div style={{ marginTop: '16px' }}>
-                          <Button appearance="primary" onClick={handleSaveStatusMappings} isLoading={saving}>
-                            Save Status Mappings
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </TabPanel>
-
-            {/* ...existing Sync Controls and Health & Stats tabs remain the same... */}
-            <TabPanel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                  <h3>Sync Options for {selectedOrg.name}</h3>
-                  <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                    Choose which types of data to sync to {selectedOrg.name}.
-                  </p>
-
-                  <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px' }}>
-                    <div style={{ marginBottom: '12px' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={syncOptions.syncComments}
-                          onChange={(e) => setSyncOptions({ ...syncOptions, syncComments: e.target.checked })}
-                          style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Comments</span>
-                      </label>
-                    </div>
-
-                    <div style={{ marginBottom: '12px' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={syncOptions.syncAttachments}
-                          onChange={(e) => setSyncOptions({ ...syncOptions, syncAttachments: e.target.checked })}
-                          style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Attachments</span>
-                      </label>
-                    </div>
-
-                    <div style={{ marginBottom: '12px' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={syncOptions.syncLinks}
-                          onChange={(e) => setSyncOptions({ ...syncOptions, syncLinks: e.target.checked })}
-                          style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Issue Links</span>
-                      </label>
-                    </div>
-
-                    <div style={{ marginBottom: '12px' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={syncOptions.syncSprints}
-                          onChange={(e) => setSyncOptions({ ...syncOptions, syncSprints: e.target.checked })}
-                          style={{ marginRight: '8px', width: '16px', height: '16px', cursor: 'pointer' }}
-                        />
-                        <span style={{ fontSize: '14px', fontWeight: '500' }}>Sync Sprints</span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <Button appearance="primary" onClick={handleSaveSyncOptions} isLoading={saving}>
-                    Save Sync Options
-                  </Button>
-                </div>
-
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                  <h3>Manual Sync Controls</h3>
-                  <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                    Manually trigger sync for a specific issue (will sync to ALL configured organizations).
-                  </p>
-
-                  <div style={{ marginBottom: '20px', padding: '16px', background: '#f4f5f7', borderRadius: '3px' }}>
-                    <h4 style={{ marginTop: 0, marginBottom: '12px', color: '#172B4D' }}>Sync Specific Issue</h4>
-                    <p style={{ fontSize: '13px', color: '#6B778C', marginBottom: '12px' }}>
-                      Enter an issue key to force sync to all {organizations.length} organization(s):
-                    </p>
-
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <input
-                        type="text"
-                        value={manualIssueKey}
-                        onChange={(e) => setManualIssueKey(e.target.value)}
-                        onKeyPress={(e) => {
-                          if (e.key === 'Enter') {
-                            handleManualSync();
-                          }
-                        }}
-                        placeholder="e.g., PROJ-123"
-                        style={{
-                          padding: '8px 12px',
-                          border: '2px solid #DFE1E6',
-                          borderRadius: '3px',
-                          fontSize: '14px',
-                          flex: '1',
-                          minWidth: '200px'
-                        }}
-                      />
-                      <Button
-                        appearance="primary"
-                        onClick={handleManualSync}
-                        isLoading={manualSyncLoading}
-                        isDisabled={!manualIssueKey.trim()}
-                      >
-                        Sync Now
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </TabPanel>
-
-            <TabPanel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', maxWidth: '100%', boxSizing: 'border-box' }}>
-                <div style={{ padding: '20px', background: 'white', borderRadius: '3px', border: '1px solid #dfe1e6', width: '100%', boxSizing: 'border-box' }}>
-                  <h3>Sync Health & Statistics</h3>
-                  <p style={{ marginBottom: '16px', color: '#6B778C' }}>
-                    View synchronization statistics across all organizations.
-                  </p>
-
-                  <Button appearance="primary" onClick={loadSyncStats} isLoading={statsLoading} style={{ marginBottom: '16px' }}>
-                    Refresh Stats
-                  </Button>
-
-                  {webhookStats && (
-                    <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px', boxSizing: 'border-box', maxWidth: '100%' }}>
-                      <h4 style={{ marginTop: 0 }}>Webhook Sync Statistics</h4>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#0052CC' }}>{webhookStats.totalSyncs || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Total Syncs</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#00875A' }}>{webhookStats.issuesCreated || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Created</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#0052CC' }}>{webhookStats.issuesUpdated || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Updated</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#403294' }}>{webhookStats.commentsSynced || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Comments Synced</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#FF991F' }}>{webhookStats.issuesSkipped || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Skipped</div>
-                        </div>
-                      </div>
-                      
-                      {webhookStats.lastSync && (
-                        <p style={{ fontSize: '12px', color: '#6B778C', margin: 0 }}>
-                          Last sync: {new Date(webhookStats.lastSync).toLocaleString()}
-                        </p>
-                      )}
-
-                      {webhookStats.byOrg && Object.keys(webhookStats.byOrg).length > 0 && (
-                        <div style={{ marginTop: '16px' }}>
-                          <h5 style={{ marginBottom: '8px' }}>Stats by Organization:</h5>
-                          {Object.entries(webhookStats.byOrg).map(([orgId, orgStats]) => {
-                            const org = organizations.find(o => o.id === orgId);
-                            return (
-                              <div key={orgId} style={{ padding: '8px', background: '#fff', borderRadius: '3px', marginBottom: '8px' }}>
-                                <strong>{org?.name || orgId}</strong>: {orgStats.totalSyncs} syncs 
-                                ({orgStats.issuesCreated} created, {orgStats.issuesUpdated} updated)
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {webhookStats.errors && webhookStats.errors.length > 0 && (
-                        <div style={{ marginTop: '16px' }}>
-                          <h5 style={{ color: '#DE350B' }}>Recent Errors ({webhookStats.errors.length}):</h5>
-                          <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                            {webhookStats.errors.slice(0, 10).map((err, idx) => (
-                              <div key={idx} style={{ padding: '8px', background: '#FFEBE6', borderRadius: '3px', marginBottom: '4px', fontSize: '12px' }}>
-                                <div><strong>{new Date(err.timestamp).toLocaleString()}</strong></div>
-                                <div>{err.error}</div>
-                                {err.orgId && <div style={{ color: '#6B778C' }}>Org: {err.orgId}</div>}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {scheduledStats && (
-                    <div style={{ padding: '16px', background: '#f4f5f7', borderRadius: '3px', marginBottom: '16px', boxSizing: 'border-box', maxWidth: '100%' }}>
-                      <h4 style={{ marginTop: 0 }}>Scheduled Sync Statistics</h4>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#0052CC' }}>{scheduledStats.issuesChecked || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Checked</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#00875A' }}>{scheduledStats.issuesCreated || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Created</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#0052CC' }}>{scheduledStats.issuesUpdated || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Updated</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#FF991F' }}>{scheduledStats.issuesSkipped || 0}</div>
-                          <div style={{ fontSize: '12px', color: '#6B778C' }}>Issues Skipped</div>
-                        </div>
-                      </div>
-                      
-                      {scheduledStats.lastRun && (
-                        <p style={{ fontSize: '12px', color: '#6B778C', margin: 0 }}>
-                          Last run: {new Date(scheduledStats.lastRun).toLocaleString()}
-                        </p>
-                      )}
-
-                      {scheduledStats.errors && scheduledStats.errors.length > 0 && (
-                        <div style={{ marginTop: '16px' }}>
-                          <h5 style={{ color: '#DE350B' }}>Recent Errors ({scheduledStats.errors.length}):</h5>
-                          <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                            {scheduledStats.errors.slice(0, 10).map((err, idx) => (
-                              <div key={idx} style={{ padding: '8px', background: '#FFEBE6', borderRadius: '3px', marginBottom: '4px', fontSize: '12px' }}>
-                                {err}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ padding: '16px', background: '#E3FCEF', borderRadius: '3px', border: '2px solid #00875A', width: '100%', boxSizing: 'border-box' }}>
-                  <h4 style={{ marginTop: 0, color: '#00875A' }}>Pending Link Sync</h4>
-                  <p style={{ fontSize: '13px', color: '#006644', marginBottom: '12px' }}>
-                    When an issue is synced but its linked issues haven't been synced yet, the links are stored as "pending". 
-                    Use this button to retry syncing all pending links across all organizations.
-                  </p>
-                  <p style={{ fontSize: '13px', color: '#006644', marginBottom: '12px' }}>
-                    Tip: Scheduled sync runs every hour and automatically retries pending links. 
-                    Or you can manually trigger it here.
-                  </p>
-                  <Button 
-                    appearance="primary" 
-                    onClick={handleRetryPendingLinks} 
-                    isLoading={pendingLinksLoading}
-                  >
-                    Retry All Pending Links
-                  </Button>
-                </div>
-
-                <div style={{ padding: '16px', background: '#DEEBFF', borderRadius: '3px', width: '100%', boxSizing: 'border-box' }}>
-                  <p style={{ margin: 0, fontSize: '13px', color: '#0747A6' }}>
-                    <strong>Note:</strong> Statistics tracking across {organizations.length} organization(s). 
-                    Scheduled sync runs every hour. You can view detailed logs with: <code>forge logs</code>
-                  </p>
-                </div>
-              </div>
-            </TabPanel>
-          </Tabs>
+              )}
+            </div>
+          )}
         </>
       )}
+
+      {/* Pending Links */}
+      <div style={{ padding: '16px', background: '#E3FCEF', border: '2px solid #00875A', borderRadius: '3px' }}>
+        <h4 style={{ margin: '0 0 8px 0', color: '#00875A' }}>Pending Link Sync</h4>
+        <p style={{ fontSize: '13px', color: '#006644', marginBottom: '12px' }}>
+          Retry syncing all pending links across all organizations. Runs automatically every hour during scheduled sync.
+        </p>
+        <Button appearance="primary" onClick={handleRetryPendingLinks}>
+          Retry All Pending Links
+        </Button>
       </div>
-    </>
+    </div>
   );
+};
+
+const StatCard = ({ label, value, color }) => (
+  <div>
+    <div style={{ fontSize: '24px', fontWeight: 'bold', color }}>{value}</div>
+    <div style={{ fontSize: '12px', color: '#6B778C' }}>{label}</div>
+  </div>
+);
+
+// Org Modal Component
+const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(0, 0, 0, 0.5)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1000
+    }}>
+      <div style={{
+        background: 'white',
+        borderRadius: '3px',
+        padding: '24px',
+        maxWidth: '500px',
+        width: '90%',
+        maxHeight: '90vh',
+        overflow: 'auto'
+      }}>
+        <h3 style={{ margin: '0 0 16px 0' }}>
+          {editingOrg ? `Edit ${editingOrg.name}` : 'Add Organization'}
+        </h3>
+        <Form onSubmit={onSave}>
+          {({ formProps }) => (
+            <form {...formProps}>
+              <Field
+                name="name"
+                defaultValue={editingOrg?.name || ''}
+                isRequired
+                label="Organization Name"
+              >
+                {({ fieldProps }) => (
+                  <TextField {...fieldProps} placeholder="e.g., Production Org" />
+                )}
+              </Field>
+              <Field
+                name="remoteUrl"
+                defaultValue={editingOrg?.remoteUrl || ''}
+                isRequired
+                label="Remote Jira URL"
+              >
+                {({ fieldProps }) => (
+                  <TextField {...fieldProps} placeholder="https://yourorg.atlassian.net" />
+                )}
+              </Field>
+              <Field
+                name="remoteEmail"
+                defaultValue={editingOrg?.remoteEmail || ''}
+                isRequired
+                label="Remote Admin Email"
+              >
+                {({ fieldProps }) => (
+                  <TextField {...fieldProps} placeholder="admin@example.com" />
+                )}
+              </Field>
+              <Field
+                name="remoteApiToken"
+                defaultValue={editingOrg?.remoteApiToken || ''}
+                isRequired
+                label="Remote API Token"
+              >
+                {({ fieldProps }) => (
+                  <TextField {...fieldProps} type="password" placeholder="API token" />
+                )}
+              </Field>
+              <Field
+                name="remoteProjectKey"
+                defaultValue={editingOrg?.remoteProjectKey || ''}
+                isRequired
+                label="Remote Project Key"
+              >
+                {({ fieldProps }) => (
+                  <TextField {...fieldProps} placeholder="PROJ" />
+                )}
+              </Field>
+              {editingOrg && (
+                <Field
+                  name="allowedProjects"
+                  defaultValue={editingOrg?.allowedProjects || []}
+                >
+                  {({ fieldProps }) => <input {...fieldProps} type="hidden" />}
+                </Field>
+              )}
+              <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                <Button type="submit" appearance="primary" isLoading={saving}>
+                  {editingOrg ? 'Update' : 'Add'}
+                </Button>
+                <Button appearance="subtle" onClick={onClose}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          )}
+        </Form>
+      </div>
+    </div>
+  );
+};
+
+// Wait for DOM to be ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
 }
 
-render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>, 
-  document.getElementById('root')
-);
+function initApp() {
+  const rootElement = document.getElementById('root');
+  if (rootElement) {
+    const root = createRoot(rootElement);
+    root.render(
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    );
+  } else {
+    console.error('Root element not found');
+  }
+}
