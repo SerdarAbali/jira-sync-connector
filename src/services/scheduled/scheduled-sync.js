@@ -276,9 +276,29 @@ export async function performScheduledSync() {
       ? `${projectFilter} AND updated >= -24h ORDER BY updated DESC`
       : `${projectFilter} ORDER BY updated DESC`;
     
+    const searchBody = {
+      jql,
+      maxResults: 100,
+      fields: ['key', 'summary', 'updated'],
+      expand: 'names'
+    };
+
     const searchResponse = await api.asApp().requestJira(
-      route`/rest/api/3/search?jql=${jql}&maxResults=100`
+      route`/rest/api/3/search/jql`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(searchBody)
+      }
     );
+
+    if (!searchResponse.ok) {
+      const errorText = await searchResponse.text();
+      throw new Error(`Failed to fetch issues for scheduled sync: ${errorText}`);
+    }
+
     const searchResults = await searchResponse.json();
     
     console.log(`📋 Found ${searchResults.issues.length} issues to check`);

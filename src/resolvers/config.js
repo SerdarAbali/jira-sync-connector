@@ -1,6 +1,13 @@
 import { storage } from '@forge/api';
 
 const MAX_STORAGE_SIZE = 250000; // 250KB limit per key in Forge
+const DEFAULT_SYNC_OPTIONS = {
+  syncComments: true,
+  syncAttachments: true,
+  syncLinks: true,
+  syncSprints: false
+};
+const DEFAULT_USER_MAPPING_CONFIG = { autoMapUsers: true, fallbackUser: 'unassigned' };
 
 // Utility function to validate storage size
 async function validateStorageSize(key, data) {
@@ -220,6 +227,146 @@ export function defineConfigResolvers(resolver) {
       return { success: true, message: 'Sync options saved' };
     } catch (error) {
       console.error('Error saving sync options:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  resolver.define('exportOrgSettings', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      if (!orgId) {
+        return { success: false, error: 'orgId is required' };
+      }
+
+      const orgs = await storage.get('organizations') || [];
+      const organization = orgs.find(o => o.id === orgId);
+      if (!organization) {
+        return { success: false, error: 'Organization not found' };
+      }
+
+      const [syncOptions, userMappings, fieldMappings, statusMappings, userMappingConfig, scheduledSyncConfig] = await Promise.all([
+        storage.get(`syncOptions:${orgId}`),
+        storage.get(`userMappings:${orgId}`),
+        storage.get(`fieldMappings:${orgId}`),
+        storage.get(`statusMappings:${orgId}`),
+        storage.get('userMappingConfig'),
+        storage.get('scheduledSyncConfig')
+      ]);
+
+      const exportBundle = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        org: organization,
+        syncOptions: syncOptions || DEFAULT_SYNC_OPTIONS,
+        userMappings: userMappings || {},
+        userMappingConfig: userMappingConfig || DEFAULT_USER_MAPPING_CONFIG,
+        fieldMappings: fieldMappings || {},
+        statusMappings: statusMappings || {},
+        scheduledSyncConfig: scheduledSyncConfig || null
+      };
+
+      return { success: true, data: exportBundle };
+    } catch (error) {
+      console.error('Error exporting org settings:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  resolver.define('importOrgSettings', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      let importData = payload?.data;
+      const sections = payload?.sections || {};
+
+      if (!orgId) {
+        return { success: false, error: 'orgId is required' };
+      }
+      if (!importData) {
+        return { success: false, error: 'No import data provided' };
+      }
+
+      if (typeof importData === 'string') {
+        importData = JSON.parse(importData);
+      }
+
+      const orgs = await storage.get('organizations') || [];
+      const orgIndex = orgs.findIndex(o => o.id === orgId);
+      if (orgIndex === -1) {
+        return { success: false, error: 'Organization not found' };
+      }
+
+      const sectionFlags = {
+        orgDetails: sections.orgDetails !== undefined ? sections.orgDetails : true,
+        syncOptions: sections.syncOptions !== undefined ? sections.syncOptions : true,
+        userMappings: sections.userMappings !== undefined ? sections.userMappings : true,
+        fieldMappings: sections.fieldMappings !== undefined ? sections.fieldMappings : true,
+        statusMappings: sections.statusMappings !== undefined ? sections.statusMappings : true,
+        scheduledSync: sections.scheduledSync !== undefined ? sections.scheduledSync : false
+      };
+
+      const applied = [];
+
+      if (sectionFlags.orgDetails && importData.org) {
+        orgs[orgIndex] = {
+          ...orgs[orgIndex],
+          name: importData.org.name ?? orgs[orgIndex].name,
+          remoteUrl: importData.org.remoteUrl ?? orgs[orgIndex].remoteUrl,
+          remoteEmail: importData.org.remoteEmail ?? orgs[orgIndex].remoteEmail,
+          remoteApiToken: importData.org.remoteApiToken ?? orgs[orgIndex].remoteApiToken,
+          remoteProjectKey: importData.org.remoteProjectKey ?? orgs[orgIndex].remoteProjectKey,
+          allowedProjects: importData.org.allowedProjects ?? orgs[orgIndex].allowedProjects,
+          updatedAt: new Date().toISOString()
+        };
+
+        await validateStorageSize('organizations', orgs);
+        await storage.set('organizations', orgs);
+        applied.push('orgDetails');
+      }
+
+      if (sectionFlags.syncOptions && importData.syncOptions) {
+        await storage.set(`syncOptions:${orgId}`, importData.syncOptions);
+        applied.push('syncOptions');
+      }
+
+      if (sectionFlags.userMappings && importData.userMappings) {
+        const key = `userMappings:${orgId}`;
+        await validateStorageSize(key, importData.userMappings);
+        await storage.set(key, importData.userMappings);
+        if (importData.userMappingConfig) {
+          await storage.set('userMappingConfig', importData.userMappingConfig);
+        }
+        applied.push('userMappings');
+      }
+
+      if (sectionFlags.fieldMappings && importData.fieldMappings) {
+        const key = `fieldMappings:${orgId}`;
+        await validateStorageSize(key, importData.fieldMappings);
+        await storage.set(key, importData.fieldMappings);
+        applied.push('fieldMappings');
+      }
+
+      if (sectionFlags.statusMappings && importData.statusMappings) {
+        const key = `statusMappings:${orgId}`;
+        await validateStorageSize(key, importData.statusMappings);
+        await storage.set(key, importData.statusMappings);
+        applied.push('statusMappings');
+      }
+
+      if (sectionFlags.scheduledSync && importData.scheduledSyncConfig) {
+        await storage.set('scheduledSyncConfig', importData.scheduledSyncConfig);
+        applied.push('scheduledSync');
+      }
+
+      if (applied.length === 0) {
+        return { success: false, error: 'No matching sections to import' };
+      }
+
+      return {
+        success: true,
+        message: `Imported sections: ${applied.join(', ')}`
+      };
+    } catch (error) {
+      console.error('Error importing org settings:', error);
       return { success: false, error: error.message };
     }
   });

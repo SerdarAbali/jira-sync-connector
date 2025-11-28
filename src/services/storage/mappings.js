@@ -19,6 +19,17 @@ export async function storeMapping(localKey, remoteKey, orgId = null) {
   await storage.set(remoteToLocalKey, localKey);
 }
 
+export async function removeMapping(localKey, remoteKey, orgId = null) {
+  if (localKey) {
+    const localKeyName = orgId ? `${orgId}:local-to-remote:${localKey}` : `local-to-remote:${localKey}`;
+    await storage.delete(localKeyName);
+  }
+  if (remoteKey) {
+    const remoteKeyName = orgId ? `${orgId}:remote-to-local:${remoteKey}` : `remote-to-local:${remoteKey}`;
+    await storage.delete(remoteKeyName);
+  }
+}
+
 export async function storeAttachmentMapping(localAttachmentId, remoteAttachmentId, orgId = null) {
   const key = orgId ? `${orgId}:attachment-mapping:${localAttachmentId}` : `attachment-mapping:${localAttachmentId}`;
   await storage.set(key, remoteAttachmentId);

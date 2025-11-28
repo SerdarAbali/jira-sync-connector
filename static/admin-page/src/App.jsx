@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -39,6 +39,22 @@ const lozengeButtonStyle = {
   boxShadow: 'none'
 };
 
+const DEFAULT_IMPORT_SECTIONS = {
+  orgDetails: true,
+  syncOptions: true,
+  userMappings: true,
+  fieldMappings: true,
+  statusMappings: true,
+  scheduledSync: false
+};
+
+const ISSUE_EXPORT_LIMIT = 250;
+const DEFAULT_ISSUE_IMPORT_OPTIONS = {
+  refreshFromSource: true,
+  forceRecreate: false,
+  skipIfRemoteExists: false
+};
+
 
 const App = () => {
   const [organizations, setOrganizations] = useState([]);
@@ -46,6 +62,17 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
+  const [exportingSettings, setExportingSettings] = useState(false);
+  const [importingSettings, setImportingSettings] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importData, setImportData] = useState(null);
+  const [importSections, setImportSections] = useState(() => ({ ...DEFAULT_IMPORT_SECTIONS }));
+  const importFileInputRef = useRef(null);
+  const issueImportFileInputRef = useRef(null);
+  const [issueImportModalOpen, setIssueImportModalOpen] = useState(false);
+  const [issueImportData, setIssueImportData] = useState(null);
+  const [issueImportOptions, setIssueImportOptions] = useState({ ...DEFAULT_ISSUE_IMPORT_OPTIONS });
+  const [issueImporting, setIssueImporting] = useState(false);
 
   // Add/Edit org modal state
   const [showOrgModal, setShowOrgModal] = useState(false);
@@ -80,6 +107,7 @@ const App = () => {
   // Manual sync
   const [manualIssueKey, setManualIssueKey] = useState('');
   const [manualSyncLoading, setManualSyncLoading] = useState(false);
+  const [issueExporting, setIssueExporting] = useState(false);
 
   // Data loading states
   const [dataLoading, setDataLoading] = useState({
@@ -195,6 +223,111 @@ const App = () => {
   const showMessage = (msg, type = 'success') => {
     setMessage({ text: msg, type });
     setTimeout(() => setMessage(null), 5000);
+  };
+
+  const resetImportState = () => {
+    setImportModalOpen(false);
+    setImportData(null);
+    setImportSections(() => ({ ...DEFAULT_IMPORT_SECTIONS }));
+    if (importFileInputRef.current) {
+      importFileInputRef.current.value = '';
+    }
+  };
+
+  const handleExportSettings = async () => {
+    if (!selectedOrgId) return;
+    setExportingSettings(true);
+    try {
+      const result = await invoke('exportOrgSettings', { orgId: selectedOrgId });
+      if (result.success && result.data) {
+        const org = organizations.find(o => o.id === selectedOrgId);
+        const fileNameBase = org?.name ? org.name.replace(/\s+/g, '-').toLowerCase() : 'organization';
+        const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${fileNameBase}-sync-settings-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showMessage('Settings exported successfully', 'success');
+      } else {
+        showMessage(`Error exporting settings: ${result.error || 'Unknown error'}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error exporting settings: ' + error.message, 'error');
+    } finally {
+      setExportingSettings(false);
+    }
+  };
+
+  const handleImportButtonClick = () => {
+    if (!selectedOrgId) return;
+    setImportSections(() => ({ ...DEFAULT_IMPORT_SECTIONS }));
+    if (importFileInputRef.current) {
+      importFileInputRef.current.value = '';
+      importFileInputRef.current.click();
+    }
+  };
+
+  const handleImportFileChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        setImportSections(() => ({ ...DEFAULT_IMPORT_SECTIONS }));
+        setImportData(parsed);
+        setImportModalOpen(true);
+      } catch (error) {
+        showMessage('Invalid import file: ' + error.message, 'error');
+        if (importFileInputRef.current) {
+          importFileInputRef.current.value = '';
+        }
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleToggleImportSection = (sectionKey) => {
+    setImportSections(prev => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
+  };
+
+  const handleConfirmImportSettings = async () => {
+    if (!selectedOrgId || !importData) return;
+    if (!Object.values(importSections).some(Boolean)) {
+      showMessage('Select at least one section to import', 'error');
+      return;
+    }
+
+    setImportingSettings(true);
+    try {
+      const result = await invoke('importOrgSettings', {
+        orgId: selectedOrgId,
+        data: importData,
+        sections: importSections
+      });
+
+      if (result.success) {
+        showMessage(result.message || 'Settings imported successfully', 'success');
+        await loadOrganizations();
+        await loadOrgData(selectedOrgId);
+        resetImportState();
+      } else {
+        showMessage(`Error importing settings: ${result.error || 'Unknown error'}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error importing settings: ' + error.message, 'error');
+    } finally {
+      setImportingSettings(false);
+    }
+  };
+
+  const handleCloseImportModal = () => {
+    resetImportState();
   };
 
   const handleSaveOrg = async (data) => {
@@ -407,6 +540,177 @@ const App = () => {
     }
   };
 
+  const handleExportIssues = async (options) => {
+    console.log('[Export Debug] handleExportIssues called', { options });
+    
+    // Check if invoke function is available
+    if (typeof invoke !== 'function') {
+      console.error('[Export Debug] invoke function is not available');
+      showMessage('Error: Bridge function not available. Please refresh the page.', 'error');
+      return;
+    }
+    
+    if (!options?.jql?.trim()) {
+      console.log('[Export Debug] No JQL provided, showing error');
+      showMessage('Enter a JQL query to export issues', 'error');
+      return;
+    }
+
+    console.log('[Sync Connector] Export issues clicked', {
+      location: window?.location?.href,
+      options
+    });
+
+    setIssueExporting(true);
+    try {
+      const payload = {
+        jql: options.jql.trim(),
+        maxResults: Number(options.maxResults) || 50,
+        includeComments: options.includeComments,
+        includeAttachments: options.includeAttachments,
+        includeChangelog: options.includeChangelog,
+        includeIssueLinks: options.includeIssueLinks
+      };
+
+      console.log('[Export Debug] Invoking exportIssues with payload:', payload);
+      const result = await invoke('exportIssues', payload);
+      console.log('[Export Debug] Received result:', result);
+      if (result.success && result.data) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `issue-export-${timestamp}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showMessage(`Exported ${result.data.issueCount || 0} issue(s)`, 'success');
+      } else {
+        showMessage(`Error exporting issues: ${result.error || 'Unknown error'}`, 'error');
+      }
+    } catch (error) {
+      console.error('[Export Debug] Error in handleExportIssues:', error);
+      showMessage('Error exporting issues: ' + error.message, 'error');
+    } finally {
+      console.log('[Export Debug] Export process completed');
+      setIssueExporting(false);
+    }
+  };
+
+  const resetIssueImportState = () => {
+    setIssueImportModalOpen(false);
+    setIssueImportData(null);
+    setIssueImportOptions({ ...DEFAULT_ISSUE_IMPORT_OPTIONS });
+    if (issueImportFileInputRef.current) {
+      issueImportFileInputRef.current.value = '';
+    }
+  };
+
+  const handleIssueImportClick = () => {
+    if (!selectedOrgId) {
+      showMessage('Select an organization before importing issues', 'error');
+      return;
+    }
+    if (issueImportFileInputRef.current) {
+      issueImportFileInputRef.current.value = '';
+      issueImportFileInputRef.current.click();
+    }
+  };
+
+  const handleIssueImportFileChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        const issues = Array.isArray(parsed.issues) ? parsed.issues : [];
+        const issueKeys = Array.from(new Set(issues.map(issue => issue?.key).filter(Boolean)));
+
+        if (issueKeys.length === 0) {
+          showMessage('No issues found in the selected export file', 'error');
+          if (issueImportFileInputRef.current) {
+            issueImportFileInputRef.current.value = '';
+          }
+          return;
+        }
+
+        const snapshots = issues.reduce((acc, issue) => {
+          if (issue?.key) {
+            acc[issue.key] = issue;
+          }
+          return acc;
+        }, {});
+
+        setIssueImportData({
+          issueKeys,
+          snapshots,
+          meta: {
+            exportedAt: parsed.exportedAt,
+            sourceOrg: parsed.sourceOrg,
+            query: parsed.query
+          }
+        });
+        setIssueImportOptions({ ...DEFAULT_ISSUE_IMPORT_OPTIONS });
+        setIssueImportModalOpen(true);
+      } catch (error) {
+        showMessage('Invalid issue export file: ' + error.message, 'error');
+        if (issueImportFileInputRef.current) {
+          issueImportFileInputRef.current.value = '';
+        }
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleIssueImportOptionChange = (optionKey, value) => {
+    setIssueImportOptions(prev => ({ ...prev, [optionKey]: value }));
+  };
+
+  const handleConfirmIssueImport = async () => {
+    if (!selectedOrgId || !issueImportData?.issueKeys?.length) {
+      showMessage('Select an organization and valid issue export before importing', 'error');
+      return;
+    }
+
+    setIssueImporting(true);
+    try {
+      const payload = {
+        orgId: selectedOrgId,
+        issueKeys: issueImportData.issueKeys,
+        options: issueImportOptions
+      };
+
+      if (!issueImportOptions.refreshFromSource) {
+        payload.snapshots = issueImportData.snapshots || {};
+      }
+
+      const result = await invoke('importIssues', payload);
+      if (result.success) {
+        const summary = result.results || {};
+        showMessage(
+          `Issue import complete: ${summary.created || 0} created, ${summary.updated || 0} updated, ${summary.skipped || 0} skipped`,
+          'success'
+        );
+        resetIssueImportState();
+        await loadStats();
+      } else {
+        showMessage(`Issue import failed: ${result.error || 'Unknown error'}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error importing issues: ' + error.message, 'error');
+    } finally {
+      setIssueImporting(false);
+    }
+  };
+
+  const handleCancelIssueImport = () => {
+    resetIssueImportState();
+  };
+
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -428,6 +732,20 @@ const App = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: canvasBackground }}>
+      <input
+        ref={importFileInputRef}
+        type="file"
+        accept="application/json"
+        style={{ display: 'none' }}
+        onChange={handleImportFileChange}
+      />
+      <input
+        ref={issueImportFileInputRef}
+        type="file"
+        accept="application/json"
+        style={{ display: 'none' }}
+        onChange={handleIssueImportFileChange}
+      />
       {/* Top Header with Organization Selector */}
       <div style={{
         background: token('color.background.neutral', '#FFFFFF'),
@@ -560,6 +878,11 @@ const App = () => {
                     handleRetryPendingLinks={handleRetryPendingLinks}
                     handleClearWebhookErrors={handleClearWebhookErrors}
                     organizations={organizations}
+                    onExportIssues={handleExportIssues}
+                    issueExporting={issueExporting}
+                    onIssueImportClick={handleIssueImportClick}
+                    issueImporting={issueImporting}
+                    selectedOrg={selectedOrg}
                   />
                 </div>
               </TabPanel>
@@ -578,6 +901,10 @@ const App = () => {
                     setSyncOptions={setSyncOptions}
                     handleSaveSyncOptions={handleSaveSyncOptions}
                     saving={saving}
+                    handleExportSettings={handleExportSettings}
+                    handleImportSettings={handleImportButtonClick}
+                    exportingSettings={exportingSettings}
+                    importingSettings={importingSettings}
                   />
                 </div>
               </TabPanel>
@@ -622,6 +949,31 @@ const App = () => {
           />
         )}
       </ModalTransition>
+      <ModalTransition>
+        {importModalOpen && (
+          <ImportSettingsModal
+            importData={importData}
+            sections={importSections}
+            onToggleSection={handleToggleImportSection}
+            onConfirm={handleConfirmImportSettings}
+            onClose={handleCloseImportModal}
+            importing={importingSettings}
+          />
+        )}
+      </ModalTransition>
+      <ModalTransition>
+        {issueImportModalOpen && issueImportData && (
+          <IssueImportModal
+            data={issueImportData}
+            options={issueImportOptions}
+            onOptionChange={handleIssueImportOptionChange}
+            onConfirm={handleConfirmIssueImport}
+            onClose={handleCancelIssueImport}
+            importing={issueImporting}
+            selectedOrg={selectedOrg}
+          />
+        )}
+      </ModalTransition>
     </div>
   );
 };
@@ -630,7 +982,8 @@ const App = () => {
 const ConfigurationPanel = ({
   selectedOrg, localProjects, loadProjects, dataLoading,
   toggleProjectSelection, handleSaveProjectFilter, syncOptions,
-  setSyncOptions, handleSaveSyncOptions, saving
+  setSyncOptions, handleSaveSyncOptions, saving,
+  handleExportSettings, handleImportSettings, exportingSettings, importingSettings
 }) => {
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   const gridGap = token('space.300', '24px');
@@ -735,6 +1088,34 @@ const ConfigurationPanel = ({
           >
             Save Sync Options
           </Button>
+        </div>
+
+        <div style={surfaceCard({ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') })}>
+          <h4 style={{ margin: 0 }}>Import / Export Settings</h4>
+          <div style={{ fontSize: '13px', color: '#6B778C' }}>
+            Download a JSON snapshot of this organization's configuration or import one to overwrite selected sections.
+          </div>
+          <div style={{ display: 'flex', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
+            <Button
+              appearance="subtle"
+              onClick={handleExportSettings}
+              isLoading={exportingSettings}
+              style={lozengeButtonStyle}
+            >
+              Export Settings
+            </Button>
+            <Button
+              appearance="subtle"
+              onClick={handleImportSettings}
+              isLoading={importingSettings}
+              style={lozengeButtonStyle}
+            >
+              Import Settings
+            </Button>
+          </div>
+          <div style={{ fontSize: '12px', color: '#6B778C' }}>
+            Imports prompt for confirmation before applying and may overwrite existing mappings.
+          </div>
         </div>
 
         <div style={surfaceCard({ gridColumn: '1 / -1' })}>
@@ -957,12 +1338,143 @@ const MappingsPanel = ({
 // Sync Activity Panel Component
 const SyncActivityPanel = ({
   manualIssueKey, setManualIssueKey, handleManualSync, manualSyncLoading,
-  syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors, organizations
+  syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors,
+  organizations, onExportIssues, issueExporting, onIssueImportClick, issueImporting,
+  selectedOrg
 }) => {
+  console.log('[Debug] SyncActivityPanel rendered', { onExportIssues: !!onExportIssues, organizations: organizations?.length });
   const [eventsExpanded, setEventsExpanded] = useState(false);
+  const [exportJql, setExportJql] = useState('');
+  const [exportMode, setExportMode] = useState('predefined'); // 'predefined' or 'custom'
+  const [selectedPredefined, setSelectedPredefined] = useState(null);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [selectedStatus, setSelectedStatus] = useState(null);
+  const [selectedAssignee, setSelectedAssignee] = useState(null);
+  const [dayRange, setDayRange] = useState(30);
+  const [exportLimit, setExportLimit] = useState(50);
+  const [exportIncludeComments, setExportIncludeComments] = useState(true);
+  const [exportIncludeAttachments, setExportIncludeAttachments] = useState(true);
+  const [exportIncludeChangelog, setExportIncludeChangelog] = useState(false);
+  const [exportIncludeLinks, setExportIncludeLinks] = useState(true);
   useEffect(() => {
     loadStats();
   }, []);
+
+  // Predefined query options (all include positive restrictions for bounded queries)
+  const predefinedQueries = [
+    { label: 'My Issues (Last 90 days)', value: 'assignee = currentUser() AND updated >= -90d' },
+    { label: 'Recently Updated (Last 7 days)', value: 'updated >= -7d ORDER BY updated DESC' },
+    { label: 'Recently Updated (Last 30 days)', value: 'updated >= -30d ORDER BY updated DESC' },
+    { label: 'Recently Created (Last 7 days)', value: 'created >= -7d ORDER BY created DESC' },
+    { label: 'Recently Created (Last 30 days)', value: 'created >= -30d ORDER BY created DESC' },
+    { label: 'Unassigned Issues (Last 30 days)', value: 'assignee is EMPTY AND updated >= -30d' },
+    { label: 'High Priority Issues (Last 60 days)', value: '(priority = High OR priority = Highest) AND updated >= -60d' },
+    { label: 'Open/In Progress (Last 60 days)', value: '(status = Open OR status = "In Progress" OR status = "To Do") AND updated >= -60d' }
+  ];
+
+  const statusOptions = [
+    { label: 'Any Status', value: '' },
+    { label: 'Open/To Do', value: 'status = "To Do" OR status = Open' },
+    { label: 'In Progress', value: 'status = "In Progress"' },
+    { label: 'Done/Closed', value: 'status = Done OR status = Closed' }
+  ];
+
+  const assigneeOptions = [
+    { label: 'Any Assignee', value: '' },
+    { label: 'Assigned to Me', value: 'assignee = currentUser()' },
+    { label: 'Unassigned', value: 'assignee is EMPTY' }
+  ];
+
+  // Generate JQL based on selections
+  const generateJQL = () => {
+    if (exportMode === 'custom') {
+      const customJql = exportJql.trim();
+      // Check if custom JQL has project restriction
+      const hasProject = /\bproject\s*(=|!=|in)/i.test(customJql);
+      if (!hasProject && customJql) {
+        // Add a note that project is required
+        return '';
+      }
+      return customJql;
+    }
+
+    if (selectedPredefined) {
+      // Predefined queries must also have project
+      if (!selectedProject || !selectedProject.value) {
+        return '';
+      }
+      // Combine project with predefined query
+      return `project = "${selectedProject.value}" AND ${selectedPredefined.value}`;
+    }
+
+    const conditions = [];
+    
+    // Jira's /rest/api/3/search/jql endpoint REQUIRES a project restriction
+    // It will not accept queries without a project, even with assignee or date restrictions
+    
+    if (!selectedProject || !selectedProject.value) {
+      // Project is required - return empty to disable the button
+      return '';
+    }
+    
+    conditions.push(`project = "${selectedProject.value}"`);
+    
+    if (selectedStatus && selectedStatus.value) {
+      conditions.push(selectedStatus.value);
+    }
+    
+    if (selectedAssignee && selectedAssignee.value) {
+      conditions.push(selectedAssignee.value);
+    }
+    
+    // Add a date restriction
+    const dateRestriction = dayRange > 0 ? `updated >= -${dayRange}d` : 'updated >= -30d';
+    conditions.push(dateRestriction);
+
+    return conditions.join(' AND ');
+  };
+
+  const triggerIssueExport = (event) => {
+    // Prevent any default behavior
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    
+    console.log('[Export Debug] triggerIssueExport called', { 
+      onExportIssues: !!onExportIssues,
+      exportJql,
+      exportLimit,
+      exportIncludeComments,
+      exportIncludeAttachments,
+      exportIncludeChangelog,
+      exportIncludeLinks
+    });
+    
+    // Generate JQL based on current selections
+    const jqlQuery = generateJQL();
+    
+    // Check if JQL is provided
+    if (!jqlQuery || !jqlQuery.trim()) {
+      console.warn('[Export Debug] No JQL query generated');
+      return;
+    }
+    
+    if (!onExportIssues) {
+      console.error('[Export Debug] onExportIssues is not available');
+      return;
+    }
+    
+    // Call the export function
+    onExportIssues({
+      jql: jqlQuery,
+      maxResults: Number(exportLimit) || 50,
+      includeComments: exportIncludeComments,
+      includeAttachments: exportIncludeAttachments,
+      includeChangelog: exportIncludeChangelog,
+      includeIssueLinks: exportIncludeLinks
+    });
+  };
 
   const formatHelsinkiTime = (timestamp) => {
     if (!timestamp) return 'Not available';
@@ -1067,6 +1579,185 @@ const SyncActivityPanel = ({
           >
             Sync Now
           </Button>
+        </div>
+      </div>
+
+      <div style={surfaceCard()}>
+        <h4 style={{ margin: '0 0 4px 0' }}>Issue Export</h4>
+        <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 16px 0' }}>
+          Use JQL to export existing issues (max {ISSUE_EXPORT_LIMIT}) for migration or backups. Attachments are exported as metadata only.
+          <br/>
+          <strong style={{ color: '#DE350B' }}>⚠️ Required:</strong> You must specify a project key to export issues.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') }}>
+          
+          {/* Export Mode Toggle */}
+          <div style={{ display: 'flex', gap: token('space.100', '8px'), alignItems: 'center' }}>
+            <label style={{ fontSize: '14px', fontWeight: 500 }}>Export Mode:</label>
+            <Button
+              appearance={exportMode === 'predefined' ? 'primary' : 'subtle'}
+              onClick={() => setExportMode('predefined')}
+              style={{ ...lozengeButtonStyle, height: '32px' }}
+            >
+              Easy Select
+            </Button>
+            <Button
+              appearance={exportMode === 'custom' ? 'primary' : 'subtle'}
+              onClick={() => setExportMode('custom')}
+              style={{ ...lozengeButtonStyle, height: '32px' }}
+            >
+              Custom JQL
+            </Button>
+          </div>
+
+          {/* Easy Select Mode */}
+          {exportMode === 'predefined' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px'), padding: '16px', background: token('color.background.neutral.subtle', '#F4F5F7'), borderRadius: '8px' }}>
+              
+                <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
+                  
+                  {/* Quick Filter Options */}
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px', display: 'block' }}>Quick Filters (optional):</label>
+                    <Select
+                      placeholder="Select a filter to combine with project..."
+                      value={selectedPredefined}
+                      onChange={setSelectedPredefined}
+                      options={predefinedQueries}
+                      isClearable
+                    />
+                  </div>
+
+                  <div style={{ fontSize: '12px', fontWeight: 500, color: token('color.text'), margin: '8px 0 4px 0' }}>Build Your Query:</div>
+                  
+                  {/* Project Selection - REQUIRED */}
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, color: '#DE350B', marginBottom: '2px', display: 'block' }}>Project Key (REQUIRED):</label>
+                    <TextField
+                      placeholder="Enter project key, e.g., SCRUM, TEST, PROJ"
+                      value={selectedProject?.value || ''}
+                      onChange={(e) => setSelectedProject(e.target.value ? { label: e.target.value, value: e.target.value } : null)}
+                    />
+                  </div>
+
+                  {/* Status Selection */}
+                  <div>
+                    <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Status:</label>
+                    <Select
+                      placeholder="Any status"
+                      value={selectedStatus}
+                      onChange={setSelectedStatus}
+                      options={statusOptions}
+                      isClearable
+                    />
+                  </div>
+
+                  {/* Assignee Selection */}
+                  <div>
+                    <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Assignee:</label>
+                    <Select
+                      placeholder="Any assignee"
+                      value={selectedAssignee}
+                      onChange={setSelectedAssignee}
+                      options={assigneeOptions}
+                      isClearable
+                    />
+                  </div>
+
+                  {/* Date Range */}
+                  <div>
+                    <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Updated within last X days:</label>
+                    <TextField
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={dayRange}
+                      onChange={(e) => setDayRange(Number(e.target.value))}
+                      placeholder="30"
+                    />
+                  </div>
+                </div>
+
+              {/* Preview Generated JQL */}
+              <div style={{ marginTop: '8px', padding: '8px', background: token('color.background.neutral'), borderRadius: '4px' }}>
+                <div style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '4px' }}>Generated JQL:</div>
+                <code style={{ fontSize: '12px', wordBreak: 'break-all' }}>{generateJQL()}</code>
+              </div>
+            </div>
+          )}
+
+          {/* Custom JQL Mode */}
+          {exportMode === 'custom' && (
+            <div>
+              <TextField
+                value={exportJql}
+                onChange={(event) => setExportJql(event.target.value)}
+                placeholder="Enter JQL, e.g., project = ABC AND updated >= -30d"
+              />
+              <div style={{ fontSize: '12px', color: token('color.text.subtle'), marginTop: '4px' }}>
+                Need help with JQL? <a href="https://support.atlassian.com/jira-software-cloud/docs/use-advanced-search-with-jira-query-language-jql/" target="_blank" rel="noopener noreferrer">Learn JQL syntax</a>
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
+            <div style={{ flex: '0 0 160px' }}>
+              <TextField
+                type="number"
+                min={1}
+                max={ISSUE_EXPORT_LIMIT}
+                value={exportLimit}
+                onChange={(event) => setExportLimit(event.target.value)}
+                placeholder="Max results"
+              />
+            </div>
+            <div style={{ fontSize: '12px', color: '#6B778C', display: 'flex', alignItems: 'center' }}>
+              Max {ISSUE_EXPORT_LIMIT} issues per export
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.100', '8px') }}>
+            <Checkbox
+              label="Include comments"
+              isChecked={exportIncludeComments}
+              onChange={(event) => setExportIncludeComments(event.target.checked)}
+            />
+            <Checkbox
+              label="Include attachments (metadata only)"
+              isChecked={exportIncludeAttachments}
+              onChange={(event) => setExportIncludeAttachments(event.target.checked)}
+            />
+            <Checkbox
+              label="Include issue links"
+              isChecked={exportIncludeLinks}
+              onChange={(event) => setExportIncludeLinks(event.target.checked)}
+            />
+            <Checkbox
+              label="Include changelog"
+              isChecked={exportIncludeChangelog}
+              onChange={(event) => setExportIncludeChangelog(event.target.checked)}
+            />
+          </div>
+          <Button
+            appearance="subtle"
+            onClick={triggerIssueExport}
+            isDisabled={!generateJQL().trim()}
+            isLoading={issueExporting}
+            style={lozengeButtonStyle}
+          >
+            Export Issues
+          </Button>
+
+          <Button
+            appearance="subtle"
+            onClick={onIssueImportClick}
+            isDisabled={!selectedOrg || issueImporting}
+            isLoading={issueImporting}
+            style={lozengeButtonStyle}
+          >
+            Import Issues
+          </Button>
+          <div style={{ fontSize: '12px', color: '#6B778C' }}>
+            Imports target the currently selected organization.
+          </div>
         </div>
       </div>
 
@@ -1313,6 +2004,142 @@ const StatCard = ({ label, value, color }) => (
     <div style={{ fontSize: '28px', fontWeight: 600, color: color || token('color.text', '#172B4D') }}>{value}</div>
   </div>
 );
+
+const ImportSettingsModal = ({ importData, sections, onToggleSection, onConfirm, onClose, importing }) => {
+  const sectionOptions = [
+    { key: 'orgDetails', label: 'Connection details & project filters' },
+    { key: 'syncOptions', label: 'Sync options' },
+    { key: 'userMappings', label: 'User mappings' },
+    { key: 'fieldMappings', label: 'Field mappings' },
+    { key: 'statusMappings', label: 'Status mappings' },
+    { key: 'scheduledSync', label: 'Scheduled sync config (global)' }
+  ];
+  const hasSelection = sectionOptions.some(option => sections?.[option.key]);
+
+  return (
+    <ModalDialog
+      heading="Import Settings"
+      onClose={onClose}
+      width="medium"
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.200', '16px') }}>
+        <div style={{ fontSize: '13px', color: '#6B778C' }}>
+          <div><strong>Source org:</strong> {importData?.org?.name || 'Unknown organization'}</div>
+          <div><strong>Exported:</strong> {importData?.exportedAt ? new Date(importData.exportedAt).toLocaleString() : 'Not specified'}</div>
+          {importData?.version && (
+            <div><strong>Schema version:</strong> {importData.version}</div>
+          )}
+        </div>
+        <div>
+          <h4 style={{ margin: '0 0 8px 0' }}>Select sections to import</h4>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
+            {sectionOptions.map(option => (
+              <Checkbox
+                key={option.key}
+                label={option.label}
+                name={`import-${option.key}`}
+                isChecked={!!sections?.[option.key]}
+                onChange={() => onToggleSection(option.key)}
+              />
+            ))}
+          </div>
+        </div>
+        <SectionMessage appearance="warning">
+          <p style={{ margin: 0, fontSize: '13px' }}>
+            Importing will overwrite the selected sections for the currently active organization. This action cannot be undone.
+          </p>
+        </SectionMessage>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: token('space.150', '12px') }}>
+          <Button
+            appearance="subtle"
+            onClick={onConfirm}
+            isDisabled={!hasSelection}
+            isLoading={importing}
+            style={lozengeButtonStyle}
+          >
+            Import Selected
+          </Button>
+          <Button appearance="subtle" onClick={onClose} style={lozengeButtonStyle}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </ModalDialog>
+  );
+};
+
+const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, importing, selectedOrg }) => {
+  const meta = data?.meta || {};
+  const disabled = importing;
+
+  return (
+    <ModalDialog
+      heading="Import Issues"
+      onClose={onClose}
+      width="medium"
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.200', '16px') }}>
+        <div style={{ fontSize: '13px', color: '#6B778C' }}>
+          <div><strong>Destination:</strong> {selectedOrg?.name || 'Selected organization'}</div>
+          <div><strong>Issues detected:</strong> {data.issueKeys.length}</div>
+          {meta.sourceOrg && <div><strong>Source org:</strong> {meta.sourceOrg}</div>}
+          {meta.query && <div><strong>Original JQL:</strong> {meta.query}</div>}
+          {meta.exportedAt && <div><strong>Exported:</strong> {new Date(meta.exportedAt).toLocaleString()}</div>}
+        </div>
+        <div>
+          <h4 style={{ margin: '0 0 8px 0' }}>Import options</h4>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
+            <Checkbox
+              label="Fetch latest data from source Jira (recommended)"
+              isChecked={options.refreshFromSource}
+              onChange={(event) => onOptionChange('refreshFromSource', event.target.checked)}
+              isDisabled={disabled}
+            />
+            <Checkbox
+              label="Force re-create remote issues (ignore existing mappings)"
+              isChecked={options.forceRecreate}
+              onChange={(event) => onOptionChange('forceRecreate', event.target.checked)}
+              isDisabled={disabled}
+            />
+            <Checkbox
+              label="Skip issues that already have a remote copy"
+              isChecked={options.skipIfRemoteExists}
+              onChange={(event) => onOptionChange('skipIfRemoteExists', event.target.checked)}
+              isDisabled={disabled}
+            />
+          </div>
+        </div>
+        {!options.refreshFromSource && (
+          <SectionMessage appearance="warning">
+            <p style={{ margin: 0, fontSize: '13px' }}>
+              Importing from the export snapshot may fail if attachments or comments reference resources that no longer exist. Keep this option enabled when the source Jira is still accessible.
+            </p>
+          </SectionMessage>
+        )}
+        {options.refreshFromSource && (
+          <SectionMessage appearance="info">
+            <p style={{ margin: 0, fontSize: '13px' }}>
+              The app will re-fetch each issue before importing so attachments and latest field values are included. Ensure the source issues still exist.
+            </p>
+          </SectionMessage>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: token('space.150', '12px') }}>
+          <Button
+            appearance="subtle"
+            onClick={onConfirm}
+            isLoading={importing}
+            style={lozengeButtonStyle}
+          >
+            Import Issues
+          </Button>
+          <Button appearance="subtle" onClick={onClose} isDisabled={importing} style={lozengeButtonStyle}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </ModalDialog>
+  );
+};
 
 // Org Modal Component
 const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (

@@ -563,3 +563,11 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
     await clearSyncFlag(localKey);
   }
 }
+
+export async function createIssueForOrg(issue, org, mappings, syncOptions = null, syncResult = null) {
+  return await createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncResult);
+}
+
+export async function updateIssueForOrg(localKey, remoteKey, issue, org, mappings, syncOptions = null, syncResult = null) {
+  return await updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult);
+}

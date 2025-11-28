@@ -61,6 +61,8 @@ src/
 - Live data loading - Fetch users, fields, statuses, projects from both orgs
 - Visual mapping management - Add/delete mappings with real names
 - Project filter selector - Multi-select checkboxes to choose which projects to sync
+- Import/export org settings - Download JSON snapshot or import to clone configs across sites
+- Issue export/import - Run JQL to download issues and upload the same file later to recreate or update them
 - Manual sync controls - Force sync specific issues + clear error history
 - Sync health dashboard - Real-time webhook stats + scheduled bulk sync stats
 - Persistent storage - All configurations saved in Forge storage
@@ -158,6 +160,14 @@ Control which projects sync:
    - No selection: All projects sync (backward compatible)
    - Applies to webhooks, comments, and scheduled syncs
 
+### Import / Export Settings
+Clone configurations between environments or take backups:
+1. Open the Configuration tab and locate "Import / Export Settings"
+2. Click **Export Settings** to download a JSON snapshot for the selected organization
+3. To restore, click **Import Settings**, choose the JSON file, then select which sections to overwrite
+4. Confirm the modal to apply (connection details, sync options, and mappings update based on the sections chosen)
+5. Scheduled sync config is optional because it applies globally across all organizations
+
 ### Sync Health Dashboard
 Monitor sync activity and troubleshoot issues:
 
@@ -196,6 +206,30 @@ Monitor sync activity and troubleshoot issues:
 1. Open admin UI → "Manual Sync Controls" section
 2. Enter issue key and click "Sync Now" for on-demand sync
 3. Click error clear buttons to reset error history
+
+### Issue Export
+Create portable snapshots of existing issues for migration or backup:
+1. Open the Sync Activity tab and locate the "Issue Export" card
+2. Enter any JQL filter (e.g., `project = ABC AND updated >= -30d`) and set a max result count (up to 250)
+3. Choose whether to include comments, attachment metadata, links, and changelog history
+4. Click **Export Issues** – a JSON file downloads with the filtered issues plus stored remote mappings
+5. Use the JSON to audit what was exported or as the source file for the import workflow below
+
+**Notes**
+- If your JQL uses `currentUser()`, the resolver automatically substitutes the Jira accountId of the admin running the export so the query returns the same issues you see in Jira.
+- The downloaded JSON now contains both `query` (what you typed) and `effectiveQuery` (what the backend executed) to make troubleshooting easier.
+
+Attachments are exported as metadata (IDs, filenames, download URLs) to avoid oversized payloads.
+
+### Issue Import
+Recreate or update issues in a target organization using a previously exported JSON file:
+1. Select the destination organization in the header dropdown
+2. In the Sync Activity tab, click **Import Issues** and pick the JSON exported earlier
+3. Review the number of detected issues and choose options (refresh from source Jira, force recreate, skip existing)
+4. Confirm the import; the app re-fetches each issue (unless you opt out) and creates or updates the remote copy
+5. The summary banner reports how many issues were created, updated, or skipped
+
+Keep the source Jira issues available so attachments and media can be downloaded during import. If you disable the "refresh from source" option, the import relies solely on the snapshot stored in the JSON file.
 
 ## Architecture
 
