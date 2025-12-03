@@ -3,7 +3,7 @@ import { LOG_EMOJI } from '../../constants.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 
-export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null) {
+export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null, forceCheck = false) {
   if (!issue.fields.issuelinks || issue.fields.issuelinks.length === 0) {
     console.log(`No issue links to sync for ${localIssueKey}`);
     return;
@@ -13,11 +13,36 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
 
   console.log(`${LOG_EMOJI.LINK} Found ${issue.fields.issuelinks.length} issue link(s) on ${localIssueKey}`);
 
+  // If forceCheck, get existing links on remote to verify they actually exist
+  let remoteLinks = [];
+  if (forceCheck) {
+    try {
+      const remoteIssueResponse = await fetch(
+        `${config.remoteUrl}/rest/api/3/issue/${remoteIssueKey}?fields=issuelinks`,
+        {
+          method: 'GET',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      if (remoteIssueResponse.ok) {
+        const remoteIssue = await remoteIssueResponse.json();
+        remoteLinks = remoteIssue.fields?.issuelinks || [];
+        console.log(`${LOG_EMOJI.INFO} Remote issue ${remoteIssueKey} has ${remoteLinks.length} existing link(s)`);
+      }
+    } catch (e) {
+      console.log(`${LOG_EMOJI.WARNING} Could not fetch remote links: ${e.message}`);
+    }
+  }
+
   for (const link of issue.fields.issuelinks) {
     try {
       // Check if already synced (org-specific)
       const existingMapping = await getLinkMapping(link.id, orgId);
-      if (existingMapping) {
+      
+      if (existingMapping && !forceCheck) {
         console.log(`${LOG_EMOJI.SKIP} Link ${link.id} already synced`);
         const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
         if (syncResult) syncResult.addLinkSkipped(linkedKey, 'already synced');
@@ -47,16 +72,30 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
       const remoteLinkedKey = await getRemoteKey(linkedIssueKey, orgId);
       if (!remoteLinkedKey) {
         console.log(`${LOG_EMOJI.SKIP} Linked issue ${linkedIssueKey} not synced yet - storing as pending`);
-        // Store pending link for retry in scheduled sync
         await storePendingLink(localIssueKey, {
           linkId: link.id,
           linkedIssueKey: linkedIssueKey,
           direction: direction,
           linkTypeName: linkTypeName,
-          orgId: orgId // Store org context for pending links
+          orgId: orgId
         });
         if (syncResult) syncResult.addLinkSkipped(linkedIssueKey, 'linked issue not synced yet - stored as pending');
         continue;
+      }
+
+      // If forceCheck, verify the link actually exists on remote
+      if (forceCheck && existingMapping) {
+        const linkExists = remoteLinks.some(rl => {
+          const rlLinkedKey = rl.outwardIssue?.key || rl.inwardIssue?.key;
+          return rl.type.name === linkTypeName && rlLinkedKey === remoteLinkedKey;
+        });
+        
+        if (linkExists) {
+          console.log(`${LOG_EMOJI.SKIP} Link ${link.id} verified on remote`);
+          continue;
+        } else {
+          console.log(`${LOG_EMOJI.WARNING} Link ${link.id} mapping exists but not found on remote - recreating`);
+        }
       }
 
       // Create the link in remote org

@@ -9,6 +9,7 @@ import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { syncAttachments } from './attachment-sync.js';
 import { syncIssueLinks } from './link-sync.js';
+import { syncAllComments } from './comment-sync.js';
 import { transitionRemoteIssue } from './transition-sync.js';
 import { SyncResult } from './sync-result.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
@@ -162,16 +163,16 @@ export async function syncIssue(event) {
 
 // Legacy exports for backward compatibility with scheduled sync and manual sync
 // These work with single-org (legacy) or first organization
-export async function createRemoteIssue(issue, config, mappings, syncResult = null) {
+export async function createRemoteIssue(issue, config, mappings, syncResult = null, syncOptions = null) {
   // Determine orgId - if config has an id, use it, otherwise null for legacy
   const orgId = config.id && config.id !== 'legacy' ? config.id : null;
-  return await createRemoteIssueForOrg(issue, config, mappings, null, syncResult, orgId);
+  return await createRemoteIssueForOrg(issue, config, mappings, syncOptions, syncResult, orgId);
 }
 
-export async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings, syncResult = null) {
+export async function updateRemoteIssue(localKey, remoteKey, issue, config, mappings, syncResult = null, syncOptions = null) {
   // Determine orgId - if config has an id, use it, otherwise null for legacy
   const orgId = config.id && config.id !== 'legacy' ? config.id : null;
-  return await updateRemoteIssueForOrg(localKey, remoteKey, issue, config, mappings, null, syncResult, orgId);
+  return await updateRemoteIssueForOrg(localKey, remoteKey, issue, config, mappings, syncOptions, syncResult, orgId);
 }
 
 // Internal multi-org functions
@@ -243,10 +244,26 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   }
 
   if (issue.fields.parent && issue.fields.parent.key) {
-    const remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
+    let remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
+    
+    // If parent isn't synced yet, sync it first
+    if (!remoteParentKey) {
+      console.log(`🔗 Parent ${issue.fields.parent.key} not synced yet, syncing parent first...`);
+      const parentIssue = await getFullIssue(issue.fields.parent.key);
+      if (parentIssue) {
+        // Recursively create the parent (without syncOptions to avoid infinite loops with attachments)
+        remoteParentKey = await createRemoteIssueForOrg(parentIssue, org, mappings, null, syncResult, orgId);
+        if (remoteParentKey) {
+          console.log(`🔗 Parent synced: ${issue.fields.parent.key} → ${remoteParentKey}`);
+        }
+      }
+    }
+    
     if (remoteParentKey) {
       remoteIssue.fields.parent = { key: remoteParentKey };
       console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
+    } else {
+      console.log(`⚠️ Could not sync parent ${issue.fields.parent.key}, creating child without parent link`);
     }
   }
 
@@ -324,6 +341,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
       const attachmentEnabled = syncOptions?.syncAttachments !== false;
       const linksEnabled = syncOptions?.syncLinks !== false;
+      const commentsEnabled = syncOptions?.syncComments !== false;
 
       let attachmentMapping = {};
       if (attachmentEnabled) {
@@ -336,6 +354,12 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
         await syncIssueLinks(issue.key, result.key, issue, org, syncResult, orgId);
       } else {
         console.log(`⏭️ Skipping links sync (disabled in sync options)`);
+      }
+
+      if (commentsEnabled) {
+        await syncAllComments(issue.key, result.key, issue, org, syncResult, orgId);
+      } else {
+        console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
       }
 
       if (issue.fields.description &&
@@ -394,6 +418,7 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
 
   const attachmentEnabled = syncOptions?.syncAttachments !== false;
   const linksEnabled = syncOptions?.syncLinks !== false;
+  const commentsEnabled = syncOptions?.syncComments !== false;
 
   let attachmentMapping = {};
   if (attachmentEnabled) {
@@ -406,6 +431,12 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
     await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId);
   } else {
     console.log(`⏭️ Skipping links sync (disabled in sync options)`);
+  }
+
+  if (commentsEnabled) {
+    await syncAllComments(localKey, remoteKey, issue, org, syncResult, orgId);
+  } else {
+    console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
   }
 
   let description;

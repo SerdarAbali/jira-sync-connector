@@ -3,7 +3,7 @@ import api, { route } from '@forge/api';
 export async function getFullIssue(issueKey) {
   try {
     const response = await api.asApp().requestJira(
-      route`/rest/api/3/issue/${issueKey}`
+      route`/rest/api/3/issue/${issueKey}?expand=renderedFields,attachment&fields=*all,-comment`
     );
     return await response.json();
   } catch (error) {

@@ -1,4 +1,4 @@
-import { storage, fetch } from '@forge/api';
+import api, { route, storage, fetch } from '@forge/api';
 import { LOG_EMOJI } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
 import { extractTextFromADF, textToADFWithAuthor } from '../../utils/adf.js';
@@ -7,6 +7,148 @@ import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.j
 import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
 import { SyncResult } from './sync-result.js';
+
+/**
+ * Sync all comments from a local issue to a remote issue
+ * Used during scheduled sync to catch missed comment webhooks
+ */
+export async function syncAllComments(localKey, remoteKey, issue, org, syncResult = null, orgId = null) {
+  const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
+  const orgName = await getOrgName();
+  
+  // Get all comments from local issue
+  try {
+    const commentsResponse = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${localKey}/comment?maxResults=100`,
+      { method: 'GET' }
+    );
+    
+    if (!commentsResponse.ok) {
+      console.log(`${LOG_EMOJI.WARNING} Could not fetch comments for ${localKey}`);
+      return { synced: 0, skipped: 0, failed: 0 };
+    }
+    
+    const commentsData = await commentsResponse.json();
+    const localComments = commentsData.comments || [];
+    
+    if (localComments.length === 0) {
+      return { synced: 0, skipped: 0, failed: 0 };
+    }
+    
+    console.log(`${LOG_EMOJI.COMMENT} Found ${localComments.length} comments on ${localKey}`);
+    
+    // Get existing comments on remote issue
+    const remoteCommentsResponse = await fetch(
+      `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?maxResults=100`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    let existingRemoteComments = [];
+    if (remoteCommentsResponse.ok) {
+      const remoteData = await remoteCommentsResponse.json();
+      existingRemoteComments = remoteData.comments || [];
+    }
+    
+    // Build a set of existing comment signatures to avoid duplicates
+    // We use "[Comment from OrgName" prefix to identify synced comments
+    const existingSignatures = new Set();
+    for (const rc of existingRemoteComments) {
+      if (rc.body && typeof rc.body === 'object') {
+        const text = extractTextFromADF(rc.body);
+        // Extract first 100 chars as signature
+        existingSignatures.add(text.substring(0, 100));
+      }
+    }
+    
+    let synced = 0;
+    let skipped = 0;
+    let failed = 0;
+    
+    for (const comment of localComments) {
+      const userName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
+      
+      let commentText = '';
+      if (comment.body && typeof comment.body === 'object') {
+        commentText = extractTextFromADF(comment.body);
+      } else {
+        commentText = comment.body || '';
+      }
+      
+      // Create the comment body with author attribution
+      const commentBody = textToADFWithAuthor(commentText, orgName, userName);
+      const signature = `[Comment from ${orgName} - User: ${userName}]`;
+      
+      // Check if this comment likely already exists (by checking for similar content)
+      const checkText = `${signature}\n\n${commentText}`.substring(0, 100);
+      if (existingSignatures.has(checkText)) {
+        skipped++;
+        continue;
+      }
+      
+      // Also check if any remote comment contains this signature + partial text
+      let alreadyExists = false;
+      for (const rc of existingRemoteComments) {
+        if (rc.body && typeof rc.body === 'object') {
+          const rcText = extractTextFromADF(rc.body);
+          if (rcText.includes(signature) && rcText.includes(commentText.substring(0, 50))) {
+            alreadyExists = true;
+            break;
+          }
+        }
+      }
+      
+      if (alreadyExists) {
+        skipped++;
+        continue;
+      }
+      
+      // Sync the comment
+      try {
+        const response = await retryWithBackoff(async () => {
+          return await fetch(
+            `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ body: commentBody })
+            }
+          );
+        }, `Sync comment to ${remoteKey}`);
+        
+        if (response.ok) {
+          synced++;
+          if (syncResult) syncResult.details.comments.success++;
+        } else {
+          failed++;
+          if (syncResult) syncResult.details.comments.failed++;
+        }
+      } catch (error) {
+        console.error(`${LOG_EMOJI.ERROR} Error syncing comment:`, error);
+        failed++;
+        if (syncResult) syncResult.details.comments.failed++;
+      }
+    }
+    
+    if (synced > 0 || failed > 0) {
+      console.log(`${LOG_EMOJI.COMMENT} Comments for ${localKey}: ${synced} synced, ${skipped} skipped, ${failed} failed`);
+    }
+    
+    return { synced, skipped, failed };
+    
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error syncing comments for ${localKey}:`, error);
+    return { synced: 0, skipped: 0, failed: 0 };
+  }
+}
 
 export async function syncComment(event) {
   const issueKey = event.issue.key;

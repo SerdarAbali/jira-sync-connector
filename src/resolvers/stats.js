@@ -1,4 +1,5 @@
 import { storage } from '@forge/api';
+import { getApiUsageStats, resetApiUsageStats } from '../services/storage/stats.js';
 
 export function defineStatsResolvers(resolver) {
   resolver.define('getScheduledSyncStats', async () => {
@@ -29,6 +30,14 @@ export function defineStatsResolvers(resolver) {
       errors: [],
       lastSync: null
     };
+  });
+
+  resolver.define('getApiUsageStats', async () => {
+    return await getApiUsageStats();
+  });
+
+  resolver.define('resetApiUsageStats', async () => {
+    return await resetApiUsageStats();
   });
 
   resolver.define('clearWebhookErrors', async () => {

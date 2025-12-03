@@ -97,7 +97,8 @@ const App = () => {
     syncComments: true,
     syncAttachments: true,
     syncLinks: true,
-    syncSprints: false
+    syncSprints: false,
+    recreateDeletedIssues: false
   });
 
   // Stats
@@ -108,6 +109,7 @@ const App = () => {
   const [manualIssueKey, setManualIssueKey] = useState('');
   const [manualSyncLoading, setManualSyncLoading] = useState(false);
   const [issueExporting, setIssueExporting] = useState(false);
+  const [scanningDeleted, setScanningDeleted] = useState(false);
 
   // Data loading states
   const [dataLoading, setDataLoading] = useState({
@@ -208,11 +210,12 @@ const App = () => {
   const loadStats = async () => {
     setStatsLoading(true);
     try {
-      const [scheduled, webhook] = await Promise.all([
+      const [scheduled, webhook, apiUsage] = await Promise.all([
         invoke('getScheduledSyncStats'),
-        invoke('getWebhookSyncStats')
+        invoke('getWebhookSyncStats'),
+        invoke('getApiUsageStats')
       ]);
-      setSyncStats({ scheduled, webhook });
+      setSyncStats({ scheduled, webhook, apiUsage });
     } catch (error) {
       showMessage('Error loading stats: ' + error.message, 'error');
     } finally {
@@ -523,6 +526,28 @@ const App = () => {
       }
     } catch (error) {
       showMessage('Error: ' + error.message, 'error');
+    }
+  };
+
+  const handleScanForDeletedIssues = async () => {
+    setScanningDeleted(true);
+    try {
+      showMessage('Scanning all synced issues for deleted remote issues...', 'info');
+      const result = await invoke('scanForDeletedIssues', { orgId: selectedOrgId });
+      if (result.success) {
+        if (result.results.deleted > 0) {
+          showMessage(`Found ${result.results.deleted} deleted issues. Recreated: ${result.results.recreated}`, 'success');
+        } else {
+          showMessage(`Scanned ${result.results.scanned} issues. All remote issues are intact.`, 'success');
+        }
+        await loadStats();
+      } else {
+        showMessage(`Error: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error: ' + error.message, 'error');
+    } finally {
+      setScanningDeleted(false);
     }
   };
 
@@ -883,6 +908,9 @@ const App = () => {
                     onIssueImportClick={handleIssueImportClick}
                     issueImporting={issueImporting}
                     selectedOrg={selectedOrg}
+                    syncOptions={syncOptions}
+                    handleScanForDeletedIssues={handleScanForDeletedIssues}
+                    scanningDeleted={scanningDeleted}
                   />
                 </div>
               </TabPanel>
@@ -1069,7 +1097,8 @@ const ConfigurationPanel = ({
               { key: 'syncComments', label: 'Sync Comments' },
               { key: 'syncAttachments', label: 'Sync Attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
-              { key: 'syncSprints', label: 'Sync Sprints' }
+              { key: 'syncSprints', label: 'Sync Sprints' },
+              { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (re-sync issues deleted in target org)' }
             ].map(option => (
               <Checkbox
                 key={option.key}
@@ -1340,7 +1369,7 @@ const SyncActivityPanel = ({
   manualIssueKey, setManualIssueKey, handleManualSync, manualSyncLoading,
   syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors,
   organizations, onExportIssues, issueExporting, onIssueImportClick, issueImporting,
-  selectedOrg
+  selectedOrg, syncOptions, handleScanForDeletedIssues, scanningDeleted
 }) => {
   console.log('[Debug] SyncActivityPanel rendered', { onExportIssues: !!onExportIssues, organizations: organizations?.length });
   const [eventsExpanded, setEventsExpanded] = useState(false);
@@ -1499,6 +1528,13 @@ const SyncActivityPanel = ({
     if (!lastRun) return null;
     const next = new Date(lastRun);
     next.setHours(next.getHours() + 1);
+    
+    // If the calculated "next run" is in the past, the job is overdue/running soon
+    const now = new Date();
+    if (next < now) {
+      // Return null to indicate it should run soon
+      return 'overdue';
+    }
     return next;
   };
 
@@ -1507,6 +1543,7 @@ const SyncActivityPanel = ({
 
   const eventTypeMeta = {
     create: { label: 'Created', appearance: 'success' },
+    recreate: { label: 'Recreated', appearance: 'new' },
     update: { label: 'Updated', appearance: 'moved' },
     error: { label: 'Error', appearance: 'removed' },
     'link-synced': { label: 'Link Synced', appearance: 'success' },
@@ -1519,6 +1556,8 @@ const SyncActivityPanel = ({
     switch (event.type) {
       case 'create':
         return `Created ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'}`;
+      case 'recreate':
+        return `Recreated ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'} (was ${event.previousRemoteKey || 'deleted'})`;
       case 'update':
         return `Updated ${event.issueKey || 'issue'} → ${event.remoteKey || 'remote key'}`;
       case 'link-synced':
@@ -1548,221 +1587,17 @@ const SyncActivityPanel = ({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h3 style={{ margin: 0 }}>Sync Activity</h3>
-          <p style={{ margin: '4px 0 0 0', color: '#6B778C', fontSize: '13px' }}>Monitor scheduled jobs, webhook throughput, and manual syncs.</p>
+          <p style={{ margin: '4px 0 0 0', color: '#6B778C', fontSize: '13px' }}>Monitor sync statistics, scheduled jobs, and webhook activity.</p>
         </div>
         <Button appearance="subtle" onClick={loadStats} isLoading={statsLoading} style={lozengeButtonStyle}>
           Refresh Stats
         </Button>
       </div>
 
-      <div style={surfaceCard()}>
-        <h4 style={{ margin: '0 0 4px 0' }}>Manual Sync</h4>
-        <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 16px 0' }}>
-          Sync a specific issue to all <strong>{organizations.length}</strong> organization(s).
-        </p>
-        <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'flex-end' }}>
-          <div style={{ flex: 1 }}>
-            <TextField
-              value={manualIssueKey}
-              onChange={(event) => setManualIssueKey(event.target.value)}
-              onKeyDown={(event) => event.key === 'Enter' && handleManualSync()}
-              placeholder="e.g., PROJ-123"
-              width="100%"
-            />
-          </div>
-          <Button
-            appearance="subtle"
-            onClick={handleManualSync}
-            isLoading={manualSyncLoading}
-            isDisabled={!manualIssueKey.trim()}
-            style={lozengeButtonStyle}
-          >
-            Sync Now
-          </Button>
-        </div>
-      </div>
-
-      <div style={surfaceCard()}>
-        <h4 style={{ margin: '0 0 4px 0' }}>Issue Export</h4>
-        <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 16px 0' }}>
-          Use JQL to export existing issues (max {ISSUE_EXPORT_LIMIT}) for migration or backups. Attachments are exported as metadata only.
-          <br/>
-          <strong style={{ color: '#DE350B' }}>⚠️ Required:</strong> You must specify a project key to export issues.
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') }}>
-          
-          {/* Export Mode Toggle */}
-          <div style={{ display: 'flex', gap: token('space.100', '8px'), alignItems: 'center' }}>
-            <label style={{ fontSize: '14px', fontWeight: 500 }}>Export Mode:</label>
-            <Button
-              appearance={exportMode === 'predefined' ? 'primary' : 'subtle'}
-              onClick={() => setExportMode('predefined')}
-              style={{ ...lozengeButtonStyle, height: '32px' }}
-            >
-              Easy Select
-            </Button>
-            <Button
-              appearance={exportMode === 'custom' ? 'primary' : 'subtle'}
-              onClick={() => setExportMode('custom')}
-              style={{ ...lozengeButtonStyle, height: '32px' }}
-            >
-              Custom JQL
-            </Button>
-          </div>
-
-          {/* Easy Select Mode */}
-          {exportMode === 'predefined' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px'), padding: '16px', background: token('color.background.neutral.subtle', '#F4F5F7'), borderRadius: '8px' }}>
-              
-                <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
-                  
-                  {/* Quick Filter Options */}
-                  <div>
-                    <label style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px', display: 'block' }}>Quick Filters (optional):</label>
-                    <Select
-                      placeholder="Select a filter to combine with project..."
-                      value={selectedPredefined}
-                      onChange={setSelectedPredefined}
-                      options={predefinedQueries}
-                      isClearable
-                    />
-                  </div>
-
-                  <div style={{ fontSize: '12px', fontWeight: 500, color: token('color.text'), margin: '8px 0 4px 0' }}>Build Your Query:</div>
-                  
-                  {/* Project Selection - REQUIRED */}
-                  <div>
-                    <label style={{ fontSize: '12px', fontWeight: 600, color: '#DE350B', marginBottom: '2px', display: 'block' }}>Project Key (REQUIRED):</label>
-                    <TextField
-                      placeholder="Enter project key, e.g., SCRUM, TEST, PROJ"
-                      value={selectedProject?.value || ''}
-                      onChange={(e) => setSelectedProject(e.target.value ? { label: e.target.value, value: e.target.value } : null)}
-                    />
-                  </div>
-
-                  {/* Status Selection */}
-                  <div>
-                    <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Status:</label>
-                    <Select
-                      placeholder="Any status"
-                      value={selectedStatus}
-                      onChange={setSelectedStatus}
-                      options={statusOptions}
-                      isClearable
-                    />
-                  </div>
-
-                  {/* Assignee Selection */}
-                  <div>
-                    <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Assignee:</label>
-                    <Select
-                      placeholder="Any assignee"
-                      value={selectedAssignee}
-                      onChange={setSelectedAssignee}
-                      options={assigneeOptions}
-                      isClearable
-                    />
-                  </div>
-
-                  {/* Date Range */}
-                  <div>
-                    <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Updated within last X days:</label>
-                    <TextField
-                      type="number"
-                      min={1}
-                      max={365}
-                      value={dayRange}
-                      onChange={(e) => setDayRange(Number(e.target.value))}
-                      placeholder="30"
-                    />
-                  </div>
-                </div>
-
-              {/* Preview Generated JQL */}
-              <div style={{ marginTop: '8px', padding: '8px', background: token('color.background.neutral'), borderRadius: '4px' }}>
-                <div style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '4px' }}>Generated JQL:</div>
-                <code style={{ fontSize: '12px', wordBreak: 'break-all' }}>{generateJQL()}</code>
-              </div>
-            </div>
-          )}
-
-          {/* Custom JQL Mode */}
-          {exportMode === 'custom' && (
-            <div>
-              <TextField
-                value={exportJql}
-                onChange={(event) => setExportJql(event.target.value)}
-                placeholder="Enter JQL, e.g., project = ABC AND updated >= -30d"
-              />
-              <div style={{ fontSize: '12px', color: token('color.text.subtle'), marginTop: '4px' }}>
-                Need help with JQL? <a href="https://support.atlassian.com/jira-software-cloud/docs/use-advanced-search-with-jira-query-language-jql/" target="_blank" rel="noopener noreferrer">Learn JQL syntax</a>
-              </div>
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
-            <div style={{ flex: '0 0 160px' }}>
-              <TextField
-                type="number"
-                min={1}
-                max={ISSUE_EXPORT_LIMIT}
-                value={exportLimit}
-                onChange={(event) => setExportLimit(event.target.value)}
-                placeholder="Max results"
-              />
-            </div>
-            <div style={{ fontSize: '12px', color: '#6B778C', display: 'flex', alignItems: 'center' }}>
-              Max {ISSUE_EXPORT_LIMIT} issues per export
-            </div>
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.100', '8px') }}>
-            <Checkbox
-              label="Include comments"
-              isChecked={exportIncludeComments}
-              onChange={(event) => setExportIncludeComments(event.target.checked)}
-            />
-            <Checkbox
-              label="Include attachments (metadata only)"
-              isChecked={exportIncludeAttachments}
-              onChange={(event) => setExportIncludeAttachments(event.target.checked)}
-            />
-            <Checkbox
-              label="Include issue links"
-              isChecked={exportIncludeLinks}
-              onChange={(event) => setExportIncludeLinks(event.target.checked)}
-            />
-            <Checkbox
-              label="Include changelog"
-              isChecked={exportIncludeChangelog}
-              onChange={(event) => setExportIncludeChangelog(event.target.checked)}
-            />
-          </div>
-          <Button
-            appearance="subtle"
-            onClick={triggerIssueExport}
-            isDisabled={!generateJQL().trim()}
-            isLoading={issueExporting}
-            style={lozengeButtonStyle}
-          >
-            Export Issues
-          </Button>
-
-          <Button
-            appearance="subtle"
-            onClick={onIssueImportClick}
-            isDisabled={!selectedOrg || issueImporting}
-            isLoading={issueImporting}
-            style={lozengeButtonStyle}
-          >
-            Import Issues
-          </Button>
-          <div style={{ fontSize: '12px', color: '#6B778C' }}>
-            Imports target the currently selected organization.
-          </div>
-        </div>
-      </div>
-
+      {/* Statistics Section - Always visible at top */}
       {syncStats && (
         <>
+          {/* Webhook Stats */}
           {syncStats.webhook && (
             <div style={surfaceCard()}>
               <h4 style={{ margin: '0 0 16px 0' }}>Webhook Sync Statistics</h4>
@@ -1853,6 +1688,7 @@ const SyncActivityPanel = ({
             </div>
           )}
 
+          {/* Scheduled Sync Stats */}
           {syncStats.scheduled && (
             <div style={surfaceCard()}>
               <h4 style={{ margin: '0 0 16px 0' }}>Scheduled Sync Statistics</h4>
@@ -1860,6 +1696,7 @@ const SyncActivityPanel = ({
                 <StatCard label="Issues Checked" value={syncStats.scheduled.issuesChecked || 0} color="#0052CC" />
                 <StatCard label="Issues Created" value={syncStats.scheduled.issuesCreated || 0} color="#00875A" />
                 <StatCard label="Issues Updated" value={syncStats.scheduled.issuesUpdated || 0} color="#0052CC" />
+                <StatCard label="Issues Recreated" value={syncStats.scheduled.issuesRecreated || 0} color="#6554C0" />
                 <StatCard label="Issues Skipped" value={syncStats.scheduled.issuesSkipped || 0} color="#FF991F" />
               </div>
               {syncStats.scheduled.lastRun && (
@@ -1870,6 +1707,130 @@ const SyncActivityPanel = ({
             </div>
           )}
 
+          {/* API Usage Dashboard */}
+          {syncStats.apiUsage && (
+            <div style={surfaceCard()}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h4 style={{ margin: 0 }}>API Usage & Rate Limiting</h4>
+                {syncStats.apiUsage.lastRateLimitHit && (
+                  <span style={{ 
+                    fontSize: '12px', 
+                    padding: '4px 8px', 
+                    background: '#FFEBE6', 
+                    color: '#DE350B',
+                    borderRadius: '4px'
+                  }}>
+                    Last rate limit: {new Date(syncStats.apiUsage.lastRateLimitHit).toLocaleString()}
+                  </span>
+                )}
+              </div>
+              
+              {/* Quota Progress Bar */}
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>Hourly API Quota</span>
+                  <span style={{ fontSize: '13px', color: '#6B778C' }}>
+                    {syncStats.apiUsage.callsThisHour || 0} / {syncStats.apiUsage.estimatedHourlyLimit || 10000} calls
+                  </span>
+                </div>
+                <div style={{ 
+                  height: '8px', 
+                  background: '#DFE1E6', 
+                  borderRadius: '4px', 
+                  overflow: 'hidden' 
+                }}>
+                  <div style={{ 
+                    height: '100%', 
+                    width: `${Math.min(syncStats.apiUsage.quotaUsagePercent || 0, 100)}%`,
+                    background: (syncStats.apiUsage.quotaUsagePercent || 0) > 80 
+                      ? '#DE350B' 
+                      : (syncStats.apiUsage.quotaUsagePercent || 0) > 50 
+                        ? '#FF991F' 
+                        : '#00875A',
+                    borderRadius: '4px',
+                    transition: 'width 0.3s ease'
+                  }} />
+                </div>
+                <div style={{ fontSize: '12px', color: '#6B778C', marginTop: '4px' }}>
+                  {syncStats.apiUsage.quotaUsagePercent || 0}% used this hour
+                </div>
+              </div>
+
+              {/* Stats Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.200', '16px'), marginBottom: token('space.200', '16px') }}>
+                <StatCard label="Total API Calls" value={syncStats.apiUsage.totalCalls || 0} color="#0052CC" />
+                <StatCard label="Successful" value={syncStats.apiUsage.successfulCalls || 0} color="#00875A" />
+                <StatCard label="Failed" value={syncStats.apiUsage.failedCalls || 0} color="#DE350B" />
+                <StatCard label="Rate Limits Hit" value={syncStats.apiUsage.rateLimitHits || 0} color="#FF991F" />
+                <StatCard label="Success Rate" value={`${syncStats.apiUsage.successRate || 100}%`} color="#00875A" />
+              </div>
+
+              {/* By Endpoint Breakdown */}
+              {syncStats.apiUsage.byEndpoint && Object.keys(syncStats.apiUsage.byEndpoint).length > 0 && (
+                <div style={{ marginTop: token('space.200', '16px') }}>
+                  <h5 style={{ marginBottom: '8px' }}>Calls by Type</h5>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {Object.entries(syncStats.apiUsage.byEndpoint)
+                      .sort((a, b) => b[1].calls - a[1].calls)
+                      .map(([type, data]) => (
+                        <div key={type} style={{
+                          padding: '8px 12px',
+                          background: token('color.background.neutral.subtle', '#F4F5F7'),
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}>
+                          <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{type}</span>
+                          <span style={{ color: '#6B778C' }}>{data.calls} calls</span>
+                          {data.rateLimits > 0 && (
+                            <span style={{ color: '#DE350B', fontSize: '11px' }}>({data.rateLimits} limited)</span>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Hourly History Chart */}
+              {syncStats.apiUsage.history && syncStats.apiUsage.history.length > 0 && (
+                <div style={{ marginTop: token('space.200', '16px') }}>
+                  <h5 style={{ marginBottom: '8px' }}>Last 24 Hours</h5>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '60px' }}>
+                    {syncStats.apiUsage.history.slice(0, 24).reverse().map((hour, idx) => {
+                      const maxCalls = Math.max(...syncStats.apiUsage.history.map(h => h.calls), 1);
+                      const heightPercent = (hour.calls / maxCalls) * 100;
+                      return (
+                        <div 
+                          key={idx}
+                          title={`${hour.hour}: ${hour.calls} calls${hour.rateLimits ? `, ${hour.rateLimits} rate limits` : ''}`}
+                          style={{
+                            flex: 1,
+                            height: `${Math.max(heightPercent, 5)}%`,
+                            background: hour.rateLimits > 0 ? '#FF991F' : '#0052CC',
+                            borderRadius: '2px 2px 0 0',
+                            minWidth: '8px'
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#6B778C', marginTop: '4px', textAlign: 'center' }}>
+                    Hover over bars to see details. Orange = rate limited.
+                  </div>
+                </div>
+              )}
+
+              {syncStats.apiUsage.lastUpdated && (
+                <div style={{ fontSize: '12px', color: '#6B778C', marginTop: token('space.200', '16px') }}>
+                  Last updated: {new Date(syncStats.apiUsage.lastUpdated).toLocaleString()}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Hourly Sync Timeline */}
           {syncStats?.scheduled && (
             <div style={surfaceCard({ background: token('color.background.neutral.subtle', '#F4F5F7') })}>
               <h4 style={{ margin: '0 0 8px 0' }}>Hourly Sync Timeline</h4>
@@ -1886,6 +1847,9 @@ const SyncActivityPanel = ({
                   <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
                     {(() => {
                       const nextRun = getNextRunTime();
+                      if (nextRun === 'overdue') {
+                        return <span style={{ color: '#00875A' }}>⏳ Running soon (within the hour)</span>;
+                      }
                       return nextRun ? formatHelsinkiTime(nextRun) : 'Pending first schedule';
                     })()}
                   </div>
@@ -1975,21 +1939,264 @@ const SyncActivityPanel = ({
         </>
       )}
 
-      <div style={surfaceCard({
-        background: token('color.background.accent.green.subtlest', '#E3FCEF'),
-        border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
-      })}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.150', '12px') }}>
-          <h4 style={{ margin: 0, color: '#006644' }}>Pending Link Sync</h4>
-          <Lozenge appearance="success">Automated hourly</Lozenge>
+      {/* Quick Actions Section */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: token('space.300', '24px') }}>
+        {/* Manual Sync - Compact */}
+        <div style={surfaceCard()}>
+          <h4 style={{ margin: '0 0 4px 0' }}>Manual Sync</h4>
+          <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
+            Sync a specific issue to all <strong>{organizations.length}</strong> org(s).
+          </p>
+          <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <TextField
+                value={manualIssueKey}
+                onChange={(event) => setManualIssueKey(event.target.value)}
+                onKeyDown={(event) => event.key === 'Enter' && handleManualSync()}
+                placeholder="e.g., PROJ-123"
+                width="100%"
+              />
+            </div>
+            <Button
+              appearance="subtle"
+              onClick={handleManualSync}
+              isLoading={manualSyncLoading}
+              isDisabled={!manualIssueKey.trim()}
+              style={lozengeButtonStyle}
+            >
+              Sync Now
+            </Button>
+          </div>
         </div>
-        <p style={{ fontSize: '13px', color: '#006644', marginBottom: token('space.200', '16px') }}>
-          Retry syncing all pending links across every organization. The scheduled job already attempts this each hour; trigger an on-demand retry if needed.
-        </p>
-        <Button appearance="subtle" onClick={handleRetryPendingLinks} style={lozengeButtonStyle}>
-          Retry All Pending Links
-        </Button>
+
+        {/* Pending Link Sync - Compact */}
+        <div style={surfaceCard({
+          background: token('color.background.accent.green.subtlest', '#E3FCEF'),
+          border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
+        })}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.100', '8px') }}>
+            <h4 style={{ margin: 0, color: '#006644' }}>Pending Links</h4>
+            <Lozenge appearance="success">Auto hourly</Lozenge>
+          </div>
+          <p style={{ fontSize: '13px', color: '#006644', margin: '0 0 12px 0' }}>
+            Retry syncing pending links across all orgs.
+          </p>
+          <Button appearance="subtle" onClick={handleRetryPendingLinks} style={lozengeButtonStyle}>
+            Retry All Pending Links
+          </Button>
+        </div>
+
+        {/* Scan for Deleted Issues */}
+        {syncOptions.recreateDeletedIssues && (
+          <div style={surfaceCard({
+            background: token('color.background.accent.orange.subtlest', '#FFF7E6'),
+            border: `1px solid ${token('color.border.accent.orange', '#FF8B00')}`
+          })}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.100', '8px') }}>
+              <h4 style={{ margin: 0, color: '#974F0C' }}>Scan Deleted</h4>
+              <Lozenge appearance="moved">Recreate</Lozenge>
+            </div>
+            <p style={{ fontSize: '13px', color: '#974F0C', margin: '0 0 12px 0' }}>
+              Scan all synced issues and recreate deleted remote issues.
+            </p>
+            <Button 
+              appearance="subtle" 
+              onClick={handleScanForDeletedIssues} 
+              isLoading={scanningDeleted}
+              style={lozengeButtonStyle}
+            >
+              Scan & Recreate Now
+            </Button>
+          </div>
+        )}
       </div>
+
+      {/* Issue Export/Import Section - Collapsible */}
+      <IssueExportImportSection
+        exportJql={exportJql}
+        setExportJql={setExportJql}
+        exportMode={exportMode}
+        setExportMode={setExportMode}
+        selectedPredefined={selectedPredefined}
+        setSelectedPredefined={setSelectedPredefined}
+        predefinedQueries={predefinedQueries}
+        selectedProject={selectedProject}
+        setSelectedProject={setSelectedProject}
+        selectedStatus={selectedStatus}
+        setSelectedStatus={setSelectedStatus}
+        statusOptions={statusOptions}
+        selectedAssignee={selectedAssignee}
+        setSelectedAssignee={setSelectedAssignee}
+        assigneeOptions={assigneeOptions}
+        dayRange={dayRange}
+        setDayRange={setDayRange}
+        exportLimit={exportLimit}
+        setExportLimit={setExportLimit}
+        exportIncludeComments={exportIncludeComments}
+        setExportIncludeComments={setExportIncludeComments}
+        exportIncludeAttachments={exportIncludeAttachments}
+        setExportIncludeAttachments={setExportIncludeAttachments}
+        exportIncludeChangelog={exportIncludeChangelog}
+        setExportIncludeChangelog={setExportIncludeChangelog}
+        exportIncludeLinks={exportIncludeLinks}
+        setExportIncludeLinks={setExportIncludeLinks}
+        generateJQL={generateJQL}
+        triggerIssueExport={triggerIssueExport}
+        issueExporting={issueExporting}
+        onIssueImportClick={onIssueImportClick}
+        issueImporting={issueImporting}
+        selectedOrg={selectedOrg}
+      />
+    </div>
+  );
+};
+
+// Issue Export/Import Section Component - Collapsible
+const IssueExportImportSection = ({
+  exportJql, setExportJql, exportMode, setExportMode,
+  selectedPredefined, setSelectedPredefined, predefinedQueries,
+  selectedProject, setSelectedProject, selectedStatus, setSelectedStatus, statusOptions,
+  selectedAssignee, setSelectedAssignee, assigneeOptions,
+  dayRange, setDayRange, exportLimit, setExportLimit,
+  exportIncludeComments, setExportIncludeComments,
+  exportIncludeAttachments, setExportIncludeAttachments,
+  exportIncludeChangelog, setExportIncludeChangelog,
+  exportIncludeLinks, setExportIncludeLinks,
+  generateJQL, triggerIssueExport, issueExporting,
+  onIssueImportClick, issueImporting, selectedOrg
+}) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={surfaceCard()}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+      >
+        <div>
+          <h4 style={{ margin: '0 0 4px 0' }}>Issue Export / Import</h4>
+          <p style={{ fontSize: '13px', color: '#6B778C', margin: 0 }}>
+            Export issues via JQL for migration or backups, or import from a previous export.
+          </p>
+        </div>
+        <span style={{ fontSize: '13px', color: '#6B778C' }}>{expanded ? 'Hide ▲' : 'Show ▼'}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: token('space.200', '16px'), display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') }}>
+          <div style={{ fontSize: '12px', color: '#DE350B', fontWeight: 500 }}>
+            ⚠️ Project key is required for export.
+          </div>
+          
+          {/* Export Mode Toggle */}
+          <div style={{ display: 'flex', gap: token('space.100', '8px'), alignItems: 'center' }}>
+            <label style={{ fontSize: '14px', fontWeight: 500 }}>Export Mode:</label>
+            <Button
+              appearance={exportMode === 'predefined' ? 'primary' : 'subtle'}
+              onClick={() => setExportMode('predefined')}
+              style={{ ...lozengeButtonStyle, height: '32px' }}
+            >
+              Easy Select
+            </Button>
+            <Button
+              appearance={exportMode === 'custom' ? 'primary' : 'subtle'}
+              onClick={() => setExportMode('custom')}
+              style={{ ...lozengeButtonStyle, height: '32px' }}
+            >
+              Custom JQL
+            </Button>
+          </div>
+
+          {/* Easy Select Mode */}
+          {exportMode === 'predefined' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px'), padding: '16px', background: token('color.background.neutral.subtle', '#F4F5F7'), borderRadius: '8px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
+                <div>
+                  <label style={{ fontSize: '13px', fontWeight: 500, marginBottom: '4px', display: 'block' }}>Quick Filters (optional):</label>
+                  <Select
+                    placeholder="Select a filter to combine with project..."
+                    value={selectedPredefined}
+                    onChange={setSelectedPredefined}
+                    options={predefinedQueries}
+                    isClearable
+                  />
+                </div>
+
+                <div style={{ fontSize: '12px', fontWeight: 500, color: token('color.text'), margin: '8px 0 4px 0' }}>Build Your Query:</div>
+                
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, color: '#DE350B', marginBottom: '2px', display: 'block' }}>Project Key (REQUIRED):</label>
+                  <TextField
+                    placeholder="Enter project key, e.g., SCRUM, TEST, PROJ"
+                    value={selectedProject?.value || ''}
+                    onChange={(e) => setSelectedProject(e.target.value ? { label: e.target.value, value: e.target.value } : null)}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Status:</label>
+                  <Select placeholder="Any status" value={selectedStatus} onChange={setSelectedStatus} options={statusOptions} isClearable />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Assignee:</label>
+                  <Select placeholder="Any assignee" value={selectedAssignee} onChange={setSelectedAssignee} options={assigneeOptions} isClearable />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '2px', display: 'block' }}>Updated within last X days:</label>
+                  <TextField type="number" min={1} max={365} value={dayRange} onChange={(e) => setDayRange(Number(e.target.value))} placeholder="30" />
+                </div>
+              </div>
+
+              <div style={{ marginTop: '8px', padding: '8px', background: token('color.background.neutral'), borderRadius: '4px' }}>
+                <div style={{ fontSize: '12px', color: token('color.text.subtle'), marginBottom: '4px' }}>Generated JQL:</div>
+                <code style={{ fontSize: '12px', wordBreak: 'break-all' }}>{generateJQL()}</code>
+              </div>
+            </div>
+          )}
+
+          {/* Custom JQL Mode */}
+          {exportMode === 'custom' && (
+            <div>
+              <TextField
+                value={exportJql}
+                onChange={(event) => setExportJql(event.target.value)}
+                placeholder="Enter JQL, e.g., project = ABC AND updated >= -30d"
+              />
+              <div style={{ fontSize: '12px', color: token('color.text.subtle'), marginTop: '4px' }}>
+                Need help with JQL? <a href="https://support.atlassian.com/jira-software-cloud/docs/use-advanced-search-with-jira-query-language-jql/" target="_blank" rel="noopener noreferrer">Learn JQL syntax</a>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: token('space.150', '12px'), flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ flex: '0 0 120px' }}>
+              <TextField type="number" min={1} max={ISSUE_EXPORT_LIMIT} value={exportLimit} onChange={(event) => setExportLimit(event.target.value)} placeholder="Max results" />
+            </div>
+            <div style={{ fontSize: '12px', color: '#6B778C' }}>Max {ISSUE_EXPORT_LIMIT} issues per export</div>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.100', '8px') }}>
+            <Checkbox label="Comments" isChecked={exportIncludeComments} onChange={(event) => setExportIncludeComments(event.target.checked)} />
+            <Checkbox label="Attachments (metadata)" isChecked={exportIncludeAttachments} onChange={(event) => setExportIncludeAttachments(event.target.checked)} />
+            <Checkbox label="Issue links" isChecked={exportIncludeLinks} onChange={(event) => setExportIncludeLinks(event.target.checked)} />
+            <Checkbox label="Changelog" isChecked={exportIncludeChangelog} onChange={(event) => setExportIncludeChangelog(event.target.checked)} />
+          </div>
+
+          <div style={{ display: 'flex', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
+            <Button appearance="subtle" onClick={triggerIssueExport} isDisabled={!generateJQL().trim()} isLoading={issueExporting} style={lozengeButtonStyle}>
+              Export Issues
+            </Button>
+            <Button appearance="subtle" onClick={onIssueImportClick} isDisabled={!selectedOrg || issueImporting} isLoading={issueImporting} style={lozengeButtonStyle}>
+              Import Issues
+            </Button>
+          </div>
+          <div style={{ fontSize: '12px', color: '#6B778C' }}>
+            Imports target the currently selected organization.
+          </div>
+        </div>
+      )}
     </div>
   );
 };

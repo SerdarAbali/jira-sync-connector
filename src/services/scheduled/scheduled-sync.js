@@ -1,28 +1,192 @@
 import api, { route, storage, fetch } from '@forge/api';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 import { sleep } from '../../utils/retry.js';
-import { getRemoteKey, getLocalKey, storeLinkMapping } from '../storage/mappings.js';
+import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex } from '../storage/mappings.js';
 import { removePendingLink, getPendingLinks } from '../storage/flags.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../sync/issue-sync.js';
 
-async function checkIfIssueNeedsSync(issueKey, issue, config, mappings) {
+/**
+ * Check if a remote issue exists in the target Jira instance
+ * @param {string} remoteKey - The remote issue key (e.g., "SCRUM-123")
+ * @param {object} config - Sync config with remote credentials
+ * @returns {Promise<boolean>} - True if issue exists, false if deleted/not found
+ */
+async function checkRemoteIssueExists(remoteKey, config) {
+  try {
+    const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+    
+    const response = await fetch(
+      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=key`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (response.ok) {
+      return true;
+    }
+    
+    if (response.status === 404) {
+      console.log(`${LOG_EMOJI.WARNING} Remote issue ${remoteKey} not found (deleted)`);
+      return false;
+    }
+    
+    // For other errors (401, 403, 500), assume issue might exist but we can't access it
+    console.log(`${LOG_EMOJI.WARNING} Could not verify remote issue ${remoteKey} (status: ${response.status})`);
+    return true; // Assume exists to avoid accidental recreation
+    
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error checking remote issue ${remoteKey}:`, error);
+    return true; // Assume exists on error to be safe
+  }
+}
+
+/**
+ * Check all existing mappings to find and recreate deleted remote issues
+ * This runs when "Recreate Deleted Issues" option is enabled
+ */
+async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgId, orgName, stats) {
+  console.log(`${LOG_EMOJI.INFO} Checking all mappings for deleted remote issues...`);
+  
+  // Get all mappings for this org
+  const allMappings = await getAllMappings(orgId);
+  
+  // Also check legacy mappings if no org-specific ones
+  let legacyMappings = [];
+  if (allMappings.length === 0 && (!orgId || orgId === 'legacy')) {
+    legacyMappings = await getAllMappings(null);
+  }
+  
+  const mappingsToCheck = allMappings.length > 0 ? allMappings : legacyMappings;
+  
+  if (mappingsToCheck.length === 0) {
+    console.log(`${LOG_EMOJI.INFO} No existing mappings found for ${orgName}`);
+    return;
+  }
+  
+  console.log(`${LOG_EMOJI.INFO} Found ${mappingsToCheck.length} existing mapping(s) to verify for ${orgName}`);
+  
+  let checkedCount = 0;
+  let deletedCount = 0;
+  
+  for (const mapping of mappingsToCheck) {
+    checkedCount++;
+    const { localKey, remoteKey } = mapping;
+    
+    // Check if remote issue still exists
+    const remoteExists = await checkRemoteIssueExists(remoteKey, config);
+    
+    if (!remoteExists) {
+      deletedCount++;
+      console.log(`${LOG_EMOJI.WARNING} Remote issue ${remoteKey} was deleted, will recreate from ${localKey}`);
+      
+      try {
+        // Get the local issue
+        const issue = await getFullIssue(localKey);
+        
+        if (!issue) {
+          console.log(`${LOG_EMOJI.WARNING} Local issue ${localKey} not found, removing stale mapping`);
+          await removeMapping(localKey, remoteKey, orgId);
+          recordEvent(stats, {
+            type: 'error',
+            issueKey: localKey,
+            message: 'Local issue not found, removed stale mapping',
+            orgName
+          });
+          continue;
+        }
+        
+        // Clear the old mapping
+        await removeMapping(localKey, remoteKey, orgId);
+        
+        // Recreate the issue with attachments and links
+        console.log(`${LOG_EMOJI.WARNING} Recreating ${localKey} (was ${remoteKey})`);
+        const newRemoteKey = await createRemoteIssue(issue, config, mappings, null, syncOptions);
+        
+        if (newRemoteKey) {
+          stats.issuesRecreated++;
+          recordEvent(stats, {
+            type: 'recreate',
+            issueKey: localKey,
+            remoteKey: newRemoteKey,
+            previousRemoteKey: remoteKey,
+            orgName
+          });
+          console.log(`${LOG_EMOJI.SUCCESS} Recreated ${localKey} → ${newRemoteKey} (with attachments/links)`);
+        } else {
+          stats.errors.push(`Failed to recreate ${localKey} in ${orgName}`);
+          recordEvent(stats, {
+            type: 'error',
+            issueKey: localKey,
+            message: 'Failed to recreate deleted issue',
+            orgName
+          });
+        }
+        
+        // Small delay to avoid rate limiting
+        await sleep(SCHEDULED_SYNC_DELAY_MS);
+        
+      } catch (error) {
+        console.error(`${LOG_EMOJI.ERROR} Error recreating ${localKey}:`, error);
+        stats.errors.push(`${localKey}: ${error.message}`);
+        recordEvent(stats, {
+          type: 'error',
+          issueKey: localKey,
+          message: error.message,
+          orgName
+        });
+      }
+    }
+    
+    // Small delay between checks to avoid rate limiting
+    if (checkedCount % 10 === 0) {
+      await sleep(100);
+    }
+  }
+  
+  console.log(`${LOG_EMOJI.INFO} Mapping verification complete: ${checkedCount} checked, ${deletedCount} deleted issues found`);
+}
+
+async function checkIfIssueNeedsSync(issueKey, issue, config, mappings, syncOptions = {}, orgId = null) {
   // Check if issue was created by remote sync
   const createdByRemote = await getLocalKey(issueKey);
   if (createdByRemote) {
     return { needsSync: false, reason: 'created-by-remote' };
   }
 
-  // Check if issue has remote mapping
-  const remoteKey = await getRemoteKey(issueKey);
+  // Check if issue has remote mapping (check both org-specific and legacy)
+  let remoteKey = await getRemoteKey(issueKey, orgId);
+  if (!remoteKey && orgId) {
+    // Try legacy mapping
+    remoteKey = await getRemoteKey(issueKey, null);
+  }
 
   if (!remoteKey) {
     // No mapping exists - needs creation
     return { needsSync: true, action: 'create' };
   }
 
-  // Has mapping - check if fields have changed
-  // For now, we'll sync it (in future, we can add change detection)
+  // Has mapping - add to index for future recreate-deleted checks
+  await addToMappingIndex(issueKey, remoteKey, orgId);
+
+  // Has mapping - check if remote issue still exists (if recreateDeletedIssues is enabled)
+  if (syncOptions.recreateDeletedIssues) {
+    const remoteExists = await checkRemoteIssueExists(remoteKey, config);
+    
+    if (!remoteExists) {
+      // Remote issue was deleted - clear mapping and recreate
+      console.log(`${LOG_EMOJI.WARNING} Remote issue ${remoteKey} was deleted, clearing mapping for ${issueKey}`);
+      await removeMapping(issueKey, remoteKey, orgId);
+      return { needsSync: true, action: 'create', wasDeleted: true, previousRemoteKey: remoteKey };
+    }
+  }
+
+  // Has mapping and remote exists (or we didn't check) - update
   return { needsSync: true, action: 'update', remoteKey };
 }
 
@@ -227,9 +391,25 @@ export async function performScheduledSync() {
     return;
   }
   
-  const config = await storage.get('syncConfig');
-  if (!config || !config.remoteUrl || !config.remoteProjectKey) {
-    console.log(`⏭️ Sync not configured`);
+  // Get organizations (new multi-org system)
+  const organizations = await storage.get('organizations') || [];
+  
+  // Fallback to legacy syncConfig if no organizations defined
+  let configs = [];
+  if (organizations.length > 0) {
+    configs = organizations.filter(org => org.remoteUrl && org.remoteProjectKey);
+    console.log(`📋 Found ${configs.length} configured organization(s)`);
+  } else {
+    // Legacy support
+    const legacyConfig = await storage.get('syncConfig');
+    if (legacyConfig && legacyConfig.remoteUrl && legacyConfig.remoteProjectKey) {
+      configs = [legacyConfig];
+      console.log(`📋 Using legacy syncConfig`);
+    }
+  }
+
+  if (configs.length === 0) {
+    console.log(`⏭️ No organizations configured for sync`);
     return;
   }
   
@@ -239,171 +419,219 @@ export async function performScheduledSync() {
     issuesCreated: 0,
     issuesUpdated: 0,
     issuesSkipped: 0,
+    issuesRecreated: 0,
     errors: [],
     events: []
   };
-  
-  try {
-    // Fetch all mappings once
-    const [userMappings, fieldMappings, statusMappings] = await Promise.all([
-      storage.get('userMappings'),
-      storage.get('fieldMappings'),
-      storage.get('statusMappings')
-    ]);
-    
-    const mappings = {
-      userMappings: userMappings || {},
-      fieldMappings: fieldMappings || {},
-      statusMappings: statusMappings || {}
-    };
-    
-    // Fetch recent issues from local Jira
-    // Build project filter for JQL
-    let projectFilter;
-    if (config.allowedProjects && Array.isArray(config.allowedProjects) && config.allowedProjects.length > 0) {
-      // Use allowed projects list
-      if (config.allowedProjects.length === 1) {
-        projectFilter = `project = ${config.allowedProjects[0]}`;
-      } else {
-        projectFilter = `project IN (${config.allowedProjects.join(', ')})`;
-      }
-    } else {
-      // Fallback to remoteProjectKey for backward compatibility
-      projectFilter = `project = ${config.remoteProjectKey}`;
-    }
 
-    const jql = scheduledConfig.syncScope === 'recent'
-      ? `${projectFilter} AND updated >= -24h ORDER BY updated DESC`
-      : `${projectFilter} ORDER BY updated DESC`;
+  // Process each organization
+  for (const org of configs) {
+    const orgId = org.id || 'legacy';
+    const orgName = org.name || 'Legacy';
+    console.log(`\n🏢 Processing organization: ${orgName}`);
     
-    const searchBody = {
-      jql,
-      maxResults: 100,
-      fields: ['key', 'summary', 'updated'],
-      expand: 'names'
-    };
-
-    const searchResponse = await api.asApp().requestJira(
-      route`/rest/api/3/search/jql`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(searchBody)
-      }
-    );
-
-    if (!searchResponse.ok) {
-      const errorText = await searchResponse.text();
-      throw new Error(`Failed to fetch issues for scheduled sync: ${errorText}`);
-    }
-
-    const searchResults = await searchResponse.json();
-    
-    console.log(`📋 Found ${searchResults.issues.length} issues to check`);
-    
-    for (const issueData of searchResults.issues) {
-      stats.issuesChecked++;
-      const issueKey = issueData.key;
-      
-      try {
-        // Get full issue details
-        const issue = await getFullIssue(issueKey);
-        if (!issue) {
-          console.log(`⏭️ Could not fetch ${issueKey}`);
-          stats.issuesSkipped++;
-          continue;
-        }
-        
-        // Check if sync is needed
-        const syncCheck = await checkIfIssueNeedsSync(issueKey, issue, config, mappings);
-        
-        if (!syncCheck.needsSync) {
-          console.log(`⏭️ ${issueKey} - ${syncCheck.reason}`);
-          stats.issuesSkipped++;
-          continue;
-        }
-        
-        // Perform sync
-        if (syncCheck.action === 'create') {
-          console.log(`✨ Scheduled CREATE: ${issueKey}`);
-          const remoteKey = await createRemoteIssue(issue, config, mappings);
-          if (remoteKey) {
-            stats.issuesCreated++;
-            recordEvent(stats, {
-              type: 'create',
-              issueKey,
-              remoteKey
-            });
-          } else {
-            stats.errors.push(`Failed to create ${issueKey}`);
-            recordEvent(stats, {
-              type: 'error',
-              issueKey,
-              message: 'Failed to create'
-            });
-          }
-        } else if (syncCheck.action === 'update') {
-          console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
-          await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings);
-          stats.issuesUpdated++;
-          recordEvent(stats, {
-            type: 'update',
-            issueKey,
-            remoteKey: syncCheck.remoteKey
-          });
-        }
-        
-        // Small delay to avoid rate limiting
-        await sleep(SCHEDULED_SYNC_DELAY_MS);
-        
-      } catch (error) {
-        console.error(`Error syncing ${issueKey}:`, error);
-        stats.errors.push(`${issueKey}: ${error.message}`);
-        recordEvent(stats, {
-          type: 'error',
-          issueKey,
-          message: error.message
-        });
-      }
-    }
-    
-  } catch (error) {
-    console.error('Scheduled sync error:', error);
-    stats.errors.push(`General error: ${error.message}`);
-    recordEvent(stats, {
-      type: 'error',
-      message: error.message
-    });
-  }
-
-  // Retry pending links after main sync
-  try {
-    const config = await storage.get('syncConfig');
-    if (config && config.remoteUrl) {
-      const [userMappings, fieldMappings, statusMappings] = await Promise.all([
-        storage.get('userMappings'),
-        storage.get('fieldMappings'),
-        storage.get('statusMappings')
-      ]);
-
-      const mappings = {
-        userMappings: userMappings || {},
-        fieldMappings: fieldMappings || {},
-        statusMappings: statusMappings || {}
+    try {
+      // Build config object compatible with sync functions
+      const config = {
+        remoteUrl: org.remoteUrl,
+        remoteEmail: org.remoteEmail,
+        remoteApiToken: org.remoteApiToken,
+        remoteProjectKey: org.remoteProjectKey,
+        allowedProjects: org.allowedProjects || []
       };
 
-      const pendingLinkResults = await retryAllPendingLinks(config, mappings, stats);
-      console.log(`🔗 Pending links: ${pendingLinkResults.success} synced, ${pendingLinkResults.stillPending} still pending`);
+      // Fetch org-specific mappings and sync options
+      const [
+        orgUserMappings, 
+        orgFieldMappings, 
+        orgStatusMappings, 
+        orgSyncOptions,
+        legacyUserMappings,
+        legacyFieldMappings,
+        legacyStatusMappings,
+        legacySyncOptions
+      ] = await Promise.all([
+        storage.get(`userMappings:${orgId}`),
+        storage.get(`fieldMappings:${orgId}`),
+        storage.get(`statusMappings:${orgId}`),
+        storage.get(`syncOptions:${orgId}`),
+        storage.get('userMappings'),
+        storage.get('fieldMappings'),
+        storage.get('statusMappings'),
+        storage.get('syncOptions')
+      ]);
+      
+      // Use org-specific mappings if available, fallback to legacy
+      const mappings = {
+        userMappings: orgUserMappings || legacyUserMappings || {},
+        fieldMappings: orgFieldMappings || legacyFieldMappings || {},
+        statusMappings: orgStatusMappings || legacyStatusMappings || {}
+      };
+
+      const effectiveSyncOptions = orgSyncOptions || legacySyncOptions || {
+        syncComments: true,
+        syncAttachments: true,
+        syncLinks: true,
+        syncSprints: false,
+        recreateDeletedIssues: false
+      };
+
+      if (effectiveSyncOptions.recreateDeletedIssues) {
+        console.log(`${LOG_EMOJI.INFO} Recreate deleted issues is ENABLED for ${orgName}`);
+        
+        // Check ALL existing mappings for deleted remote issues (not just recently updated)
+        await checkAndRecreateDeletedIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats);
+      }
+      
+      // Build project filter for JQL
+      let projectFilter;
+      if (config.allowedProjects && Array.isArray(config.allowedProjects) && config.allowedProjects.length > 0) {
+        if (config.allowedProjects.length === 1) {
+          projectFilter = `project = ${config.allowedProjects[0]}`;
+        } else {
+          projectFilter = `project IN (${config.allowedProjects.join(', ')})`;
+        }
+      } else {
+        projectFilter = `project = ${config.remoteProjectKey}`;
+      }
+
+      const jql = scheduledConfig.syncScope === 'recent'
+        ? `${projectFilter} AND updated >= -24h ORDER BY updated DESC`
+        : `${projectFilter} ORDER BY updated DESC`;
+      
+      console.log(`🔍 JQL: ${jql}`);
+      
+      const searchBody = {
+        jql,
+        maxResults: 100,
+        fields: ['key', 'summary', 'updated'],
+        expand: 'names'
+      };
+
+      const searchResponse = await api.asApp().requestJira(
+        route`/rest/api/3/search/jql`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(searchBody)
+        }
+      );
+
+      if (!searchResponse.ok) {
+        const errorText = await searchResponse.text();
+        throw new Error(`Failed to fetch issues: ${errorText}`);
+      }
+
+      const searchResults = await searchResponse.json();
+      
+      console.log(`📋 Found ${searchResults.issues.length} issues to check for ${orgName}`);
+      
+      for (const issueData of searchResults.issues) {
+        stats.issuesChecked++;
+        const issueKey = issueData.key;
+        
+        try {
+          const issue = await getFullIssue(issueKey);
+          if (!issue) {
+            console.log(`⏭️ Could not fetch ${issueKey}`);
+            stats.issuesSkipped++;
+            continue;
+          }
+          
+          const syncCheck = await checkIfIssueNeedsSync(issueKey, issue, config, mappings, effectiveSyncOptions, orgId);
+          
+          if (!syncCheck.needsSync) {
+            console.log(`⏭️ ${issueKey} - ${syncCheck.reason}`);
+            stats.issuesSkipped++;
+            continue;
+          }
+          
+          if (syncCheck.action === 'create') {
+            if (syncCheck.wasDeleted) {
+              console.log(`${LOG_EMOJI.WARNING} Scheduled RECREATE: ${issueKey} (was ${syncCheck.previousRemoteKey})`);
+            } else {
+              console.log(`✨ Scheduled CREATE: ${issueKey}`);
+            }
+            
+            const remoteKey = await createRemoteIssue(issue, config, mappings, null, effectiveSyncOptions);
+            if (remoteKey) {
+              if (syncCheck.wasDeleted) {
+                stats.issuesRecreated++;
+                recordEvent(stats, {
+                  type: 'recreate',
+                  issueKey,
+                  remoteKey,
+                  previousRemoteKey: syncCheck.previousRemoteKey,
+                  orgName
+                });
+              } else {
+                stats.issuesCreated++;
+                recordEvent(stats, {
+                  type: 'create',
+                  issueKey,
+                  remoteKey,
+                  orgName
+                });
+              }
+            } else {
+              stats.errors.push(`Failed to create ${issueKey} in ${orgName}`);
+              recordEvent(stats, {
+                type: 'error',
+                issueKey,
+                message: syncCheck.wasDeleted ? 'Failed to recreate' : 'Failed to create',
+                orgName
+              });
+            }
+          } else if (syncCheck.action === 'update') {
+            console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
+            await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
+            stats.issuesUpdated++;
+            recordEvent(stats, {
+              type: 'update',
+              issueKey,
+              remoteKey: syncCheck.remoteKey,
+              orgName
+            });
+          }
+          
+          await sleep(SCHEDULED_SYNC_DELAY_MS);
+          
+        } catch (error) {
+          console.error(`Error syncing ${issueKey}:`, error);
+          stats.errors.push(`${issueKey}: ${error.message}`);
+          recordEvent(stats, {
+            type: 'error',
+            issueKey,
+            message: error.message,
+            orgName
+          });
+        }
+      }
+
+      // Retry pending links for this org
+      try {
+        const pendingLinkResults = await retryAllPendingLinks(config, mappings, stats);
+        console.log(`🔗 Pending links for ${orgName}: ${pendingLinkResults.success} synced, ${pendingLinkResults.stillPending} still pending`);
+      } catch (error) {
+        console.error(`Error retrying pending links for ${orgName}:`, error);
+      }
+      
+    } catch (error) {
+      console.error(`Error processing org ${orgName}:`, error);
+      stats.errors.push(`${orgName}: ${error.message}`);
+      recordEvent(stats, {
+        type: 'error',
+        message: error.message,
+        orgName
+      });
     }
-  } catch (error) {
-    console.error('Error retrying pending links:', error);
   }
 
   // Save stats
   await storage.set('scheduledSyncStats', stats);
 
-  console.log(`✅ Scheduled sync complete:`, stats);
+  console.log(`\n✅ Scheduled sync complete:`, stats);
   return stats;
 }

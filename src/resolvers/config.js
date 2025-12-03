@@ -5,7 +5,8 @@ const DEFAULT_SYNC_OPTIONS = {
   syncComments: true,
   syncAttachments: true,
   syncLinks: true,
-  syncSprints: false
+  syncSprints: false,
+  recreateDeletedIssues: false
 };
 const DEFAULT_USER_MAPPING_CONFIG = { autoMapUsers: true, fallbackUser: 'unassigned' };
 
@@ -215,7 +216,9 @@ export function defineConfigResolvers(resolver) {
     return options || {
       syncComments: true,
       syncAttachments: true,
-      syncLinks: true
+      syncLinks: true,
+      syncSprints: false,
+      recreateDeletedIssues: false
     };
   });
 

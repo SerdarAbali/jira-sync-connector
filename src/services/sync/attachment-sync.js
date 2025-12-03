@@ -3,7 +3,7 @@ import { getAttachmentMapping, storeAttachmentMapping } from '../storage/mapping
 import { downloadAttachment } from '../jira/local-client.js';
 import { uploadAttachment, getRemoteIssueAttachments } from '../jira/remote-client.js';
 
-export async function syncAttachments(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null) {
+export async function syncAttachments(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null, forceCheck = false) {
   const attachmentMapping = {}; // localId -> remoteId
 
   if (!issue.fields.attachment || issue.fields.attachment.length === 0) {
@@ -21,7 +21,23 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
     try {
       // Check if already synced (org-specific mapping)
       const existingMapping = await getAttachmentMapping(attachment.id, orgId);
-      if (existingMapping) {
+      
+      // If forceCheck, verify the attachment actually exists on remote
+      if (existingMapping && forceCheck) {
+        const existsOnRemote = remoteAttachments.some(
+          remote => remote.id === existingMapping || 
+                   (remote.filename === attachment.filename && remote.size === attachment.size)
+        );
+        if (!existsOnRemote) {
+          console.log(`${LOG_EMOJI.WARNING} Attachment ${attachment.filename} mapping exists but not on remote - will re-upload`);
+          // Clear the invalid mapping and continue to upload
+        } else {
+          console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} verified on remote`);
+          attachmentMapping[attachment.id] = existingMapping;
+          if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'verified on remote');
+          continue;
+        }
+      } else if (existingMapping) {
         console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already synced (mapping exists: ${existingMapping})`);
         attachmentMapping[attachment.id] = existingMapping;
         if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'already synced');
