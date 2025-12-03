@@ -19,6 +19,14 @@ export async function trackApiCall(endpoint, success, isRateLimited = false, org
 
     const now = new Date();
     const currentHour = now.toISOString().slice(0, 13); // "2025-12-03T15"
+    const currentMinute = now.toISOString().slice(0, 16); // "2025-12-03T15:30"
+
+    // Reset minute counter if new minute
+    if (stats.minuteStarted !== currentMinute) {
+      stats.minuteStarted = currentMinute;
+      stats.callsThisMinute = 0;
+    }
+    stats.callsThisMinute = (stats.callsThisMinute || 0) + 1;
 
     // Reset hourly counter if new hour
     if (stats.hourStarted !== currentHour) {
@@ -100,6 +108,8 @@ export async function getApiUsageStats() {
       rateLimitHits: 0,
       lastRateLimitHit: null,
       callsThisHour: 0,
+      callsThisMinute: 0,
+      minuteStarted: null,
       hourStarted: null,
       byEndpoint: {},
       byOrg: {},
@@ -111,12 +121,40 @@ export async function getApiUsageStats() {
       ? Math.round((stats.successfulCalls / stats.totalCalls) * 100) 
       : 100;
     
-    // Estimate remaining quota (Jira Cloud typically allows ~100 requests/second burst, ~10k/hour sustained)
-    // This is an estimate - actual limits vary by plan
-    const estimatedHourlyLimit = 10000;
-    stats.estimatedRemainingQuota = Math.max(0, estimatedHourlyLimit - stats.callsThisHour);
-    stats.estimatedHourlyLimit = estimatedHourlyLimit;
-    stats.quotaUsagePercent = Math.round((stats.callsThisHour / estimatedHourlyLimit) * 100);
+    // Forge Platform Rate Limits (from official Atlassian documentation):
+    // - Forge Invocations: 1,200 per minute per app
+    // - Network Requests: 100,000 per minute per app per tenant (Jira API calls)
+    // - Jira API: Cost-based budget (~10 req/sec sustained = ~36,000/hour for App context)
+    // 
+    // For Forge apps making Jira API calls, the effective limit is:
+    // - Per minute: ~100,000 network requests (generous)
+    // - Sustained: ~10 requests/second = 600/minute = 36,000/hour
+    //
+    // We use the more conservative sustained rate for accurate tracking
+    const MINUTE_LIMIT = 100000;  // Forge network requests per minute per tenant
+    const HOURLY_SUSTAINED_LIMIT = 36000; // ~10 req/sec sustained over an hour
+    
+    stats.minuteLimit = MINUTE_LIMIT;
+    stats.estimatedHourlyLimit = HOURLY_SUSTAINED_LIMIT;
+    stats.estimatedRemainingQuota = Math.max(0, HOURLY_SUSTAINED_LIMIT - stats.callsThisHour);
+    stats.quotaUsagePercent = Math.round((stats.callsThisHour / HOURLY_SUSTAINED_LIMIT) * 100);
+    
+    // Also track minute usage (more relevant for burst detection)
+    const now = new Date();
+    const currentMinute = now.toISOString().slice(0, 16); // "2025-12-03T15:30"
+    if (stats.minuteStarted !== currentMinute) {
+      stats.callsThisMinute = 0;
+    }
+    stats.minuteUsagePercent = Math.round((stats.callsThisMinute / MINUTE_LIMIT) * 100);
+
+    // Add rate limit info summary
+    stats.rateLimitInfo = {
+      forgeInvocationsPerMin: 1200,
+      networkRequestsPerMin: MINUTE_LIMIT,
+      sustainedRequestsPerSec: 10,
+      sustainedRequestsPerHour: HOURLY_SUSTAINED_LIMIT,
+      source: 'Atlassian Forge Platform Quotas'
+    };
 
     return stats;
   } catch (err) {

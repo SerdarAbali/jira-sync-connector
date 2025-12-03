@@ -1068,9 +1068,9 @@ const ConfigurationPanel = ({
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
         gap: gridGap,
-        alignItems: 'start'
+        alignItems: 'stretch'
       }}>
-        <div style={surfaceCard()}>
+        <div style={surfaceCard({ display: 'flex', flexDirection: 'column' })}>
           <h4 style={{ margin: '0 0 12px 0' }}>Connection Settings</h4>
           <dl style={{
             margin: 0,
@@ -1079,7 +1079,8 @@ const ConfigurationPanel = ({
             rowGap: token('space.100', '8px'),
             columnGap: token('space.150', '12px'),
             fontSize: '13px',
-            color: '#6B778C'
+            color: '#6B778C',
+            flex: 1
           }}>
             <dt style={{ fontWeight: 600 }}>URL</dt>
             <dd style={{ margin: 0 }}>{selectedOrg.remoteUrl || '—'}</dd>
@@ -1711,7 +1712,12 @@ const SyncActivityPanel = ({
           {syncStats.apiUsage && (
             <div style={surfaceCard()}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h4 style={{ margin: 0 }}>API Usage & Rate Limiting</h4>
+                <div>
+                  <h4 style={{ margin: 0 }}>API Usage & Rate Limiting</h4>
+                  <div style={{ fontSize: '11px', color: '#6B778C', marginTop: '4px' }}>
+                    Forge Platform Limits • ~10 req/sec sustained • 100K/min burst
+                  </div>
+                </div>
                 {syncStats.apiUsage.lastRateLimitHit && (
                   <span style={{ 
                     fontSize: '12px', 
@@ -1725,34 +1731,56 @@ const SyncActivityPanel = ({
                 )}
               </div>
               
-              {/* Quota Progress Bar */}
+              {/* Quota Progress Bars */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600 }}>Hourly API Quota</span>
-                  <span style={{ fontSize: '13px', color: '#6B778C' }}>
-                    {syncStats.apiUsage.callsThisHour || 0} / {syncStats.apiUsage.estimatedHourlyLimit || 10000} calls
-                  </span>
-                </div>
-                <div style={{ 
-                  height: '8px', 
-                  background: '#DFE1E6', 
-                  borderRadius: '4px', 
-                  overflow: 'hidden' 
-                }}>
+                {/* Hourly Sustained Rate */}
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600 }}>Hourly Quota (Sustained Rate)</span>
+                    <span style={{ fontSize: '13px', color: '#6B778C' }}>
+                      {(syncStats.apiUsage.callsThisHour || 0).toLocaleString()} / {(syncStats.apiUsage.estimatedHourlyLimit || 36000).toLocaleString()}
+                    </span>
+                  </div>
                   <div style={{ 
-                    height: '100%', 
-                    width: `${Math.min(syncStats.apiUsage.quotaUsagePercent || 0, 100)}%`,
-                    background: (syncStats.apiUsage.quotaUsagePercent || 0) > 80 
-                      ? '#DE350B' 
-                      : (syncStats.apiUsage.quotaUsagePercent || 0) > 50 
-                        ? '#FF991F' 
-                        : '#00875A',
-                    borderRadius: '4px',
-                    transition: 'width 0.3s ease'
-                  }} />
+                    height: '8px', 
+                    background: '#DFE1E6', 
+                    borderRadius: '4px', 
+                    overflow: 'hidden' 
+                  }}>
+                    <div style={{ 
+                      height: '100%', 
+                      width: `${Math.min(syncStats.apiUsage.quotaUsagePercent || 0, 100)}%`,
+                      background: (syncStats.apiUsage.quotaUsagePercent || 0) > 80 
+                        ? '#DE350B' 
+                        : (syncStats.apiUsage.quotaUsagePercent || 0) > 50 
+                          ? '#FF991F' 
+                          : '#00875A',
+                      borderRadius: '4px',
+                      transition: 'width 0.3s ease'
+                    }} />
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#6B778C', marginTop: '4px' }}>
+                    {syncStats.apiUsage.quotaUsagePercent || 0}% of hourly sustained limit (~10 req/sec)
+                  </div>
                 </div>
-                <div style={{ fontSize: '12px', color: '#6B778C', marginTop: '4px' }}>
-                  {syncStats.apiUsage.quotaUsagePercent || 0}% used this hour
+
+                {/* Rate Limit Info Box */}
+                <div style={{ 
+                  background: token('color.background.neutral.subtle', '#F4F5F7'), 
+                  borderRadius: '6px', 
+                  padding: '12px',
+                  fontSize: '12px'
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: '8px', color: '#0052CC' }}>Atlassian Forge Rate Limits</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px' }}>
+                    <div><strong>Invocations:</strong> 1,200/min per app</div>
+                    <div><strong>Network Requests:</strong> 100K/min per tenant</div>
+                    <div><strong>Sustained Rate:</strong> ~10 req/sec</div>
+                    <div><strong>Per-Issue Writes:</strong> 20 ops/2sec, 100 ops/30sec</div>
+                  </div>
+                  <div style={{ marginTop: '8px', color: '#6B778C', fontSize: '11px' }}>
+                    Source: <a href="https://developer.atlassian.com/platform/forge/platform-quotas-and-limits/" target="_blank" rel="noopener noreferrer" style={{ color: '#0052CC' }}>Atlassian Forge Platform Quotas</a>
+                  </div>
                 </div>
               </div>
 
