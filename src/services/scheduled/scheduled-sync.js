@@ -5,6 +5,7 @@ import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappi
 import { removePendingLink, getPendingLinks } from '../storage/flags.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../sync/issue-sync.js';
+import { syncIssueLinks } from '../sync/link-sync.js';
 
 /**
  * Check if a remote issue exists in the target Jira instance
@@ -488,6 +489,9 @@ export async function performScheduledSync() {
         syncSprints: false,
         recreateDeletedIssues: false
       };
+      
+      // Always force check links during scheduled sync to catch missing links
+      effectiveSyncOptions.forceCheckLinks = true;
 
       if (effectiveSyncOptions.recreateDeletedIssues) {
         console.log(`${LOG_EMOJI.INFO} Recreate deleted issues is ENABLED for ${orgName}`);
@@ -604,6 +608,16 @@ export async function performScheduledSync() {
           } else if (syncCheck.action === 'update') {
             console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
             const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
+            
+            // Force verify and sync links directly (same as Scan & Recreate)
+            if (effectiveSyncOptions.syncLinks !== false) {
+              const linkResult = await syncIssueLinks(issueKey, syncCheck.remoteKey, issue, config, null, orgId, true);
+              if (linkResult && linkResult.synced > 0) {
+                console.log(`🔗 Force-synced ${linkResult.synced} link(s) for ${issueKey}`);
+                if (syncDetails) syncDetails.links = linkResult.synced;
+              }
+            }
+            
             stats.issuesUpdated++;
             recordEvent(stats, {
               type: 'update',

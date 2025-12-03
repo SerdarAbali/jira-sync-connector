@@ -458,7 +458,8 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
   }
 
   if (linksEnabled) {
-    const linkResult = await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId);
+    const forceCheckLinks = syncOptions?.forceCheckLinks || false;
+    const linkResult = await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId, forceCheckLinks);
     syncDetails.links = linkResult?.synced || 0;
   } else {
     console.log(`⏭️ Skipping links sync (disabled in sync options)`);
