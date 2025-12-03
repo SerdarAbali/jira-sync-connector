@@ -4,9 +4,11 @@ import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappi
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 
 export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null, forceCheck = false) {
+  const result = { synced: 0, skipped: 0, failed: 0, pending: 0 };
+  
   if (!issue.fields.issuelinks || issue.fields.issuelinks.length === 0) {
     console.log(`No issue links to sync for ${localIssueKey}`);
-    return;
+    return result;
   }
 
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -46,6 +48,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
         console.log(`${LOG_EMOJI.SKIP} Link ${link.id} already synced`);
         const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
         if (syncResult) syncResult.addLinkSkipped(linkedKey, 'already synced');
+        result.skipped++;
         continue;
       }
 
@@ -65,6 +68,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
       if (!linkedIssueKey) {
         console.log(`${LOG_EMOJI.WARNING} No linked issue found for link ${link.id}`);
         if (syncResult) syncResult.addLinkSkipped('unknown', 'no linked issue found');
+        result.skipped++;
         continue;
       }
 
@@ -80,6 +84,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
           orgId: orgId
         });
         if (syncResult) syncResult.addLinkSkipped(linkedIssueKey, 'linked issue not synced yet - stored as pending');
+        result.pending++;
         continue;
       }
 
@@ -92,6 +97,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
         
         if (linkExists) {
           console.log(`${LOG_EMOJI.SKIP} Link ${link.id} verified on remote`);
+          result.skipped++;
           continue;
         } else {
           console.log(`${LOG_EMOJI.WARNING} Link ${link.id} mapping exists but not found on remote - recreating`);
@@ -132,16 +138,21 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
         // Remove from pending links if it was pending
         await removePendingLink(localIssueKey, link.id);
         if (syncResult) syncResult.addLinkSuccess(linkedIssueKey, linkTypeName);
+        result.synced++;
       } else {
         const errorText = await response.text();
         console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
         if (syncResult) syncResult.addLinkFailure(linkedIssueKey, errorText);
+        result.failed++;
       }
 
     } catch (error) {
       console.error(`${LOG_EMOJI.ERROR} Error syncing link ${link.id}:`, error);
       const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
       if (syncResult) syncResult.addLinkFailure(linkedKey, error.message);
+      result.failed++;
     }
   }
+  
+  return result;
 }

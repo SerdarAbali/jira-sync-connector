@@ -106,7 +106,9 @@ async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgI
         
         // Recreate the issue with attachments and links
         console.log(`${LOG_EMOJI.WARNING} Recreating ${localKey} (was ${remoteKey})`);
-        const newRemoteKey = await createRemoteIssue(issue, config, mappings, null, syncOptions);
+        const createResult = await createRemoteIssue(issue, config, mappings, null, syncOptions);
+        const newRemoteKey = createResult?.key || createResult; // Handle both object and string returns
+        const createDetails = createResult?.details;
         
         if (newRemoteKey) {
           stats.issuesRecreated++;
@@ -115,7 +117,8 @@ async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgI
             issueKey: localKey,
             remoteKey: newRemoteKey,
             previousRemoteKey: remoteKey,
-            orgName
+            orgName,
+            details: createDetails
           });
           console.log(`${LOG_EMOJI.SUCCESS} Recreated ${localKey} → ${newRemoteKey} (with attachments/links)`);
         } else {
@@ -229,6 +232,9 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 
     console.log(`📋 Found ${pendingLinksIndex.length} issue(s) with pending links`);
 
+    // Get orgId for this config
+    const orgId = config.id || null;
+
     // Process each issue's pending links
     for (const localIssueKey of pendingLinksIndex) {
       const pendingLinks = await getPendingLinks(localIssueKey);
@@ -239,22 +245,29 @@ export async function retryAllPendingLinks(config, mappings, stats) {
         continue;
       }
 
-      const remoteIssueKey = await getRemoteKey(localIssueKey);
-
-      if (!remoteIssueKey) {
-        console.log(`⏭️ Skipping ${localIssueKey} - not synced to remote yet`);
+      // Filter pending links for this org only
+      const orgPendingLinks = pendingLinks.filter(pl => pl.orgId === orgId || (!pl.orgId && !orgId));
+      
+      if (orgPendingLinks.length === 0) {
         continue;
       }
 
-      console.log(`🔗 Retrying ${pendingLinks.length} pending link(s) for ${localIssueKey}`);
+      const remoteIssueKey = await getRemoteKey(localIssueKey, orgId);
+
+      if (!remoteIssueKey) {
+        console.log(`⏭️ Skipping ${localIssueKey} - not synced to remote yet (org: ${config.name || orgId})`);
+        continue;
+      }
+
+      console.log(`🔗 Retrying ${orgPendingLinks.length} pending link(s) for ${localIssueKey} (org: ${config.name || orgId})`);
 
       const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
 
-      for (const pendingLink of pendingLinks) {
+      for (const pendingLink of orgPendingLinks) {
         totalRetried++;
 
-        // Check if linked issue is now synced
-        const remoteLinkedKey = await getRemoteKey(pendingLink.linkedIssueKey);
+        // Check if linked issue is now synced (use same orgId)
+        const remoteLinkedKey = await getRemoteKey(pendingLink.linkedIssueKey, orgId);
 
         if (!remoteLinkedKey) {
           console.log(`⏭️ ${pendingLink.linkedIssueKey} still not synced - keeping as pending`);
@@ -318,7 +331,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 
           if (response.ok || response.status === 201) {
             console.log(`${LOG_EMOJI.SUCCESS} Successfully synced pending link: ${pendingLink.linkedIssueKey}`);
-            await storeLinkMapping(pendingLink.linkId, 'synced');
+            await storeLinkMapping(pendingLink.linkId, 'synced', orgId);
             await removePendingLink(localIssueKey, pendingLink.linkId);
             totalSuccess++;
             if (stats) {
@@ -555,7 +568,9 @@ export async function performScheduledSync() {
               console.log(`✨ Scheduled CREATE: ${issueKey}`);
             }
             
-            const remoteKey = await createRemoteIssue(issue, config, mappings, null, effectiveSyncOptions);
+            const createResult = await createRemoteIssue(issue, config, mappings, null, effectiveSyncOptions);
+            const remoteKey = createResult?.key || createResult; // Handle both object and string returns
+            const createDetails = createResult?.details;
             if (remoteKey) {
               if (syncCheck.wasDeleted) {
                 stats.issuesRecreated++;
@@ -564,7 +579,8 @@ export async function performScheduledSync() {
                   issueKey,
                   remoteKey,
                   previousRemoteKey: syncCheck.previousRemoteKey,
-                  orgName
+                  orgName,
+                  details: createDetails
                 });
               } else {
                 stats.issuesCreated++;
@@ -572,7 +588,8 @@ export async function performScheduledSync() {
                   type: 'create',
                   issueKey,
                   remoteKey,
-                  orgName
+                  orgName,
+                  details: createDetails
                 });
               }
             } else {
@@ -586,13 +603,14 @@ export async function performScheduledSync() {
             }
           } else if (syncCheck.action === 'update') {
             console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
-            await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
+            const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
             stats.issuesUpdated++;
             recordEvent(stats, {
               type: 'update',
               issueKey,
               remoteKey: syncCheck.remoteKey,
-              orgName
+              orgName,
+              details: syncDetails || { fields: true }
             });
           }
           

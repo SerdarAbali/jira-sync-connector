@@ -22,7 +22,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
     
     if (!transitionsResponse.ok) {
       console.error(`❌ Failed to fetch transitions for ${remoteKey}: ${transitionsResponse.status}`);
-      return;
+      return false;
     }
     
     const transitions = await transitionsResponse.json();
@@ -42,7 +42,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
       const errorMsg = `No transition found to status: ${statusName}. Available: ${transitions.transitions.map(t => t.to.name).join(', ')}`;
       console.error(`${LOG_EMOJI.ERROR} ${errorMsg}`);
       if (syncResult) syncResult.addTransitionFailure(statusName, errorMsg);
-      return;
+      return false;
     }
 
     console.log(`Using transition: ${transition.name} → ${transition.to.name}`);
@@ -66,13 +66,16 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
     if (transitionResponse.ok || transitionResponse.status === HTTP_STATUS.NO_CONTENT) {
       console.log(`${LOG_EMOJI.SUCCESS} Transitioned ${remoteKey} to ${transition.to.name}`);
       if (syncResult) syncResult.addTransitionSuccess(transition.to.name);
+      return true;
     } else {
       const errorText = await transitionResponse.text();
       console.error(`${LOG_EMOJI.ERROR} Transition failed: ${errorText}`);
       if (syncResult) syncResult.addTransitionFailure(statusName, errorText);
+      return false;
     }
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error transitioning issue:`, error);
     if (syncResult) syncResult.addTransitionFailure(statusName, error.message);
+    return false;
   }
 }

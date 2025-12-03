@@ -48,7 +48,8 @@ export function defineSyncResolvers(resolver) {
         return { success: true, message: `Synced ${issueKey} to ${existingRemoteKey}` };
       } else {
         console.log(`✨ Force CREATE: ${issueKey}`);
-        const remoteKey = await createRemoteIssue(issue, config, mappings);
+        const createResult = await createRemoteIssue(issue, config, mappings);
+        const remoteKey = createResult?.key || createResult; // Handle both object and string returns
         if (remoteKey) {
           return { success: true, message: `Created ${issueKey} as ${remoteKey}` };
         } else {
@@ -280,7 +281,8 @@ export function defineSyncResolvers(resolver) {
                         syncLinks: true
                       };
 
-                      const newRemoteKey = await createRemoteIssue(fullIssue, org, mappings, null, effectiveSyncOptions);
+                      const createResult = await createRemoteIssue(fullIssue, org, mappings, null, effectiveSyncOptions);
+                      const newRemoteKey = createResult?.key || createResult; // Handle both object and string returns
                       if (newRemoteKey) {
                         console.log(`✅ Recreated ${localKey} → ${newRemoteKey} (with attachments/links/comments)`);
                         totalRecreated++;

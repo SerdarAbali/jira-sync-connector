@@ -343,21 +343,33 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       const linksEnabled = syncOptions?.syncLinks !== false;
       const commentsEnabled = syncOptions?.syncComments !== false;
 
+      // Track sync details for event logging
+      const syncDetails = {
+        fields: true,
+        attachments: 0,
+        links: 0,
+        comments: 0,
+        status: issue.fields.status && issue.fields.status.name !== 'To Do'
+      };
+
       let attachmentMapping = {};
       if (attachmentEnabled) {
         attachmentMapping = await syncAttachments(issue.key, result.key, issue, org, syncResult, orgId);
+        syncDetails.attachments = Object.keys(attachmentMapping).length;
       } else {
         console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
       }
 
       if (linksEnabled) {
-        await syncIssueLinks(issue.key, result.key, issue, org, syncResult, orgId);
+        const linkResult = await syncIssueLinks(issue.key, result.key, issue, org, syncResult, orgId);
+        syncDetails.links = linkResult?.synced || 0;
       } else {
         console.log(`⏭️ Skipping links sync (disabled in sync options)`);
       }
 
       if (commentsEnabled) {
-        await syncAllComments(issue.key, result.key, issue, org, syncResult, orgId);
+        const commentResult = await syncAllComments(issue.key, result.key, issue, org, syncResult, orgId);
+        syncDetails.comments = commentResult?.synced || 0;
       } else {
         console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
       }
@@ -394,7 +406,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       }
 
       await clearSyncFlag(issue.key);
-      return result.key;
+      return { key: result.key, details: syncDetails };
     } else {
       const errorText = await response.text();
       console.error(`${LOG_EMOJI.ERROR} Create failed: ${errorText}`);
@@ -416,6 +428,22 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
 
   await markSyncing(localKey);
 
+  // Track sync details for event logging
+  const syncDetails = {
+    fields: true,
+    attachments: 0,
+    attachmentsTotal: 0,
+    links: 0,
+    linksTotal: 0,
+    comments: 0,
+    commentsTotal: 0,
+    status: false
+  };
+
+  // Count totals from the issue for context
+  syncDetails.attachmentsTotal = issue.fields.attachment?.length || 0;
+  syncDetails.linksTotal = issue.fields.issuelinks?.length || 0;
+
   const attachmentEnabled = syncOptions?.syncAttachments !== false;
   const linksEnabled = syncOptions?.syncLinks !== false;
   const commentsEnabled = syncOptions?.syncComments !== false;
@@ -423,18 +451,23 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
   let attachmentMapping = {};
   if (attachmentEnabled) {
     attachmentMapping = await syncAttachments(localKey, remoteKey, issue, org, syncResult, orgId);
+    // Count newly synced attachments (those in the mapping)
+    syncDetails.attachments = Object.keys(attachmentMapping).length;
   } else {
     console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
   }
 
   if (linksEnabled) {
-    await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId);
+    const linkResult = await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId);
+    syncDetails.links = linkResult?.synced || 0;
   } else {
     console.log(`⏭️ Skipping links sync (disabled in sync options)`);
   }
 
   if (commentsEnabled) {
-    await syncAllComments(localKey, remoteKey, issue, org, syncResult, orgId);
+    const commentResult = await syncAllComments(localKey, remoteKey, issue, org, syncResult, orgId);
+    syncDetails.comments = commentResult?.synced || 0;
+    syncDetails.commentsTotal = commentResult?.synced + commentResult?.skipped || 0;
   } else {
     console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
   }
@@ -579,19 +612,23 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
       console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
 
       if (issue.fields.status) {
-        await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);
+        const transitioned = await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);
+        syncDetails.status = transitioned || false;
       }
       await clearSyncFlag(localKey);
+      return syncDetails;
     } else {
       const errorText = await response.text();
       console.error(`${LOG_EMOJI.ERROR} Update failed: ${errorText}`);
       if (syncResult) syncResult.addError(`Update failed: ${errorText}`);
       await clearSyncFlag(localKey);
+      return null;
     }
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
     if (syncResult) syncResult.addError(`Error updating remote issue: ${error.message}`);
     await clearSyncFlag(localKey);
+    return null;
   }
 }
 

@@ -1553,14 +1553,44 @@ const SyncActivityPanel = ({
     'link-dropped': { label: 'Link Dropped', appearance: 'default' }
   };
 
+  const formatSyncDetails = (details) => {
+    if (!details) return '';
+    const parts = [];
+    if (details.fields) parts.push('fields');
+    if (details.status) parts.push('status');
+    
+    // Comments: show new count or total if all already synced
+    if (details.comments > 0) {
+      parts.push(`${details.comments} comment${details.comments > 1 ? 's' : ''}`);
+    } else if (details.commentsTotal > 0) {
+      parts.push(`${details.commentsTotal} comment${details.commentsTotal > 1 ? 's' : ''} ✓`);
+    }
+    
+    // Links: show new count or total if all already synced
+    if (details.links > 0) {
+      parts.push(`${details.links} link${details.links > 1 ? 's' : ''}`);
+    } else if (details.linksTotal > 0) {
+      parts.push(`${details.linksTotal} link${details.linksTotal > 1 ? 's' : ''} ✓`);
+    }
+    
+    // Attachments: show new count or total if all already synced
+    if (details.attachments > 0) {
+      parts.push(`${details.attachments} attachment${details.attachments > 1 ? 's' : ''}`);
+    } else if (details.attachmentsTotal > 0) {
+      parts.push(`${details.attachmentsTotal} attachment${details.attachmentsTotal > 1 ? 's' : ''} ✓`);
+    }
+    
+    return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  };
+
   const describeScheduledEvent = (event) => {
     switch (event.type) {
       case 'create':
-        return `Created ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'}`;
+        return `Created ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'}${formatSyncDetails(event.details)}`;
       case 'recreate':
-        return `Recreated ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'} (was ${event.previousRemoteKey || 'deleted'})`;
+        return `Recreated ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'} (was ${event.previousRemoteKey || 'deleted'})${formatSyncDetails(event.details)}`;
       case 'update':
-        return `Updated ${event.issueKey || 'issue'} → ${event.remoteKey || 'remote key'}`;
+        return `Updated ${event.issueKey || 'issue'} → ${event.remoteKey || 'remote key'}${formatSyncDetails(event.details)}`;
       case 'link-synced':
         return `Linked ${event.issueKey || 'issue'} with ${event.linkedIssueKey || 'peer'}`;
       case 'link-error':
