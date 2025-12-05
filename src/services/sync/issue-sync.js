@@ -1,6 +1,7 @@
-import { storage, fetch } from '@forge/api';
+import { fetch } from '@forge/api';
 import api, { route } from '@forge/api';
-import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
+import * as kvsStore from '../storage/kvs.js';
+import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, extractSprintIds, prependCrossReferenceToADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
@@ -92,7 +93,12 @@ async function getRemoteEpicLinkFieldId(org) {
  * Sync Epic Link from local to remote issue
  * Returns the remote epic key if successful, null otherwise
  */
-async function syncEpicLink(issue, org, mappings, syncResult, orgId) {
+/**
+ * Sync Epic Link from local to remote issue
+ * Returns the remote epic key if successful, null otherwise
+ * @param {number} depth - Current recursion depth (default 0)
+ */
+async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) {
   const localEpicFieldId = await getLocalEpicLinkFieldId();
   if (!localEpicFieldId) {
     return null;
@@ -108,30 +114,32 @@ async function syncEpicLink(issue, org, mappings, syncResult, orgId) {
   // Find the remote epic link field
   const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
   if (!remoteEpicFieldId) {
-    console.log(`⚠️ Remote org ${org.name} doesn't have Epic Link field (might be next-gen project)`);
+    console.log(`${LOG_EMOJI.WARNING} Remote org ${org.name} doesn't have Epic Link field (might be next-gen project)`);
     return null;
   }
   
   // Check if the epic is synced to remote
   let remoteEpicKey = await getRemoteKey(localEpicKey, orgId);
   
-  if (!remoteEpicKey) {
+  if (!remoteEpicKey && depth < MAX_PARENT_SYNC_DEPTH) {
     // Epic not synced yet - sync it first
-    console.log(`🎯 Epic ${localEpicKey} not synced yet, syncing epic first...`);
+    console.log(`🎯 Epic ${localEpicKey} not synced yet, syncing epic first (depth: ${depth + 1})...`);
     const epicIssue = await getFullIssue(localEpicKey);
     if (epicIssue) {
-      remoteEpicKey = await createRemoteIssueForOrg(epicIssue, org, mappings, null, syncResult, orgId);
+      remoteEpicKey = await createRemoteIssueForOrg(epicIssue, org, mappings, null, syncResult, orgId, depth + 1);
       if (remoteEpicKey) {
         console.log(`🎯 Epic synced: ${localEpicKey} → ${remoteEpicKey}`);
       }
     }
+  } else if (!remoteEpicKey) {
+    console.log(`${LOG_EMOJI.WARNING} Max depth reached, skipping epic ${localEpicKey} sync`);
   }
   
   if (remoteEpicKey) {
     return { fieldId: remoteEpicFieldId, epicKey: remoteEpicKey };
   }
   
-  console.log(`⚠️ Could not sync Epic Link - epic ${localEpicKey} not available`);
+  console.log(`${LOG_EMOJI.WARNING} Could not sync Epic Link - epic ${localEpicKey} not available`);
   return null;
 }
 
@@ -207,7 +215,7 @@ export async function syncIssue(event) {
   let organizations = await getOrganizationsWithTokens();
   
   // Legacy support: check for old single-org config
-  const legacyConfig = await storage.get('syncConfig');
+  const legacyConfig = await kvsStore.get('syncConfig');
   if (legacyConfig && legacyConfig.remoteUrl && organizations.length === 0) {
     console.log('⚠️ Using legacy single-org config - consider migrating to multi-org');
     organizations.push({
@@ -252,11 +260,11 @@ export async function syncIssue(event) {
 
     // Fetch org-specific mappings
     const [userMappings, fieldMappings, statusMappings, issueTypeMappings, syncOptions] = await Promise.all([
-      storage.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
-      storage.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
-      storage.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`),
-      storage.get(org.id === 'legacy' ? 'issueTypeMappings' : `issueTypeMappings:${org.id}`),
-      storage.get(org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`)
+      kvsStore.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
+      kvsStore.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
+      kvsStore.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`),
+      kvsStore.get(org.id === 'legacy' ? 'issueTypeMappings' : `issueTypeMappings:${org.id}`),
+      kvsStore.get(org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`)
     ]);
 
     const mappings = {
@@ -354,9 +362,14 @@ export async function updateRemoteIssue(localKey, remoteKey, issue, config, mapp
 }
 
 // Internal multi-org functions
-async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
+async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null, depth = 0) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
+  
+  // Check depth limit for recursive parent/epic sync
+  if (depth > MAX_PARENT_SYNC_DEPTH) {
+    console.log(`${LOG_EMOJI.WARNING} Max sync depth (${MAX_PARENT_SYNC_DEPTH}) reached for ${issue.key}, skipping parent/epic sync`);
+  }
   
   // For initial creation, use text-only description
   let initialDescription;
@@ -439,17 +452,19 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   if (issue.fields.parent && issue.fields.parent.key) {
     let remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
     
-    // If parent isn't synced yet, sync it first
-    if (!remoteParentKey) {
-      console.log(`🔗 Parent ${issue.fields.parent.key} not synced yet, syncing parent first...`);
+    // If parent isn't synced yet, sync it first (respecting depth limit)
+    if (!remoteParentKey && depth < MAX_PARENT_SYNC_DEPTH) {
+      console.log(`${LOG_EMOJI.LINK} Parent ${issue.fields.parent.key} not synced yet, syncing parent first (depth: ${depth + 1})...`);
       const parentIssue = await getFullIssue(issue.fields.parent.key);
       if (parentIssue) {
         // Recursively create the parent (without syncOptions to avoid infinite loops with attachments)
-        remoteParentKey = await createRemoteIssueForOrg(parentIssue, org, mappings, null, syncResult, orgId);
+        remoteParentKey = await createRemoteIssueForOrg(parentIssue, org, mappings, null, syncResult, orgId, depth + 1);
         if (remoteParentKey) {
-          console.log(`🔗 Parent synced: ${issue.fields.parent.key} → ${remoteParentKey}`);
+          console.log(`${LOG_EMOJI.LINK} Parent synced: ${issue.fields.parent.key} → ${remoteParentKey}`);
         }
       }
+    } else if (!remoteParentKey) {
+      console.log(`${LOG_EMOJI.WARNING} Max depth reached, skipping parent ${issue.fields.parent.key} sync`);
     }
     
     if (remoteParentKey) {
@@ -461,7 +476,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   }
 
   // Sync Epic Link for classic projects (next-gen uses parent field above)
-  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId);
+  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId, depth);
   if (epicLinkResult) {
     remoteIssue.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
     console.log(`🎯 Mapped Epic Link: → ${epicLinkResult.epicKey}`);
@@ -859,7 +874,8 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
   }
 
   // Sync Epic Link for classic projects (next-gen uses parent field above)
-  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId);
+  // Note: During update, we don't recursively sync missing epics (depth 0 with check)
+  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId, 0);
   if (epicLinkResult) {
     updateData.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
     console.log(`🎯 Updated Epic Link: → ${epicLinkResult.epicKey}`);

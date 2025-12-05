@@ -1,4 +1,5 @@
-import api, { route, storage, fetch } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
+import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 import { sleep } from '../../utils/retry.js';
 import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex, getOrganizationsWithTokens } from '../storage/mappings.js';
@@ -218,7 +219,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
   let totalStillPending = 0;
 
   try {
-    const pendingLinksIndex = await storage.get('pending-links-index') || [];
+    const pendingLinksIndex = await kvsStore.get('pending-links-index') || [];
 
     if (pendingLinksIndex.length === 0) {
       console.log(`No pending links to retry`);
@@ -382,7 +383,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 export async function performScheduledSync() {
   console.log(`⏰ Scheduled sync starting...`);
 
-  let scheduledConfig = await storage.get('scheduledSyncConfig');
+  let scheduledConfig = await kvsStore.get('scheduledSyncConfig');
 
   if (!scheduledConfig) {
     scheduledConfig = {
@@ -390,7 +391,7 @@ export async function performScheduledSync() {
       syncScope: 'recent',
       createdAt: new Date().toISOString()
     };
-    await storage.set('scheduledSyncConfig', scheduledConfig);
+    await kvsStore.set('scheduledSyncConfig', scheduledConfig);
     console.log(`⚙️ Created default scheduled sync config (enabled, recent scope)`);
   }
 
@@ -409,7 +410,7 @@ export async function performScheduledSync() {
     console.log(`📋 Found ${configs.length} configured organization(s)`);
   } else {
     // Legacy support
-    const legacyConfig = await storage.get('syncConfig');
+    const legacyConfig = await kvsStore.get('syncConfig');
     if (legacyConfig && legacyConfig.remoteUrl && legacyConfig.remoteProjectKey) {
       configs = [legacyConfig];
       console.log(`📋 Using legacy syncConfig`);
@@ -459,14 +460,14 @@ export async function performScheduledSync() {
         legacyStatusMappings,
         legacySyncOptions
       ] = await Promise.all([
-        storage.get(`userMappings:${orgId}`),
-        storage.get(`fieldMappings:${orgId}`),
-        storage.get(`statusMappings:${orgId}`),
-        storage.get(`syncOptions:${orgId}`),
-        storage.get('userMappings'),
-        storage.get('fieldMappings'),
-        storage.get('statusMappings'),
-        storage.get('syncOptions')
+        kvsStore.get(`userMappings:${orgId}`),
+        kvsStore.get(`fieldMappings:${orgId}`),
+        kvsStore.get(`statusMappings:${orgId}`),
+        kvsStore.get(`syncOptions:${orgId}`),
+        kvsStore.get('userMappings'),
+        kvsStore.get('fieldMappings'),
+        kvsStore.get('statusMappings'),
+        kvsStore.get('syncOptions')
       ]);
       
       // Use org-specific mappings if available, fallback to legacy
@@ -656,7 +657,7 @@ export async function performScheduledSync() {
   }
 
   // Save stats
-  await storage.set('scheduledSyncStats', stats);
+  await kvsStore.set('scheduledSyncStats', stats);
 
   console.log(`\n✅ Scheduled sync complete:`, stats);
   return stats;

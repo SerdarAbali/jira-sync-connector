@@ -1,4 +1,5 @@
-import api, { route, storage, fetch } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
+import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
 import { extractTextFromADF, textToADFWithAuthor } from '../../utils/adf.js';
@@ -158,7 +159,7 @@ export async function syncComment(event) {
   let organizations = await getOrganizationsWithTokens();
   
   // Legacy support: check for old single-org config
-  const legacyConfig = await storage.get('syncConfig');
+  const legacyConfig = await kvsStore.get('syncConfig');
   if (legacyConfig && legacyConfig.remoteUrl && organizations.length === 0) {
     console.log('⚠️ Using legacy single-org config for comment sync');
     organizations.push({
@@ -218,7 +219,7 @@ export async function syncComment(event) {
 
     // Check if comment sync is enabled for this org
     const syncOptionsKey = org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`;
-    const syncOptions = await storage.get(syncOptionsKey) || { syncComments: true };
+    const syncOptions = await kvsStore.get(syncOptionsKey) || { syncComments: true };
     if (!syncOptions.syncComments) {
       console.log(`⏭️ Comment sync skipped for ${org.name}: disabled in sync options`);
       continue;

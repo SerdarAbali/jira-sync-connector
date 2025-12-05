@@ -1,4 +1,5 @@
-import api, { route, storage, fetch } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
+import * as kvsStore from '../services/storage/kvs.js';
 import { getOrgName, getFullIssue } from '../services/jira/local-client.js';
 import { getAllRemoteKeys, getRemoteKey, removeMapping } from '../services/storage/mappings.js';
 import { createIssueForOrg, updateIssueForOrg } from '../services/sync/issue-sync.js';
@@ -41,7 +42,7 @@ export function defineDataResolvers(resolver) {
 
       if (orgId) {
         // Use new organization format
-        const orgs = await storage.get('organizations') || [];
+        const orgs = await kvsStore.get('organizations') || [];
         console.log('Found organizations:', orgs);
         const org = orgs.find(o => o.id === orgId);
         if (!org) {
@@ -54,7 +55,7 @@ export function defineDataResolvers(resolver) {
       } else {
         // Fallback to legacy format
         console.log('No orgId provided, falling back to legacy config');
-        const config = await storage.get('syncConfig');
+        const config = await kvsStore.get('syncConfig');
         if (!config || !config.remoteProjectKey) {
           throw new Error('Project key not configured');
         }
@@ -134,7 +135,7 @@ export function defineDataResolvers(resolver) {
 
       if (orgId) {
         // Use new organization format
-        const orgs = await storage.get('organizations') || [];
+        const orgs = await kvsStore.get('organizations') || [];
         console.log('Found organizations:', orgs);
         const org = orgs.find(o => o.id === orgId);
         if (!org) {
@@ -152,7 +153,7 @@ export function defineDataResolvers(resolver) {
       } else {
         // Fallback to legacy format
         console.log('No orgId provided, falling back to legacy config');
-        config = await storage.get('syncConfig');
+        config = await kvsStore.get('syncConfig');
         if (!config || !config.remoteUrl || !config.remoteEmail || !config.remoteApiToken) {
           throw new Error('Remote configuration not complete');
         }
@@ -430,7 +431,7 @@ export function defineDataResolvers(resolver) {
         return { success: false, error: 'No issue keys provided for import' };
       }
 
-      const orgs = await storage.get('organizations') || [];
+      const orgs = await kvsStore.get('organizations') || [];
       const org = orgs.find(o => o.id === orgId);
       if (!org) {
         return { success: false, error: 'Organization not found' };
@@ -439,10 +440,10 @@ export function defineDataResolvers(resolver) {
       const storageOrgId = org.id === 'legacy' ? null : org.id;
 
       const [userMappings, fieldMappings, statusMappings, syncOptions] = await Promise.all([
-        storage.get(storageOrgId ? `userMappings:${storageOrgId}` : 'userMappings'),
-        storage.get(storageOrgId ? `fieldMappings:${storageOrgId}` : 'fieldMappings'),
-        storage.get(storageOrgId ? `statusMappings:${storageOrgId}` : 'statusMappings'),
-        storage.get(storageOrgId ? `syncOptions:${storageOrgId}` : 'syncOptions')
+        kvsStore.get(storageOrgId ? `userMappings:${storageOrgId}` : 'userMappings'),
+        kvsStore.get(storageOrgId ? `fieldMappings:${storageOrgId}` : 'fieldMappings'),
+        kvsStore.get(storageOrgId ? `statusMappings:${storageOrgId}` : 'statusMappings'),
+        kvsStore.get(storageOrgId ? `syncOptions:${storageOrgId}` : 'syncOptions')
       ]);
 
       const mappings = {

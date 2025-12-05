@@ -5,6 +5,10 @@ export async function getFullIssue(issueKey) {
     const response = await api.asApp().requestJira(
       route`/rest/api/3/issue/${issueKey}?expand=renderedFields,attachment&fields=*all,-comment`
     );
+    if (!response.ok) {
+      console.error(`Failed to fetch issue ${issueKey}: ${response.status}`);
+      return null;
+    }
     return await response.json();
   } catch (error) {
     console.error('Error fetching issue:', error);
@@ -17,6 +21,10 @@ export async function getFullComment(issueKey, commentId) {
     const response = await api.asApp().requestJira(
       route`/rest/api/3/issue/${issueKey}/comment/${commentId}`
     );
+    if (!response.ok) {
+      console.error(`Failed to fetch comment ${commentId} for issue ${issueKey}: ${response.status}`);
+      return null;
+    }
     return await response.json();
   } catch (error) {
     console.error('Error fetching comment:', error);
@@ -29,6 +37,10 @@ export async function getOrgName() {
     const response = await api.asApp().requestJira(
       route`/rest/api/3/serverInfo`
     );
+    if (!response.ok) {
+      console.error(`Failed to fetch server info: ${response.status}`);
+      return 'Jira';
+    }
     const serverInfo = await response.json();
     const match = serverInfo.baseUrl.match(/https?:\/\/([^.]+)/);
     if (match && match[1]) {

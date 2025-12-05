@@ -1,4 +1,4 @@
-import { storage } from '@forge/api';
+import * as kvsStore from '../services/storage/kvs.js';
 import { 
   validateOrganizationPayload, 
   validateOrgId, 
@@ -8,7 +8,7 @@ import {
   validateString
 } from '../utils/validation.js';
 
-const MAX_STORAGE_SIZE = 250000; // 250KB limit per key in Forge
+const MAX_STORAGE_SIZE = 240000; // 240 KiB limit per key in Forge (verified)
 const DEFAULT_SYNC_OPTIONS = {
   syncComments: true,
   syncAttachments: true,
@@ -30,10 +30,10 @@ async function validateStorageSize(key, data) {
 export function defineConfigResolvers(resolver) {
   // Get all organizations
   resolver.define('getOrganizations', async () => {
-    const orgs = await storage.get('organizations') || [];
+    const orgs = await kvsStore.get('organizations') || [];
     // Fetch API tokens from secret storage for each org
     const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
-      const token = await storage.getSecret(`secret:${org.id}:token`);
+      const token = await kvsStore.getSecret(`secret:${org.id}:token`);
       return {
         ...org,
         remoteApiToken: token || org.remoteApiToken || '' // Fallback for migration
@@ -48,12 +48,12 @@ export function defineConfigResolvers(resolver) {
       // Validate input
       const validated = validateOrganizationPayload(payload);
       
-      const orgs = await storage.get('organizations') || [];
+      const orgs = await kvsStore.get('organizations') || [];
       const orgId = `org-${Date.now()}`;
       
       // Store token separately in secret storage
       if (validated.remoteApiToken) {
-        await storage.setSecret(`secret:${orgId}:token`, validated.remoteApiToken);
+        await kvsStore.setSecret(`secret:${orgId}:token`, validated.remoteApiToken);
       }
       
       const newOrg = {
@@ -69,7 +69,7 @@ export function defineConfigResolvers(resolver) {
       orgs.push(newOrg);
       
       await validateStorageSize('organizations', orgs);
-      await storage.set('organizations', orgs);
+      await kvsStore.set('organizations', orgs);
       
       // Return org with token for UI
       return { success: true, organization: { ...newOrg, remoteApiToken: validated.remoteApiToken } };
@@ -91,7 +91,7 @@ export function defineConfigResolvers(resolver) {
       // Validate input
       const validated = validateOrganizationPayload(payload);
       
-      const orgs = await storage.get('organizations') || [];
+      const orgs = await kvsStore.get('organizations') || [];
       const index = orgs.findIndex(o => o.id === payload.id);
       if (index === -1) {
         return { success: false, error: 'Organization not found' };
@@ -99,7 +99,7 @@ export function defineConfigResolvers(resolver) {
       
       // Update token in secret storage if provided
       if (validated.remoteApiToken) {
-        await storage.setSecret(`secret:${payload.id}:token`, validated.remoteApiToken);
+        await kvsStore.setSecret(`secret:${payload.id}:token`, validated.remoteApiToken);
       }
       
       orgs[index] = {
@@ -117,7 +117,7 @@ export function defineConfigResolvers(resolver) {
       delete orgs[index].remoteApiToken;
       
       await validateStorageSize('organizations', orgs);
-      await storage.set('organizations', orgs);
+      await kvsStore.set('organizations', orgs);
       
       // Return org with token for UI
       return { success: true, organization: { ...orgs[index], remoteApiToken: payload.remoteApiToken } };
@@ -136,12 +136,12 @@ export function defineConfigResolvers(resolver) {
       }
       validateOrgId(payload.id);
       
-      const orgs = await storage.get('organizations') || [];
+      const orgs = await kvsStore.get('organizations') || [];
       const filteredOrgs = orgs.filter(o => o.id !== payload.id);
-      await storage.set('organizations', filteredOrgs);
+      await kvsStore.set('organizations', filteredOrgs);
       
       // Clean up the API token from secret storage
-      await storage.deleteSecret(`secret:${payload.id}:token`);
+      await kvsStore.deleteSecret(`secret:${payload.id}:token`);
       
       // Clean up org-specific mappings
       const orgId = payload.id;
@@ -157,13 +157,13 @@ export function defineConfigResolvers(resolver) {
 
   // Legacy support - get old config
   resolver.define('getConfig', async () => {
-    const config = await storage.get('syncConfig');
+    const config = await kvsStore.get('syncConfig');
     return config || null;
   });
 
   // Legacy support - save old config (converts to new format)
   resolver.define('saveConfig', async ({ payload }) => {
-    await storage.set('syncConfig', payload.config);
+    await kvsStore.set('syncConfig', payload.config);
     return { success: true };
   });
 
@@ -171,8 +171,8 @@ export function defineConfigResolvers(resolver) {
   resolver.define('getUserMappings', async ({ payload }) => {
     const orgId = payload?.orgId;
     const key = orgId ? `userMappings:${orgId}` : 'userMappings';
-    const mappings = await storage.get(key);
-    const config = await storage.get('userMappingConfig');
+    const mappings = await kvsStore.get(key);
+    const config = await kvsStore.get('userMappingConfig');
     return {
       mappings: mappings || {},
       config: config || { autoMapUsers: true, fallbackUser: 'unassigned' }
@@ -197,8 +197,8 @@ export function defineConfigResolvers(resolver) {
       };
       
       await validateStorageSize(key, data);
-      await storage.set(key, data.mappings);
-      await storage.set('userMappingConfig', config);
+      await kvsStore.set(key, data.mappings);
+      await kvsStore.set('userMappingConfig', config);
       
       return { success: true };
     } catch (error) {
@@ -211,7 +211,7 @@ export function defineConfigResolvers(resolver) {
   resolver.define('getFieldMappings', async ({ payload }) => {
     const orgId = payload?.orgId;
     const key = orgId ? `fieldMappings:${orgId}` : 'fieldMappings';
-    const mappings = await storage.get(key);
+    const mappings = await kvsStore.get(key);
     return mappings || {};
   });
 
@@ -227,7 +227,7 @@ export function defineConfigResolvers(resolver) {
       const key = orgId ? `fieldMappings:${orgId}` : 'fieldMappings';
       
       await validateStorageSize(key, mappings);
-      await storage.set(key, mappings);
+      await kvsStore.set(key, mappings);
       
       return { success: true };
     } catch (error) {
@@ -240,7 +240,7 @@ export function defineConfigResolvers(resolver) {
   resolver.define('getStatusMappings', async ({ payload }) => {
     const orgId = payload?.orgId;
     const key = orgId ? `statusMappings:${orgId}` : 'statusMappings';
-    const mappings = await storage.get(key);
+    const mappings = await kvsStore.get(key);
     return mappings || {};
   });
 
@@ -256,7 +256,7 @@ export function defineConfigResolvers(resolver) {
       const key = orgId ? `statusMappings:${orgId}` : 'statusMappings';
       
       await validateStorageSize(key, mappings);
-      await storage.set(key, mappings);
+      await kvsStore.set(key, mappings);
       
       return { success: true };
     } catch (error) {
@@ -269,7 +269,7 @@ export function defineConfigResolvers(resolver) {
   resolver.define('getIssueTypeMappings', async ({ payload }) => {
     const orgId = payload?.orgId;
     const key = orgId ? `issueTypeMappings:${orgId}` : 'issueTypeMappings';
-    const mappings = await storage.get(key);
+    const mappings = await kvsStore.get(key);
     return mappings || {};
   });
 
@@ -285,7 +285,7 @@ export function defineConfigResolvers(resolver) {
       const key = orgId ? `issueTypeMappings:${orgId}` : 'issueTypeMappings';
       
       await validateStorageSize(key, mappings);
-      await storage.set(key, mappings);
+      await kvsStore.set(key, mappings);
       
       return { success: true };
     } catch (error) {
@@ -295,7 +295,7 @@ export function defineConfigResolvers(resolver) {
   });
 
   resolver.define('getScheduledSyncConfig', async () => {
-    const config = await storage.get('scheduledSyncConfig');
+    const config = await kvsStore.get('scheduledSyncConfig');
     return config || { 
       enabled: false, 
       intervalMinutes: 60,
@@ -308,7 +308,7 @@ export function defineConfigResolvers(resolver) {
     try {
       // Validate config
       const config = validateObject(payload.config, 'config');
-      await storage.set('scheduledSyncConfig', config);
+      await kvsStore.set('scheduledSyncConfig', config);
       return { success: true };
     } catch (error) {
       console.error('Error saving scheduled sync config:', error);
@@ -319,7 +319,7 @@ export function defineConfigResolvers(resolver) {
   resolver.define('getSyncOptions', async ({ payload }) => {
     const orgId = payload?.orgId;
     const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
-    const options = await storage.get(key);
+    const options = await kvsStore.get(key);
     return options || {
       syncComments: true,
       syncAttachments: true,
@@ -338,7 +338,7 @@ export function defineConfigResolvers(resolver) {
       const options = validateObject(payload.options, 'options');
       
       const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
-      await storage.set(key, options);
+      await kvsStore.set(key, options);
       return { success: true, message: 'Sync options saved' };
     } catch (error) {
       console.error('Error saving sync options:', error);
@@ -354,19 +354,19 @@ export function defineConfigResolvers(resolver) {
       }
       validateOrgId(orgId);
 
-      const orgs = await storage.get('organizations') || [];
+      const orgs = await kvsStore.get('organizations') || [];
       const organization = orgs.find(o => o.id === orgId);
       if (!organization) {
         return { success: false, error: 'Organization not found' };
       }
 
       const [syncOptions, userMappings, fieldMappings, statusMappings, userMappingConfig, scheduledSyncConfig] = await Promise.all([
-        storage.get(`syncOptions:${orgId}`),
-        storage.get(`userMappings:${orgId}`),
-        storage.get(`fieldMappings:${orgId}`),
-        storage.get(`statusMappings:${orgId}`),
-        storage.get('userMappingConfig'),
-        storage.get('scheduledSyncConfig')
+        kvsStore.get(`syncOptions:${orgId}`),
+        kvsStore.get(`userMappings:${orgId}`),
+        kvsStore.get(`fieldMappings:${orgId}`),
+        kvsStore.get(`statusMappings:${orgId}`),
+        kvsStore.get('userMappingConfig'),
+        kvsStore.get('scheduledSyncConfig')
       ]);
 
       const exportBundle = {
@@ -405,7 +405,7 @@ export function defineConfigResolvers(resolver) {
         importData = JSON.parse(importData);
       }
 
-      const orgs = await storage.get('organizations') || [];
+      const orgs = await kvsStore.get('organizations') || [];
       const orgIndex = orgs.findIndex(o => o.id === orgId);
       if (orgIndex === -1) {
         return { success: false, error: 'Organization not found' };
@@ -435,21 +435,21 @@ export function defineConfigResolvers(resolver) {
         };
 
         await validateStorageSize('organizations', orgs);
-        await storage.set('organizations', orgs);
+        await kvsStore.set('organizations', orgs);
         applied.push('orgDetails');
       }
 
       if (sectionFlags.syncOptions && importData.syncOptions) {
-        await storage.set(`syncOptions:${orgId}`, importData.syncOptions);
+        await kvsStore.set(`syncOptions:${orgId}`, importData.syncOptions);
         applied.push('syncOptions');
       }
 
       if (sectionFlags.userMappings && importData.userMappings) {
         const key = `userMappings:${orgId}`;
         await validateStorageSize(key, importData.userMappings);
-        await storage.set(key, importData.userMappings);
+        await kvsStore.set(key, importData.userMappings);
         if (importData.userMappingConfig) {
-          await storage.set('userMappingConfig', importData.userMappingConfig);
+          await kvsStore.set('userMappingConfig', importData.userMappingConfig);
         }
         applied.push('userMappings');
       }
@@ -457,19 +457,19 @@ export function defineConfigResolvers(resolver) {
       if (sectionFlags.fieldMappings && importData.fieldMappings) {
         const key = `fieldMappings:${orgId}`;
         await validateStorageSize(key, importData.fieldMappings);
-        await storage.set(key, importData.fieldMappings);
+        await kvsStore.set(key, importData.fieldMappings);
         applied.push('fieldMappings');
       }
 
       if (sectionFlags.statusMappings && importData.statusMappings) {
         const key = `statusMappings:${orgId}`;
         await validateStorageSize(key, importData.statusMappings);
-        await storage.set(key, importData.statusMappings);
+        await kvsStore.set(key, importData.statusMappings);
         applied.push('statusMappings');
       }
 
       if (sectionFlags.scheduledSync && importData.scheduledSyncConfig) {
-        await storage.set('scheduledSyncConfig', importData.scheduledSyncConfig);
+        await kvsStore.set('scheduledSyncConfig', importData.scheduledSyncConfig);
         applied.push('scheduledSync');
       }
 
@@ -491,19 +491,19 @@ export function defineConfigResolvers(resolver) {
   resolver.define('checkStorage', async () => {
     try {
       // Check for organizations (new format)
-      const organizations = await storage.get('organizations');
+      const organizations = await kvsStore.get('organizations');
 
       // Check for legacy syncConfig (old format)
-      const syncConfig = await storage.get('syncConfig');
+      const syncConfig = await kvsStore.get('syncConfig');
 
       // Check for legacy mappings (not namespaced)
-      const userMappings = await storage.get('userMappings');
-      const fieldMappings = await storage.get('fieldMappings');
-      const statusMappings = await storage.get('statusMappings');
-      const syncOptions = await storage.get('syncOptions');
+      const userMappings = await kvsStore.get('userMappings');
+      const fieldMappings = await kvsStore.get('fieldMappings');
+      const statusMappings = await kvsStore.get('statusMappings');
+      const syncOptions = await kvsStore.get('syncOptions');
 
       // Check scheduled sync config
-      const scheduledSyncConfig = await storage.get('scheduledSyncConfig');
+      const scheduledSyncConfig = await kvsStore.get('scheduledSyncConfig');
 
       return {
         organizations: organizations || null,
@@ -532,14 +532,14 @@ export function defineConfigResolvers(resolver) {
   // Migrate legacy configuration to new organization format
   resolver.define('migrateLegacyConfig', async () => {
     try {
-      const syncConfig = await storage.get('syncConfig');
+      const syncConfig = await kvsStore.get('syncConfig');
 
       if (!syncConfig) {
         return { success: false, message: 'No legacy configuration found to migrate' };
       }
 
       // Check if organizations already exist
-      const existingOrgs = await storage.get('organizations') || [];
+      const existingOrgs = await kvsStore.get('organizations') || [];
 
       // Check if this legacy config is already migrated
       const alreadyMigrated = existingOrgs.some(org =>
@@ -565,25 +565,25 @@ export function defineConfigResolvers(resolver) {
       };
 
       existingOrgs.push(newOrg);
-      await storage.set('organizations', existingOrgs);
+      await kvsStore.set('organizations', existingOrgs);
 
       // Copy legacy mappings to new org-namespaced format
-      const userMappings = await storage.get('userMappings');
-      const fieldMappings = await storage.get('fieldMappings');
-      const statusMappings = await storage.get('statusMappings');
-      const syncOptions = await storage.get('syncOptions');
+      const userMappings = await kvsStore.get('userMappings');
+      const fieldMappings = await kvsStore.get('fieldMappings');
+      const statusMappings = await kvsStore.get('statusMappings');
+      const syncOptions = await kvsStore.get('syncOptions');
 
       if (userMappings) {
-        await storage.set(`userMappings:${newOrg.id}`, userMappings);
+        await kvsStore.set(`userMappings:${newOrg.id}`, userMappings);
       }
       if (fieldMappings) {
-        await storage.set(`fieldMappings:${newOrg.id}`, fieldMappings);
+        await kvsStore.set(`fieldMappings:${newOrg.id}`, fieldMappings);
       }
       if (statusMappings) {
-        await storage.set(`statusMappings:${newOrg.id}`, statusMappings);
+        await kvsStore.set(`statusMappings:${newOrg.id}`, statusMappings);
       }
       if (syncOptions) {
-        await storage.set(`syncOptions:${newOrg.id}`, syncOptions);
+        await kvsStore.set(`syncOptions:${newOrg.id}`, syncOptions);
       }
 
       return {

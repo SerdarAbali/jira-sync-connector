@@ -60,6 +60,7 @@ modules:
 
     - key: scheduled-sync-function
       handler: index.runScheduledSync
+      timeoutSeconds: 600
 
     - key: resolver
       handler: index.handler

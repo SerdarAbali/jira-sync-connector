@@ -1,10 +1,10 @@
-import { storage } from '@forge/api';
-import { MAX_AUDIT_LOG_ENTRIES } from '../../constants.js';
+import * as kvsStore from './kvs.js';
+import { MAX_AUDIT_LOG_ENTRIES, MAX_HOURLY_HISTORY } from '../../constants.js';
 
 // Track API usage and rate limits
 export async function trackApiCall(endpoint, success, isRateLimited = false, orgId = null) {
   try {
-    const stats = await storage.get('apiUsageStats') || {
+    const stats = await kvsStore.get('apiUsageStats') || {
       totalCalls: 0,
       successfulCalls: 0,
       failedCalls: 0,
@@ -38,7 +38,7 @@ export async function trackApiCall(endpoint, success, isRateLimited = false, org
           rateLimits: stats.rateLimitHitsThisHour || 0
         });
         // Keep only last 24 hours
-        if (stats.history.length > 24) stats.history = stats.history.slice(0, 24);
+        if (stats.history.length > MAX_HOURLY_HISTORY) stats.history = stats.history.slice(0, MAX_HOURLY_HISTORY);
       }
       stats.hourStarted = currentHour;
       stats.callsThisHour = 0;
@@ -79,7 +79,7 @@ export async function trackApiCall(endpoint, success, isRateLimited = false, org
 
     stats.lastUpdated = now.toISOString();
 
-    await storage.set('apiUsageStats', stats);
+    await kvsStore.set('apiUsageStats', stats);
   } catch (err) {
     console.error('Error tracking API usage:', err);
   }
@@ -101,7 +101,7 @@ function categorizeEndpoint(endpoint) {
 
 export async function getApiUsageStats() {
   try {
-    const stats = await storage.get('apiUsageStats') || {
+    const stats = await kvsStore.get('apiUsageStats') || {
       totalCalls: 0,
       successfulCalls: 0,
       failedCalls: 0,
@@ -165,7 +165,7 @@ export async function getApiUsageStats() {
 
 export async function resetApiUsageStats() {
   try {
-    await storage.set('apiUsageStats', {
+    await kvsStore.set('apiUsageStats', {
       totalCalls: 0,
       successfulCalls: 0,
       failedCalls: 0,
@@ -186,7 +186,7 @@ export async function resetApiUsageStats() {
 
 export async function trackWebhookSync(type, success, error = null, orgId = null, issueKey = null, details = null) {
   try {
-    const stats = await storage.get('webhookSyncStats') || {
+    const stats = await kvsStore.get('webhookSyncStats') || {
       totalSyncs: 0,
       issuesCreated: 0,
       issuesUpdated: 0,
@@ -252,7 +252,7 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
       }
     }
 
-    await storage.set('webhookSyncStats', stats);
+    await kvsStore.set('webhookSyncStats', stats);
   } catch (err) {
     console.error('Error tracking webhook stats:', err);
   }
@@ -260,7 +260,7 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
 
 export async function logAuditEntry(entry) {
   try {
-    const auditLog = await storage.get('auditLog') || [];
+    const auditLog = await kvsStore.get('auditLog') || [];
     auditLog.unshift({
       ...entry,
       timestamp: new Date().toISOString()
@@ -269,7 +269,7 @@ export async function logAuditEntry(entry) {
     if (auditLog.length > MAX_AUDIT_LOG_ENTRIES) {
       auditLog.length = MAX_AUDIT_LOG_ENTRIES;
     }
-    await storage.set('auditLog', auditLog);
+    await kvsStore.set('auditLog', auditLog);
   } catch (error) {
     console.error('Error logging audit entry:', error);
   }

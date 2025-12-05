@@ -20,6 +20,10 @@ export const RECENT_CREATION_WINDOW_MS = 3000; // 3 seconds window to detect new
 export const MAX_AUDIT_LOG_ENTRIES = 50; // Keep only 50 most recent audit entries
 export const MAX_ERROR_ENTRIES = 50; // Keep only 50 most recent errors
 export const MAX_PENDING_LINK_ATTEMPTS = 10; // Remove pending links after 10 failed attempts
+export const MAX_HOURLY_HISTORY = 24; // Keep last 24 hourly sync stats
+
+// Sync Hierarchy Limits
+export const MAX_PARENT_SYNC_DEPTH = 5; // Maximum depth for recursive parent/epic sync
 
 // HTTP Status Codes
 export const HTTP_STATUS = {
