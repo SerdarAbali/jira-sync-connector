@@ -1,3 +1,4 @@
+import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
 import { 
   validateOrganizationPayload, 
@@ -64,6 +65,7 @@ export function defineConfigResolvers(resolver) {
         // Don't store token in regular storage
         remoteProjectKey: validated.remoteProjectKey,
         allowedProjects: validated.allowedProjects || [],
+        jqlFilter: validated.jqlFilter || '',
         createdAt: new Date().toISOString()
       };
       orgs.push(newOrg);
@@ -110,6 +112,7 @@ export function defineConfigResolvers(resolver) {
         // Don't store token in regular storage
         remoteProjectKey: validated.remoteProjectKey,
         allowedProjects: validated.allowedProjects || [],
+        jqlFilter: validated.jqlFilter || '',
         updatedAt: new Date().toISOString()
       };
       
@@ -320,13 +323,17 @@ export function defineConfigResolvers(resolver) {
     const orgId = payload?.orgId;
     const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
     const options = await kvsStore.get(key);
-    return options || {
+    // Default options - syncCrossReference defaults to true for backward compatibility
+    const defaults = {
       syncComments: true,
       syncAttachments: true,
       syncLinks: true,
       syncSprints: false,
+      syncCrossReference: true,
       recreateDeletedIssues: false
     };
+    // Merge stored options with defaults to ensure all keys exist
+    return options ? { ...defaults, ...options } : defaults;
   });
 
   resolver.define('saveSyncOptions', async ({ payload }) => {
@@ -599,6 +606,101 @@ export function defineConfigResolvers(resolver) {
         error: error.message,
         stack: error.stack
       };
+    }
+  });
+
+  // Test connection to remote Jira
+  resolver.define('testConnection', async ({ payload }) => {
+    try {
+      const { orgId } = payload;
+      
+      if (!orgId) {
+        return { success: false, error: 'Organization ID is required' };
+      }
+
+      const orgs = await kvsStore.get('organizations') || [];
+      const org = orgs.find(o => o.id === orgId);
+      
+      if (!org) {
+        return { success: false, error: 'Organization not found' };
+      }
+
+      // Get token from secret storage
+      const token = await kvsStore.getSecret(`secret:${orgId}:token`);
+      const apiToken = token || org.remoteApiToken;
+
+      if (!org.remoteUrl || !org.remoteEmail || !apiToken) {
+        return { success: false, error: 'Missing connection details (URL, email, or API token)' };
+      }
+
+      const auth = Buffer.from(`${org.remoteEmail}:${apiToken}`).toString('base64');
+      const startTime = Date.now();
+
+      const response = await fetch(`${org.remoteUrl}/rest/api/3/myself`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const latency = Date.now() - startTime;
+
+      if (response.ok) {
+        const user = await response.json();
+        return {
+          success: true,
+          latency,
+          user: {
+            displayName: user.displayName,
+            emailAddress: user.emailAddress
+          },
+          message: `Connected as ${user.displayName} (${latency}ms)`
+        };
+      } else {
+        const errorText = await response.text();
+        return {
+          success: false,
+          status: response.status,
+          error: response.status === 401 ? 'Invalid credentials' : 
+                 response.status === 403 ? 'Access forbidden - check permissions' :
+                 `Connection failed: ${response.status}`
+        };
+      }
+    } catch (error) {
+      console.error('Test connection error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Get last sync time for an organization
+  resolver.define('getLastSyncTime', async ({ payload }) => {
+    try {
+      const { orgId } = payload;
+      
+      // Get webhook stats (has lastSync per issue)
+      const webhookStats = await kvsStore.get('webhookSyncStats');
+      const scheduledStats = await kvsStore.get('scheduledSyncStats');
+      
+      let lastWebhook = webhookStats?.lastSync || null;
+      let lastScheduled = scheduledStats?.lastRun || null;
+      
+      // Return the most recent
+      let lastSync = null;
+      if (lastWebhook && lastScheduled) {
+        lastSync = new Date(lastWebhook) > new Date(lastScheduled) ? lastWebhook : lastScheduled;
+      } else {
+        lastSync = lastWebhook || lastScheduled;
+      }
+
+      return {
+        lastSync,
+        lastWebhookSync: lastWebhook,
+        lastScheduledSync: lastScheduled
+      };
+    } catch (error) {
+      console.error('Error getting last sync time:', error);
+      return { lastSync: null };
     }
   });
 }

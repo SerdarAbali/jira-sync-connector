@@ -42,6 +42,11 @@ modules:
       interval: hour
       function: scheduled-sync-function
 
+  consumer:
+    - key: bulk-sync-consumer
+      queue: bulk-sync-queue
+      function: bulk-sync-function
+
   function:
     - key: sync-trigger
       handler: index.run
@@ -61,6 +66,10 @@ modules:
     - key: scheduled-sync-function
       handler: index.runScheduledSync
       timeoutSeconds: 600
+
+    - key: bulk-sync-function
+      handler: index.runBulkSync
+      timeoutSeconds: 900
 
     - key: resolver
       handler: index.handler

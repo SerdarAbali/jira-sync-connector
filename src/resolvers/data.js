@@ -141,13 +141,24 @@ export function defineDataResolvers(resolver) {
         if (!org) {
           throw new Error(`Organization with ID ${orgId} not found`);
         }
-        if (!org.remoteUrl || !org.remoteEmail || !org.remoteApiToken || !org.remoteProjectKey) {
+        
+        // Get API token from secret storage
+        const token = await kvsStore.getSecret(`secret:${orgId}:token`);
+        const remoteApiToken = token || org.remoteApiToken;
+        
+        if (!org.remoteUrl || !org.remoteEmail || !remoteApiToken || !org.remoteProjectKey) {
+          console.error('Organization missing fields:', { 
+            hasUrl: !!org.remoteUrl, 
+            hasEmail: !!org.remoteEmail, 
+            hasToken: !!remoteApiToken, 
+            hasProject: !!org.remoteProjectKey 
+          });
           throw new Error('Organization missing required fields');
         }
         config = {
           remoteUrl: org.remoteUrl,
           remoteEmail: org.remoteEmail,
-          remoteApiToken: org.remoteApiToken,
+          remoteApiToken: remoteApiToken,
           remoteProjectKey: org.remoteProjectKey
         };
       } else {
@@ -524,6 +535,73 @@ export function defineDataResolvers(resolver) {
       return { success: true, results };
     } catch (error) {
       console.error('Error importing issues:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Auto-match mappings by display name
+  resolver.define('autoMatchMappings', async ({ payload }) => {
+    try {
+      const { orgId, type, localItems, remoteItems } = payload;
+      
+      if (!orgId || !type || !localItems || !remoteItems) {
+        return { success: false, error: 'Missing required parameters' };
+      }
+
+      const matches = {};
+      let matchCount = 0;
+
+      // Normalize name for comparison
+      const normalize = (str) => str?.toLowerCase().trim().replace(/\s+/g, ' ') || '';
+
+      if (type === 'user') {
+        // Match users by display name or email
+        for (const remote of remoteItems) {
+          const remoteDisplayNorm = normalize(remote.displayName);
+          const remoteEmailNorm = normalize(remote.emailAddress);
+          
+          const match = localItems.find(local => {
+            const localDisplayNorm = normalize(local.displayName);
+            const localEmailNorm = normalize(local.emailAddress);
+            return remoteDisplayNorm === localDisplayNorm || 
+                   (remoteEmailNorm && localEmailNorm && remoteEmailNorm === localEmailNorm);
+          });
+          
+          if (match) {
+            matches[remote.accountId] = {
+              localId: match.accountId,
+              remoteName: remote.displayName,
+              localName: match.displayName
+            };
+            matchCount++;
+          }
+        }
+      } else if (type === 'field' || type === 'status' || type === 'issueType') {
+        // Match by name
+        for (const remote of remoteItems) {
+          const remoteNorm = normalize(remote.name);
+          
+          const match = localItems.find(local => normalize(local.name) === remoteNorm);
+          
+          if (match) {
+            matches[remote.id] = {
+              localId: match.id,
+              remoteName: remote.name,
+              localName: match.name
+            };
+            matchCount++;
+          }
+        }
+      }
+
+      return { 
+        success: true, 
+        matches, 
+        matchCount,
+        message: `Found ${matchCount} automatic match${matchCount !== 1 ? 'es' : ''}`
+      };
+    } catch (error) {
+      console.error('Error auto-matching:', error);
       return { success: false, error: error.message };
     }
   });

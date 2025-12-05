@@ -22,6 +22,10 @@ let epicLinkFieldCache = {
   remote: {} // keyed by org id
 };
 
+function isRankLikeString(value) {
+  return typeof value === 'string' && /^\d+\|[A-Za-z0-9]+:/.test(value);
+}
+
 /**
  * Find the Epic Link custom field ID for the local Jira instance
  */
@@ -87,6 +91,44 @@ async function getRemoteEpicLinkFieldId(org) {
     console.log(`⚠️ Could not find remote Epic Link field for ${org.name}: ${e.message}`);
   }
   return null;
+}
+
+/**
+ * Check if an issue matches the organization's JQL filter
+ * @param {string} issueKey - The issue key to check
+ * @param {string} jqlFilter - The JQL filter to match against
+ * @returns {Promise<boolean>} - True if issue matches filter (or no filter set)
+ */
+async function matchesJqlFilter(issueKey, jqlFilter) {
+  // No filter means all issues match
+  if (!jqlFilter || jqlFilter.trim() === '') {
+    return true;
+  }
+  
+  try {
+    // Search for the specific issue with the JQL filter appended
+    const combinedJql = `key = ${issueKey} AND (${jqlFilter})`;
+    const response = await api.asApp().requestJira(route`/rest/api/3/search?jql=${combinedJql}&maxResults=1&fields=key`);
+    
+    if (!response.ok) {
+      // If JQL is invalid, log warning but allow sync (fail-open)
+      console.log(`${LOG_EMOJI.WARNING} JQL filter check failed (status ${response.status}), allowing sync`);
+      return true;
+    }
+    
+    const result = await response.json();
+    const matches = result.total > 0;
+    
+    if (!matches) {
+      console.log(`${LOG_EMOJI.INFO} Issue ${issueKey} does not match JQL filter: ${jqlFilter}`);
+    }
+    
+    return matches;
+  } catch (error) {
+    // On error, allow sync to proceed (fail-open)
+    console.log(`${LOG_EMOJI.WARNING} JQL filter check error: ${error.message}, allowing sync`);
+    return true;
+  }
 }
 
 /**
@@ -256,6 +298,15 @@ export async function syncIssue(event) {
     if (!isAllowed) {
       console.log(`⏭️ Skipping ${issueKey} for ${org.name} - project ${projectKey} not in allowed list`);
       continue;
+    }
+
+    // Check if issue matches JQL filter (if configured)
+    if (org.jqlFilter) {
+      const matchesFilter = await matchesJqlFilter(issueKey, org.jqlFilter);
+      if (!matchesFilter) {
+        console.log(`⏭️ Skipping ${issueKey} for ${org.name} - does not match JQL filter`);
+        continue;
+      }
     }
 
     // Fetch org-specific mappings
@@ -500,9 +551,46 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
   const syncFieldOptions = syncOptions || { syncSprints: false };
   const reversedFieldMap = reverseMapping(mappings.fieldMappings);
+  console.log(`🗺️ Field mappings to process:`, JSON.stringify(Object.keys(reversedFieldMap)));
+  
+  // Fields that should never be synced (Jira internal fields)
+  const blockedFields = [
+    'rankBeforeIssue', 'rankAfterIssue', 'rank', 'lexoRank',
+    'created', 'updated', 'creator', 'reporter', 'project',
+    'issuetype', 'status', 'resolution', 'resolutiondate',
+    'watches', 'votes', 'worklog', 'aggregatetimespent',
+    'aggregatetimeoriginalestimate', 'aggregatetimeestimate',
+    'aggregateprogress', 'progress', 'lastViewed', 'issuelinks',
+    'subtasks', 'attachment', 'comment'
+  ];
+
   for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
+    // Skip blocked fields by name
+    if (blockedFields.includes(localFieldId) || blockedFields.includes(remoteFieldId)) {
+      console.log(`⏭️ Skipping blocked field: ${localFieldId} → ${remoteFieldId}`);
+      continue;
+    }
+
     if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
       let fieldValue = issue.fields[localFieldId];
+      
+      // Log the actual field value for debugging
+      console.log(`🔍 Field ${localFieldId} raw value:`, JSON.stringify(fieldValue).substring(0, 200));
+      
+      // Skip rank/lexorank fields (string values like "0|i00067:")
+      if (isRankLikeString(fieldValue)) {
+        console.log(`⏭️ Skipping lexorank field ${localFieldId} - value looks like rank data`);
+        continue;
+      }
+      
+      // Skip rank fields that might be stored with customfield IDs
+      // These fields have object values with rankBeforeIssue/rankAfterIssue properties
+      if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
+        if (fieldValue.rankBeforeIssue !== undefined || fieldValue.rankAfterIssue !== undefined) {
+          console.log(`⏭️ Skipping rank field ${localFieldId} - contains rank data`);
+          continue;
+        }
+      }
 
       console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
 
@@ -530,6 +618,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
   try {
     console.log('Creating remote issue for:', issue.key);
+    console.log('📦 Payload fields:', JSON.stringify(Object.keys(remoteIssue.fields)));
 
     await markSyncing(issue.key);
 
@@ -904,10 +993,42 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
 
   const reversedFieldMap = reverseMapping(mappings.fieldMappings);
   const syncFieldOptions = syncOptions || { syncSprints: false };
+  
+  // Fields that should never be synced (Jira internal fields)
+  const blockedFields = [
+    'rankBeforeIssue', 'rankAfterIssue', 'rank', 'lexoRank',
+    'created', 'updated', 'creator', 'reporter', 'project',
+    'issuetype', 'status', 'resolution', 'resolutiondate',
+    'watches', 'votes', 'worklog', 'aggregatetimespent',
+    'aggregatetimeoriginalestimate', 'aggregatetimeestimate',
+    'aggregateprogress', 'progress', 'lastViewed', 'issuelinks',
+    'subtasks', 'attachment', 'comment'
+  ];
 
   for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
+    // Skip blocked fields
+    if (blockedFields.includes(localFieldId) || blockedFields.includes(remoteFieldId)) {
+      console.log(`⏭️ Skipping blocked field: ${localFieldId} → ${remoteFieldId}`);
+      continue;
+    }
+    
     if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
       let fieldValue = issue.fields[localFieldId];
+      
+      // Skip rank/lexorank fields (string values like "0|i00067:")
+      if (isRankLikeString(fieldValue)) {
+        console.log(`⏭️ Skipping lexorank field ${localFieldId} - value looks like rank data`);
+        continue;
+      }
+      
+      // Skip rank fields that might be stored with customfield IDs
+      // These fields have object values with rankBeforeIssue/rankAfterIssue properties
+      if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
+        if (fieldValue.rankBeforeIssue !== undefined || fieldValue.rankAfterIssue !== undefined) {
+          console.log(`⏭️ Skipping rank field ${localFieldId} - contains rank data`);
+          continue;
+        }
+      }
 
       console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
 

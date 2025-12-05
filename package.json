@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@forge/api": "6.2.0",
+    "@forge/events": "^2.0.12",
     "@forge/kvs": "^1.2.2",
     "@forge/resolver": "1.7.1"
   }

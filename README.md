@@ -22,9 +22,12 @@ This application syncs issues from a source Jira organization to a target organi
 
 ### Reliability Features
 - Real-time webhook sync (1-3 seconds)
-- Hourly scheduled sync as backup
+- Hourly scheduled sync as backup (10-minute timeout)
 - Automatic retry for pending issue links
 - Recreate deleted issues option (scans target org and recreates any issues that were deleted)
+- Attachment duplicate prevention (3-layer locking mechanism)
+- Exponential backoff with rate limit (429) handling
+- Parent/Epic sync depth limiting (max 5 levels)
 
 ### Admin Interface
 - Multi-organization support
@@ -133,36 +136,56 @@ Configure user, field, and status mappings between source and target organizatio
 
 SyncApp/
   src/
-    index.js                    Entry point
+    index.js                    Entry point (pure exports)
     constants.js                Shared constants
-    utils/                      Utility functions
+    utils/                      Utility functions (adf, retry, validation)
     services/
-      storage/                  Storage abstractions
-      jira/                     Jira API clients
+      storage/
+        kvs.js                  @forge/kvs wrapper
+        mappings.js             Issue mapping storage
+        flags.js                Sync flags & pending links
+        stats.js                API usage & audit tracking
+      jira/
+        local-client.js         Source Jira (@forge/api)
+        remote-client.js        Target Jira (fetch + Basic Auth)
       sync/                     Sync operations
       scheduled/                Scheduled sync
-    resolvers/                  API resolvers
+    resolvers/                  Admin UI API handlers
     triggers/                   Webhook handlers
-  static/admin-page/            React admin UI
+  static/admin-page/            React + Atlaskit admin UI
   manifest.yml                  Forge configuration
 
 ### Triggers
 - avi:jira:created:issue: New issue webhook
 - avi:jira:updated:issue: Issue update webhook
 - avi:jira:commented:issue: Comment webhook
-- scheduledTrigger: Hourly sync
+- avi:jira-issue-link:created: Link created webhook
+- avi:jira-issue-link:deleted: Link deleted webhook
+- avi:jira:deleted:issue: Issue deleted webhook
+- scheduledTrigger: Hourly sync (600s timeout)
 
-### Storage Keys
+### Storage (@forge/kvs)
+Uses `@forge/kvs` with transactions for atomic operations.
+
+**Configuration:**
 - organizations: Array of org configurations
 - syncOptions:{orgId}: Feature toggles per org
-- userMappings:{orgId}: User mappings per org
-- fieldMappings:{orgId}: Field mappings per org
-- statusMappings:{orgId}: Status mappings per org
-- local-to-remote:{issueKey}: Issue key mapping
-- remote-to-local:{remoteKey}: Reverse mapping
-- mappings-index:{orgId}: Index of all mappings for recreate scan
-- scheduledSyncStats: Scheduled sync statistics
-- webhookSyncStats: Webhook sync statistics
+- userMappings:{orgId}, fieldMappings:{orgId}, statusMappings:{orgId}: Mappings per org
+- secret:{orgId}:token: API tokens (secure storage)
+
+**Issue Mappings:**
+- {orgId}:local-to-remote:{issueKey}: Local → Remote key mapping
+- {orgId}:remote-to-local:{remoteKey}: Remote → Local key mapping
+- mapping-meta:{orgId}:{localKey}: Queryable mapping metadata
+
+**Sync State:**
+- syncing:{issueKey}: Sync-in-progress flag (TTL-based)
+- pending-links:{issueKey}: Pending link queue
+- pending-link-idx:{issueKey}: Queryable pending link index
+- attachment-lock:{orgId}:{attachmentId}: Attachment upload locks
+
+**Statistics:**
+- scheduledSyncStats, webhookSyncStats, apiUsageStats, auditLog
 
 ## Development
 
@@ -206,6 +229,25 @@ Deleted issues not recreating:
 Slow initial sync:
 - Forge cold starts can take several seconds
 - Subsequent syncs are faster (1-3 seconds)
+
+## TODO
+
+Pending optimizations identified during code review:
+
+### Performance
+- [ ] Cache `getOrganizationsWithTokens()` per invocation to reduce KVS calls
+- [ ] Optimize `findPendingLinksToIssue()` N+1 query pattern (sequential KVS calls)
+- [ ] Add TTL cleanup for `created-timestamp:` keys (currently unbounded)
+
+### Reliability
+- [ ] Add `retryWithBackoff()` wrapper to `createLinkOnRemote()` in link-sync.js
+- [ ] Add TTL/expiration to epic field cache (`epicLinkFieldCache`)
+- [ ] Create centralized `cleanupIssueData()` for consistent mapping cleanup on issue delete
+
+### Code Quality
+- [ ] Remove duplicate `fetch` imports in issue-sync.js, comment-sync.js, scheduled-sync.js
+- [ ] Move `MAX_STORAGE_SIZE` constant to constants.js (currently duplicated in config.js)
+- [ ] Add size limits to `apiUsageStats.byEndpoint` and `byOrg` objects
 
 ## Roadmap
 

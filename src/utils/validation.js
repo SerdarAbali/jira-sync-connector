@@ -92,7 +92,8 @@ export function validateOrganizationPayload(payload) {
     remoteEmail: validateEmail(payload.remoteEmail, 'remoteEmail'),
     remoteApiToken: payload.remoteApiToken ? validateString(payload.remoteApiToken, 'remoteApiToken', 500) : undefined,
     remoteProjectKey: validateString(payload.remoteProjectKey, 'remoteProjectKey', 20),
-    allowedProjects: payload.allowedProjects ? validateArray(payload.allowedProjects, 'allowedProjects') : []
+    allowedProjects: payload.allowedProjects ? validateArray(payload.allowedProjects, 'allowedProjects') : [],
+    jqlFilter: payload.jqlFilter ? validateString(payload.jqlFilter, 'jqlFilter', 500) : ''
   };
 }
 
