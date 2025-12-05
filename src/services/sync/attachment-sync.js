@@ -2,6 +2,43 @@ import { LOG_EMOJI, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB } from '../../co
 import { getAttachmentMapping, storeAttachmentMapping } from '../storage/mappings.js';
 import { downloadAttachment } from '../jira/local-client.js';
 import { uploadAttachment, getRemoteIssueAttachments } from '../jira/remote-client.js';
+import * as kvsStore from '../storage/kvs.js';
+
+// Lock timeout for attachment sync (30 seconds)
+const ATTACHMENT_LOCK_TTL_MS = 30000;
+
+/**
+ * Try to acquire a lock for syncing a specific attachment
+ * Returns true if lock acquired, false if already locked
+ */
+async function tryAcquireAttachmentLock(attachmentId, orgId) {
+  const lockKey = orgId 
+    ? `attachment-lock:${orgId}:${attachmentId}` 
+    : `attachment-lock:${attachmentId}`;
+  
+  const existing = await kvsStore.get(lockKey);
+  if (existing && existing.expiresAt > Date.now()) {
+    // Lock exists and hasn't expired
+    return false;
+  }
+  
+  // Acquire lock
+  await kvsStore.set(lockKey, { 
+    lockedAt: Date.now(), 
+    expiresAt: Date.now() + ATTACHMENT_LOCK_TTL_MS 
+  });
+  return true;
+}
+
+/**
+ * Release attachment lock
+ */
+async function releaseAttachmentLock(attachmentId, orgId) {
+  const lockKey = orgId 
+    ? `attachment-lock:${orgId}:${attachmentId}` 
+    : `attachment-lock:${attachmentId}`;
+  await kvsStore.del(lockKey);
+}
 
 export async function syncAttachments(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null, forceCheck = false) {
   const attachmentMapping = {}; // localId -> remoteId
@@ -14,7 +51,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
   console.log(`${LOG_EMOJI.ATTACHMENT} Found ${issue.fields.attachment.length} attachment(s) on ${localIssueKey}`);
 
   // Get existing attachments on remote issue to prevent duplicates
-  const remoteAttachments = await getRemoteIssueAttachments(remoteIssueKey, config);
+  let remoteAttachments = await getRemoteIssueAttachments(remoteIssueKey, config);
   console.log(`${LOG_EMOJI.INFO} Remote issue ${remoteIssueKey} has ${remoteAttachments.length} existing attachment(s)`);
 
   for (const attachment of issue.fields.attachment) {
@@ -66,29 +103,66 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
         continue;
       }
 
-      console.log(`${LOG_EMOJI.DOWNLOAD} Downloading ${attachment.filename} (${(attachment.size / 1024).toFixed(2)}KB)...`);
-
-      // Download from local Jira
-      const fileBuffer = await downloadAttachment(attachment.content);
-      if (!fileBuffer) {
-        console.error(`${LOG_EMOJI.ERROR} Failed to download ${attachment.filename}`);
-        if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'download failed');
+      // Try to acquire lock to prevent concurrent uploads of same attachment
+      const lockAcquired = await tryAcquireAttachmentLock(attachment.id, orgId);
+      if (!lockAcquired) {
+        console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} is being synced by another process`);
+        if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'sync in progress');
         continue;
       }
 
-      // Upload to remote Jira
-      console.log(`${LOG_EMOJI.UPLOAD} Uploading ${attachment.filename} to ${remoteIssueKey}...`);
-      const remoteAttachmentId = await uploadAttachment(remoteIssueKey, attachment.filename, fileBuffer, config);
+      try {
+        // Re-check mapping after acquiring lock (another process may have completed)
+        const mappingAfterLock = await getAttachmentMapping(attachment.id, orgId);
+        if (mappingAfterLock) {
+          console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} was synced by another process`);
+          attachmentMapping[attachment.id] = mappingAfterLock;
+          if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'synced by another process');
+          continue;
+        }
 
-      if (remoteAttachmentId) {
-        // Store mapping to prevent re-syncing (org-specific)
-        await storeAttachmentMapping(attachment.id, remoteAttachmentId, orgId);
-        attachmentMapping[attachment.id] = remoteAttachmentId;
-        console.log(`${LOG_EMOJI.SUCCESS} Synced attachment: ${attachment.filename} (remote id: ${remoteAttachmentId})`);
-        if (syncResult) syncResult.addAttachmentSuccess(attachment.filename);
-      } else {
-        console.error(`${LOG_EMOJI.ERROR} Failed to upload ${attachment.filename}`);
-        if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'upload failed');
+        // Re-fetch remote attachments to catch any concurrent uploads
+        remoteAttachments = await getRemoteIssueAttachments(remoteIssueKey, config);
+        const recentDuplicate = remoteAttachments.find(
+          remote => remote.filename === attachment.filename && 
+                    remote.size === attachment.size
+        );
+        
+        if (recentDuplicate) {
+          console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} was uploaded concurrently (id: ${recentDuplicate.id})`);
+          await storeAttachmentMapping(attachment.id, recentDuplicate.id, orgId);
+          attachmentMapping[attachment.id] = recentDuplicate.id;
+          if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'uploaded concurrently');
+          continue;
+        }
+
+        console.log(`${LOG_EMOJI.DOWNLOAD} Downloading ${attachment.filename} (${(attachment.size / 1024).toFixed(2)}KB)...`);
+
+        // Download from local Jira
+        const fileBuffer = await downloadAttachment(attachment.content);
+        if (!fileBuffer) {
+          console.error(`${LOG_EMOJI.ERROR} Failed to download ${attachment.filename}`);
+          if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'download failed');
+          continue;
+        }
+
+        // Upload to remote Jira
+        console.log(`${LOG_EMOJI.UPLOAD} Uploading ${attachment.filename} to ${remoteIssueKey}...`);
+        const remoteAttachmentId = await uploadAttachment(remoteIssueKey, attachment.filename, fileBuffer, config);
+
+        if (remoteAttachmentId) {
+          // Store mapping to prevent re-syncing (org-specific)
+          await storeAttachmentMapping(attachment.id, remoteAttachmentId, orgId);
+          attachmentMapping[attachment.id] = remoteAttachmentId;
+          console.log(`${LOG_EMOJI.SUCCESS} Synced attachment: ${attachment.filename} (remote id: ${remoteAttachmentId})`);
+          if (syncResult) syncResult.addAttachmentSuccess(attachment.filename);
+        } else {
+          console.error(`${LOG_EMOJI.ERROR} Failed to upload ${attachment.filename}`);
+          if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'upload failed');
+        }
+      } finally {
+        // Always release the lock
+        await releaseAttachmentLock(attachment.id, orgId);
       }
 
     } catch (error) {

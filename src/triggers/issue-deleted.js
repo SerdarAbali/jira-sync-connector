@@ -1,4 +1,3 @@
-import { storage } from '@forge/api';
 import { getRemoteKey, removeMapping, getOrganizationsWithTokens } from '../services/storage/mappings.js';
 import { fetch } from '@forge/api';
 

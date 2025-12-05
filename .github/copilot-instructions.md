@@ -5,6 +5,16 @@
 ## Project Overview
 Atlassian Forge app for one-way issue sync between two Jira Cloud orgs. Real-time webhooks (1-3s) + hourly scheduled backup sync. Multi-org support with per-org mappings stored in Forge Storage.
 
+## Forge Platform Limits (Verified)
+| Limit | Value |
+|-------|-------|
+| Value size | 240 KiB per key |
+| Key length | 500 characters |
+| Function timeout | 25s (triggers), 55s (web triggers), 900s (async events/scheduled with `timeoutSeconds`) |
+| Memory | 1024 MB per invocation |
+| Transactions | `@forge/kvs` only, max 25 ops, set/delete only |
+| Query API | `beginsWith` filter on keys only, max 100 results |
+
 ## Architecture
 
 ### Entry Point & Module Structure
@@ -12,8 +22,33 @@ Atlassian Forge app for one-way issue sync between two Jira Cloud orgs. Real-tim
 - `src/triggers/` - Webhook handlers (issue, comment, link events)
 - `src/resolvers/` - Admin UI API (`@forge/resolver` pattern)
 - `src/services/sync/` - Core sync logic (issue, comment, attachment, link, transition)
-- `src/services/storage/` - Forge Storage wrappers (mappings, flags, stats)
+- `src/services/storage/` - Forge Storage wrappers using `@forge/kvs` (mappings, flags, stats, kvs)
 - `src/services/jira/` - API clients (local=`@forge/api`, remote=fetch with Basic Auth)
+
+### Storage Layer (`@forge/kvs`)
+All storage operations go through `src/services/storage/kvs.js` wrapper:
+```javascript
+import * as kvsStore from './kvs.js';
+
+// Basic operations
+await kvsStore.get(key);        // Returns null on KEY_NOT_FOUND
+await kvsStore.set(key, value);
+await kvsStore.del(key);
+
+// Secrets
+await kvsStore.getSecret(key);
+await kvsStore.setSecret(key, value);
+
+// Query by key prefix (replaces index arrays)
+const results = await kvsStore.queryByPrefix('mapping-meta:org-123:', 1000);
+
+// Transactions (atomic, max 25 ops)
+await kvsStore.transaction()
+  .set('key1', 'value1')
+  .set('key2', 'value2')
+  .delete('key3')
+  .execute();
+```
 
 ### Data Flow
 1. Trigger fires → `triggers/*.js` validates & delegates to `services/sync/`
@@ -90,10 +125,12 @@ Tunable constants in `constants.js`:
 ## Code Conventions
 
 ### Storage Keys
-See `constants.js::STORAGE_KEYS` and README for full list. Key patterns:
+All storage uses `@forge/kvs` via wrapper. Key patterns:
 - `organizations` - Array of org configs
 - `syncOptions:{orgId}` - Feature toggles
 - `userMappings:{orgId}`, `fieldMappings:{orgId}`, `statusMappings:{orgId}`
+- `mapping-meta:{orgId}:{localKey}` - Issue mapping metadata (queryable by prefix)
+- `pending-link-idx:{issueKey}` - Pending link index entries (queryable)
 - API tokens stored as secrets: `secret:{orgId}:token`
 
 ### Logging
@@ -107,6 +144,7 @@ console.log(`${LOG_EMOJI.ERROR} Failed: ${error.message}`);  // ❌
 - `retryWithBackoff()` handles transient errors, rate limits (429), with exponential backoff
 - Non-retryable 4xx errors thrown immediately
 - Always return `{ success: boolean, error?: string }` from resolvers
+- **Always check `response.ok` before calling `.json()`** on API responses
 
 ### Admin UI
 - React + Atlaskit components in `static/admin-page/src/`
@@ -127,6 +165,6 @@ console.log(`${LOG_EMOJI.ERROR} Failed: ${error.message}`);  // ❌
 |------|-------|
 | Add new synced field | `services/sync/issue-sync.js` (buildUpdatePayload) |
 | New webhook event | `manifest.yml` + new `triggers/*.js` |
-| Storage schema change | `services/storage/mappings.js` |
+| Storage schema change | `services/storage/mappings.js`, `services/storage/kvs.js` |
 | Admin UI feature | `static/admin-page/src/App.jsx` + resolver in `resolvers/*.js` |
 | Rate limit tuning | `constants.js` (RETRY_*, BATCH_*) |

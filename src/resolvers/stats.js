@@ -1,9 +1,9 @@
-import { storage } from '@forge/api';
+import * as kvsStore from '../services/storage/kvs.js';
 import { getApiUsageStats, resetApiUsageStats } from '../services/storage/stats.js';
 
 export function defineStatsResolvers(resolver) {
   resolver.define('getScheduledSyncStats', async () => {
-    const stats = await storage.get('scheduledSyncStats');
+    const stats = await kvsStore.get('scheduledSyncStats');
     if (stats) {
       stats.events = Array.isArray(stats.events) ? stats.events : [];
       return stats;
@@ -20,7 +20,7 @@ export function defineStatsResolvers(resolver) {
   });
 
   resolver.define('getWebhookSyncStats', async () => {
-    const stats = await storage.get('webhookSyncStats');
+    const stats = await kvsStore.get('webhookSyncStats');
     return stats || {
       totalSyncs: 0,
       issuesCreated: 0,
@@ -42,10 +42,10 @@ export function defineStatsResolvers(resolver) {
 
   resolver.define('clearWebhookErrors', async () => {
     try {
-      const stats = await storage.get('webhookSyncStats');
+      const stats = await kvsStore.get('webhookSyncStats');
       if (stats) {
         stats.errors = [];
-        await storage.set('webhookSyncStats', stats);
+        await kvsStore.set('webhookSyncStats', stats);
       }
       return { success: true, message: 'Webhook errors cleared' };
     } catch (error) {
@@ -56,10 +56,10 @@ export function defineStatsResolvers(resolver) {
 
   resolver.define('clearScheduledErrors', async () => {
     try {
-      const stats = await storage.get('scheduledSyncStats');
+      const stats = await kvsStore.get('scheduledSyncStats');
       if (stats) {
         stats.errors = [];
-        await storage.set('scheduledSyncStats', stats);
+        await kvsStore.set('scheduledSyncStats', stats);
       }
       return { success: true, message: 'Scheduled sync errors cleared' };
     } catch (error) {

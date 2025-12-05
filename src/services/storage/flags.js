@@ -1,21 +1,35 @@
-import { storage } from '@forge/api';
+import * as kvsStore from './kvs.js';
 import { SYNC_FLAG_TTL_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 
 export async function markSyncing(issueKey) {
-  await storage.set(`syncing:${issueKey}`, 'true', { ttl: SYNC_FLAG_TTL_MS });
+  // @forge/kvs doesn't support TTL directly, so we store expiration time
+  await kvsStore.set(`syncing:${issueKey}`, { 
+    value: 'true', 
+    expiresAt: Date.now() + SYNC_FLAG_TTL_MS 
+  });
 }
 
 export async function clearSyncFlag(issueKey) {
-  await storage.delete(`syncing:${issueKey}`);
+  await kvsStore.del(`syncing:${issueKey}`);
 }
 
 export async function isSyncing(issueKey) {
-  const syncing = await storage.get(`syncing:${issueKey}`);
-  return syncing === 'true';
+  const data = await kvsStore.get(`syncing:${issueKey}`);
+  if (!data) return false;
+  
+  // Check if TTL-based flag has expired
+  if (data.expiresAt && Date.now() > data.expiresAt) {
+    // Clean up expired flag
+    await kvsStore.del(`syncing:${issueKey}`);
+    return false;
+  }
+  
+  // Handle both old format (string) and new format (object with value)
+  return data === 'true' || data.value === 'true';
 }
 
 export async function storePendingLink(issueKey, linkData) {
-  const pendingLinks = await storage.get(`pending-links:${issueKey}`) || [];
+  const pendingLinks = await kvsStore.get(`pending-links:${issueKey}`) || [];
   // Check if link already pending to avoid duplicates
   const existingIndex = pendingLinks.findIndex(l => l.linkId === linkData.linkId);
   if (existingIndex >= 0) {
@@ -33,32 +47,31 @@ export async function storePendingLink(issueKey, linkData) {
       lastAttempt: new Date().toISOString()
     });
   }
-  await storage.set(`pending-links:${issueKey}`, pendingLinks);
+  await kvsStore.set(`pending-links:${issueKey}`, pendingLinks);
 
-  // Update index
-  const pendingLinksIndex = await storage.get('pending-links-index') || [];
-  if (!pendingLinksIndex.includes(issueKey)) {
-    pendingLinksIndex.push(issueKey);
-    await storage.set('pending-links-index', pendingLinksIndex);
-  }
+  // Store as queryable key instead of maintaining index array
+  // Key pattern allows finding all pending links via query
+  await kvsStore.set(`pending-link-idx:${issueKey}`, true);
 
   console.log(`📌 Stored pending link: ${issueKey} → ${linkData.linkedIssueKey}`);
 }
 
 export async function getPendingLinks(issueKey) {
-  return await storage.get(`pending-links:${issueKey}`) || [];
+  return await kvsStore.get(`pending-links:${issueKey}`) || [];
 }
 
 /**
  * Find all pending links that reference a specific target issue
- * Used when an issue gets synced to process any links waiting for it
+ * Uses kvs.query() to find all pending link keys
  */
 export async function findPendingLinksToIssue(targetIssueKey) {
-  const pendingLinksIndex = await storage.get('pending-links-index') || [];
+  // Query for all pending link index entries
+  const indexEntries = await kvsStore.queryByPrefix('pending-link-idx:', 500);
   const results = [];
   
-  for (const sourceIssueKey of pendingLinksIndex) {
-    const pendingLinks = await storage.get(`pending-links:${sourceIssueKey}`) || [];
+  for (const entry of indexEntries) {
+    const sourceIssueKey = entry.key.replace('pending-link-idx:', '');
+    const pendingLinks = await kvsStore.get(`pending-links:${sourceIssueKey}`) || [];
     for (const link of pendingLinks) {
       if (link.linkedIssueKey === targetIssueKey) {
         results.push({
@@ -73,18 +86,16 @@ export async function findPendingLinksToIssue(targetIssueKey) {
 }
 
 export async function removePendingLink(issueKey, linkId) {
-  const pendingLinks = await storage.get(`pending-links:${issueKey}`) || [];
+  const pendingLinks = await kvsStore.get(`pending-links:${issueKey}`) || [];
   const filtered = pendingLinks.filter(l => l.linkId !== linkId);
   if (filtered.length === 0) {
-    await storage.delete(`pending-links:${issueKey}`);
-    await removeIssueFromPendingLinksIndex(issueKey);
+    await kvsStore.del(`pending-links:${issueKey}`);
+    await kvsStore.del(`pending-link-idx:${issueKey}`);
   } else {
-    await storage.set(`pending-links:${issueKey}`, filtered);
+    await kvsStore.set(`pending-links:${issueKey}`, filtered);
   }
 }
 
 export async function removeIssueFromPendingLinksIndex(issueKey) {
-  const pendingLinksIndex = await storage.get('pending-links-index') || [];
-  const updatedIndex = pendingLinksIndex.filter(key => key !== issueKey);
-  await storage.set('pending-links-index', updatedIndex);
+  await kvsStore.del(`pending-link-idx:${issueKey}`);
 }

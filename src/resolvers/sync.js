@@ -1,4 +1,5 @@
-import api, { route, storage, fetch } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
+import * as kvsStore from '../services/storage/kvs.js';
 import { getRemoteKey, addToMappingIndex, removeMapping, getAllMappings, getOrganizationsWithTokens } from '../services/storage/mappings.js';
 import { getFullIssue } from '../services/jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue, syncIssue } from '../services/sync/issue-sync.js';
@@ -18,7 +19,7 @@ export function defineSyncResolvers(resolver) {
       
       console.log(`🔄 Manual sync requested for: ${issueKey}`);
       
-      const config = await storage.get('syncConfig');
+      const config = await kvsStore.get('syncConfig');
       if (!config || !config.remoteUrl) {
         throw new Error('Sync not configured');
       }
@@ -29,9 +30,9 @@ export function defineSyncResolvers(resolver) {
       }
       
       const [userMappings, fieldMappings, statusMappings] = await Promise.all([
-        storage.get('userMappings'),
-        storage.get('fieldMappings'),
-        storage.get('statusMappings')
+        kvsStore.get('userMappings'),
+        kvsStore.get('fieldMappings'),
+        kvsStore.get('statusMappings')
       ]);
       
       const mappings = {
@@ -71,7 +72,7 @@ export function defineSyncResolvers(resolver) {
       let organizations = await getOrganizationsWithTokens();
       
       // Legacy support
-      const legacyConfig = await storage.get('syncConfig');
+      const legacyConfig = await kvsStore.get('syncConfig');
       if (legacyConfig && legacyConfig.remoteUrl && organizations.length === 0) {
         organizations.push({
           id: 'legacy',
@@ -94,9 +95,9 @@ export function defineSyncResolvers(resolver) {
       // Retry pending links for each organization
       for (const org of organizations) {
         const [userMappings, fieldMappings, statusMappings] = await Promise.all([
-          storage.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
-          storage.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
-          storage.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`)
+          kvsStore.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
+          kvsStore.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
+          kvsStore.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`)
         ]);
 
         const mappings = {
@@ -131,7 +132,7 @@ export function defineSyncResolvers(resolver) {
       console.log(`🔍 Scanning for deleted remote issues (org: ${orgId || 'all'})...`);
 
       // Get organizations
-      const organizations = await storage.get('organizations') || [];
+      const organizations = await kvsStore.get('organizations') || [];
       
       if (organizations.length === 0) {
         return { success: false, error: 'No organizations configured' };
@@ -263,10 +264,10 @@ export function defineSyncResolvers(resolver) {
                     const fullIssue = await getFullIssue(localKey);
                     if (fullIssue) {
                       const [userMappings, fieldMappings, statusMappings, syncOptions] = await Promise.all([
-                        storage.get(`userMappings:${org.id}`) || storage.get('userMappings'),
-                        storage.get(`fieldMappings:${org.id}`) || storage.get('fieldMappings'),
-                        storage.get(`statusMappings:${org.id}`) || storage.get('statusMappings'),
-                        storage.get(`syncOptions:${org.id}`) || storage.get('syncOptions')
+                        kvsStore.get(`userMappings:${org.id}`) || kvsStore.get('userMappings'),
+                        kvsStore.get(`fieldMappings:${org.id}`) || kvsStore.get('fieldMappings'),
+                        kvsStore.get(`statusMappings:${org.id}`) || kvsStore.get('statusMappings'),
+                        kvsStore.get(`syncOptions:${org.id}`) || kvsStore.get('syncOptions')
                       ]);
 
                       const mappings = {
@@ -307,7 +308,7 @@ export function defineSyncResolvers(resolver) {
                     // Issue exists - check for missing attachments, links, comments
                     const fullIssue = await getFullIssue(localKey);
                     if (fullIssue) {
-                      const syncOptions = await storage.get(`syncOptions:${org.id}`) || await storage.get('syncOptions') || {
+                      const syncOptions = await kvsStore.get(`syncOptions:${org.id}`) || await kvsStore.get('syncOptions') || {
                         syncComments: true,
                         syncAttachments: true,
                         syncLinks: true

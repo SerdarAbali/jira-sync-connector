@@ -1,4 +1,4 @@
-import { storage } from '@forge/api';
+import * as kvsStore from '../services/storage/kvs.js';
 import { RECENT_CREATION_WINDOW_MS } from '../constants.js';
 import { getRemoteKey } from '../services/storage/mappings.js';
 import { syncIssue } from '../services/sync/issue-sync.js';
@@ -30,7 +30,7 @@ export async function run(event, context) {
   
   // For updated events, check if this is right after creation (prevents duplicate creation)
   if (event.eventType === 'avi:jira:updated:issue') {
-    const createdAt = await storage.get(`created-timestamp:${event.issue.key}`);
+    const createdAt = await kvsStore.get(`created-timestamp:${event.issue.key}`);
     if (createdAt) {
       const timeSinceCreation = Date.now() - parseInt(createdAt, 10);
       if (timeSinceCreation < RECENT_CREATION_WINDOW_MS) {
@@ -48,7 +48,7 @@ export async function run(event, context) {
   
   // Store creation timestamp for new issues
   if (event.eventType === 'avi:jira:created:issue') {
-    await storage.set(`created-timestamp:${event.issue.key}`, Date.now().toString(), { ttl: 10 });
+    await kvsStore.set(`created-timestamp:${event.issue.key}`, Date.now().toString());
   }
   
   await syncIssue(event);
