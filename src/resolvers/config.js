@@ -1,4 +1,12 @@
 import { storage } from '@forge/api';
+import { 
+  validateOrganizationPayload, 
+  validateOrgId, 
+  validateMappings, 
+  validateObject,
+  validateArray,
+  validateString
+} from '../utils/validation.js';
 
 const MAX_STORAGE_SIZE = 250000; // 250KB limit per key in Forge
 const DEFAULT_SYNC_OPTIONS = {
@@ -22,22 +30,40 @@ async function validateStorageSize(key, data) {
 export function defineConfigResolvers(resolver) {
   // Get all organizations
   resolver.define('getOrganizations', async () => {
-    const orgs = await storage.get('organizations');
-    return orgs || [];
+    const orgs = await storage.get('organizations') || [];
+    // Fetch API tokens from secret storage for each org
+    const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
+      const token = await storage.getSecret(`secret:${org.id}:token`);
+      return {
+        ...org,
+        remoteApiToken: token || org.remoteApiToken || '' // Fallback for migration
+      };
+    }));
+    return orgsWithTokens;
   });
 
   // Add new organization
   resolver.define('addOrganization', async ({ payload }) => {
     try {
+      // Validate input
+      const validated = validateOrganizationPayload(payload);
+      
       const orgs = await storage.get('organizations') || [];
+      const orgId = `org-${Date.now()}`;
+      
+      // Store token separately in secret storage
+      if (validated.remoteApiToken) {
+        await storage.setSecret(`secret:${orgId}:token`, validated.remoteApiToken);
+      }
+      
       const newOrg = {
-        id: `org-${Date.now()}`,
-        name: payload.name,
-        remoteUrl: payload.remoteUrl,
-        remoteEmail: payload.remoteEmail,
-        remoteApiToken: payload.remoteApiToken,
-        remoteProjectKey: payload.remoteProjectKey,
-        allowedProjects: payload.allowedProjects || [],
+        id: orgId,
+        name: validated.name,
+        remoteUrl: validated.remoteUrl,
+        remoteEmail: validated.remoteEmail,
+        // Don't store token in regular storage
+        remoteProjectKey: validated.remoteProjectKey,
+        allowedProjects: validated.allowedProjects || [],
         createdAt: new Date().toISOString()
       };
       orgs.push(newOrg);
@@ -45,7 +71,8 @@ export function defineConfigResolvers(resolver) {
       await validateStorageSize('organizations', orgs);
       await storage.set('organizations', orgs);
       
-      return { success: true, organization: newOrg };
+      // Return org with token for UI
+      return { success: true, organization: { ...newOrg, remoteApiToken: validated.remoteApiToken } };
     } catch (error) {
       console.error('Error adding organization:', error);
       return { success: false, error: error.message };
@@ -55,26 +82,45 @@ export function defineConfigResolvers(resolver) {
   // Update organization
   resolver.define('updateOrganization', async ({ payload }) => {
     try {
+      // Validate org ID
+      if (!payload.id) {
+        return { success: false, error: 'Organization ID is required' };
+      }
+      validateOrgId(payload.id);
+      
+      // Validate input
+      const validated = validateOrganizationPayload(payload);
+      
       const orgs = await storage.get('organizations') || [];
       const index = orgs.findIndex(o => o.id === payload.id);
       if (index === -1) {
         return { success: false, error: 'Organization not found' };
       }
+      
+      // Update token in secret storage if provided
+      if (validated.remoteApiToken) {
+        await storage.setSecret(`secret:${payload.id}:token`, validated.remoteApiToken);
+      }
+      
       orgs[index] = {
         ...orgs[index],
-        name: payload.name,
-        remoteUrl: payload.remoteUrl,
-        remoteEmail: payload.remoteEmail,
-        remoteApiToken: payload.remoteApiToken,
-        remoteProjectKey: payload.remoteProjectKey,
-        allowedProjects: payload.allowedProjects || [],
+        name: validated.name,
+        remoteUrl: validated.remoteUrl,
+        remoteEmail: validated.remoteEmail,
+        // Don't store token in regular storage
+        remoteProjectKey: validated.remoteProjectKey,
+        allowedProjects: validated.allowedProjects || [],
         updatedAt: new Date().toISOString()
       };
+      
+      // Remove token from regular storage if it was there before (migration)
+      delete orgs[index].remoteApiToken;
       
       await validateStorageSize('organizations', orgs);
       await storage.set('organizations', orgs);
       
-      return { success: true, organization: orgs[index] };
+      // Return org with token for UI
+      return { success: true, organization: { ...orgs[index], remoteApiToken: payload.remoteApiToken } };
     } catch (error) {
       console.error('Error updating organization:', error);
       return { success: false, error: error.message };
@@ -84,9 +130,18 @@ export function defineConfigResolvers(resolver) {
   // Delete organization
   resolver.define('deleteOrganization', async ({ payload }) => {
     try {
+      // Validate org ID
+      if (!payload?.id) {
+        return { success: false, error: 'Organization ID is required' };
+      }
+      validateOrgId(payload.id);
+      
       const orgs = await storage.get('organizations') || [];
       const filteredOrgs = orgs.filter(o => o.id !== payload.id);
       await storage.set('organizations', filteredOrgs);
+      
+      // Clean up the API token from secret storage
+      await storage.deleteSecret(`secret:${payload.id}:token`);
       
       // Clean up org-specific mappings
       const orgId = payload.id;
@@ -128,16 +183,22 @@ export function defineConfigResolvers(resolver) {
   resolver.define('saveUserMappings', async ({ payload }) => {
     try {
       const orgId = payload?.orgId;
+      if (orgId) validateOrgId(orgId);
+      
+      // Validate mappings
+      const mappings = validateMappings(payload.mappings || {}, 'mappings');
+      const config = validateObject(payload.config || DEFAULT_USER_MAPPING_CONFIG, 'config');
+      
       const key = orgId ? `userMappings:${orgId}` : 'userMappings';
       const data = {
-        mappings: payload.mappings,
-        config: payload.config,
+        mappings,
+        config,
         updatedAt: new Date().toISOString()
       };
       
       await validateStorageSize(key, data);
       await storage.set(key, data.mappings);
-      await storage.set('userMappingConfig', payload.config);
+      await storage.set('userMappingConfig', config);
       
       return { success: true };
     } catch (error) {
@@ -158,10 +219,15 @@ export function defineConfigResolvers(resolver) {
   resolver.define('saveFieldMappings', async ({ payload }) => {
     try {
       const orgId = payload?.orgId;
+      if (orgId) validateOrgId(orgId);
+      
+      // Validate mappings
+      const mappings = validateMappings(payload.mappings || {}, 'mappings');
+      
       const key = orgId ? `fieldMappings:${orgId}` : 'fieldMappings';
       
-      await validateStorageSize(key, payload.mappings);
-      await storage.set(key, payload.mappings);
+      await validateStorageSize(key, mappings);
+      await storage.set(key, mappings);
       
       return { success: true };
     } catch (error) {
@@ -182,14 +248,48 @@ export function defineConfigResolvers(resolver) {
   resolver.define('saveStatusMappings', async ({ payload }) => {
     try {
       const orgId = payload?.orgId;
+      if (orgId) validateOrgId(orgId);
+      
+      // Validate mappings
+      const mappings = validateMappings(payload.mappings || {}, 'mappings');
+      
       const key = orgId ? `statusMappings:${orgId}` : 'statusMappings';
       
-      await validateStorageSize(key, payload.mappings);
-      await storage.set(key, payload.mappings);
+      await validateStorageSize(key, mappings);
+      await storage.set(key, mappings);
       
       return { success: true };
     } catch (error) {
       console.error('Error saving status mappings:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Get issue type mappings for specific org
+  resolver.define('getIssueTypeMappings', async ({ payload }) => {
+    const orgId = payload?.orgId;
+    const key = orgId ? `issueTypeMappings:${orgId}` : 'issueTypeMappings';
+    const mappings = await storage.get(key);
+    return mappings || {};
+  });
+
+  // Save issue type mappings for specific org
+  resolver.define('saveIssueTypeMappings', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      if (orgId) validateOrgId(orgId);
+      
+      // Validate mappings
+      const mappings = validateMappings(payload.mappings || {}, 'mappings');
+      
+      const key = orgId ? `issueTypeMappings:${orgId}` : 'issueTypeMappings';
+      
+      await validateStorageSize(key, mappings);
+      await storage.set(key, mappings);
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error saving issue type mappings:', error);
       return { success: false, error: error.message };
     }
   });
@@ -205,8 +305,15 @@ export function defineConfigResolvers(resolver) {
   });
 
   resolver.define('saveScheduledSyncConfig', async ({ payload }) => {
-    await storage.set('scheduledSyncConfig', payload.config);
-    return { success: true };
+    try {
+      // Validate config
+      const config = validateObject(payload.config, 'config');
+      await storage.set('scheduledSyncConfig', config);
+      return { success: true };
+    } catch (error) {
+      console.error('Error saving scheduled sync config:', error);
+      return { success: false, error: error.message };
+    }
   });
 
   resolver.define('getSyncOptions', async ({ payload }) => {
@@ -225,8 +332,13 @@ export function defineConfigResolvers(resolver) {
   resolver.define('saveSyncOptions', async ({ payload }) => {
     try {
       const orgId = payload?.orgId;
+      if (orgId) validateOrgId(orgId);
+      
+      // Validate options
+      const options = validateObject(payload.options, 'options');
+      
       const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
-      await storage.set(key, payload.options);
+      await storage.set(key, options);
       return { success: true, message: 'Sync options saved' };
     } catch (error) {
       console.error('Error saving sync options:', error);
@@ -240,6 +352,7 @@ export function defineConfigResolvers(resolver) {
       if (!orgId) {
         return { success: false, error: 'orgId is required' };
       }
+      validateOrgId(orgId);
 
       const orgs = await storage.get('organizations') || [];
       const organization = orgs.find(o => o.id === orgId);

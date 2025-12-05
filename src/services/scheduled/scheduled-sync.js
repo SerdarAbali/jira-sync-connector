@@ -1,7 +1,7 @@
 import api, { route, storage, fetch } from '@forge/api';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 import { sleep } from '../../utils/retry.js';
-import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex } from '../storage/mappings.js';
+import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex, getOrganizationsWithTokens } from '../storage/mappings.js';
 import { removePendingLink, getPendingLinks } from '../storage/flags.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../sync/issue-sync.js';
@@ -405,8 +405,8 @@ export async function performScheduledSync() {
     return;
   }
   
-  // Get organizations (new multi-org system)
-  const organizations = await storage.get('organizations') || [];
+  // Get organizations with their API tokens from secure storage
+  const organizations = await getOrganizationsWithTokens();
   
   // Fallback to legacy syncConfig if no organizations defined
   let configs = [];

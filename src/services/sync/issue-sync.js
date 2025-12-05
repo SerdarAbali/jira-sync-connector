@@ -1,18 +1,194 @@
 import { storage, fetch } from '@forge/api';
+import api, { route } from '@forge/api';
 import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, extractSprintIds, prependCrossReferenceToADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
-import { getRemoteKey, getLocalKey, storeMapping } from '../storage/mappings.js';
-import { markSyncing, clearSyncFlag, isSyncing } from '../storage/flags.js';
+import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens } from '../storage/mappings.js';
+import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
 import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
 import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../jira/local-client.js';
 import { syncAttachments } from './attachment-sync.js';
-import { syncIssueLinks } from './link-sync.js';
+import { syncIssueLinks, createLinkOnRemote } from './link-sync.js';
 import { syncAllComments } from './comment-sync.js';
 import { transitionRemoteIssue } from './transition-sync.js';
 import { SyncResult } from './sync-result.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
+
+// Cache for Epic Link field IDs
+let epicLinkFieldCache = {
+  local: null,
+  remote: {} // keyed by org id
+};
+
+/**
+ * Find the Epic Link custom field ID for the local Jira instance
+ */
+async function getLocalEpicLinkFieldId() {
+  if (epicLinkFieldCache.local) {
+    return epicLinkFieldCache.local;
+  }
+  
+  try {
+    const response = await api.asApp().requestJira(route`/rest/api/3/field`);
+    if (response.ok) {
+      const fields = await response.json();
+      const epicLinkField = fields.find(f => 
+        f.name === 'Epic Link' || 
+        f.key === 'com.pyxis.greenhopper.jira:gh-epic-link' ||
+        (f.schema && f.schema.custom === 'com.pyxis.greenhopper.jira:gh-epic-link')
+      );
+      if (epicLinkField) {
+        epicLinkFieldCache.local = epicLinkField.id;
+        console.log(`🎯 Found local Epic Link field: ${epicLinkField.id}`);
+        return epicLinkField.id;
+      }
+    }
+  } catch (e) {
+    console.log(`⚠️ Could not find local Epic Link field: ${e.message}`);
+  }
+  return null;
+}
+
+/**
+ * Find the Epic Link custom field ID for a remote Jira instance
+ */
+async function getRemoteEpicLinkFieldId(org) {
+  if (epicLinkFieldCache.remote[org.id]) {
+    return epicLinkFieldCache.remote[org.id];
+  }
+  
+  const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
+  
+  try {
+    const response = await fetch(`${org.remoteUrl}/rest/api/3/field`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (response.ok) {
+      const fields = await response.json();
+      const epicLinkField = fields.find(f => 
+        f.name === 'Epic Link' || 
+        f.key === 'com.pyxis.greenhopper.jira:gh-epic-link' ||
+        (f.schema && f.schema.custom === 'com.pyxis.greenhopper.jira:gh-epic-link')
+      );
+      if (epicLinkField) {
+        epicLinkFieldCache.remote[org.id] = epicLinkField.id;
+        console.log(`🎯 Found remote Epic Link field for ${org.name}: ${epicLinkField.id}`);
+        return epicLinkField.id;
+      }
+    }
+  } catch (e) {
+    console.log(`⚠️ Could not find remote Epic Link field for ${org.name}: ${e.message}`);
+  }
+  return null;
+}
+
+/**
+ * Sync Epic Link from local to remote issue
+ * Returns the remote epic key if successful, null otherwise
+ */
+async function syncEpicLink(issue, org, mappings, syncResult, orgId) {
+  const localEpicFieldId = await getLocalEpicLinkFieldId();
+  if (!localEpicFieldId) {
+    return null;
+  }
+  
+  const localEpicKey = issue.fields[localEpicFieldId];
+  if (!localEpicKey) {
+    return null; // No epic link on source issue
+  }
+  
+  console.log(`🎯 Issue has Epic Link: ${localEpicKey}`);
+  
+  // Find the remote epic link field
+  const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
+  if (!remoteEpicFieldId) {
+    console.log(`⚠️ Remote org ${org.name} doesn't have Epic Link field (might be next-gen project)`);
+    return null;
+  }
+  
+  // Check if the epic is synced to remote
+  let remoteEpicKey = await getRemoteKey(localEpicKey, orgId);
+  
+  if (!remoteEpicKey) {
+    // Epic not synced yet - sync it first
+    console.log(`🎯 Epic ${localEpicKey} not synced yet, syncing epic first...`);
+    const epicIssue = await getFullIssue(localEpicKey);
+    if (epicIssue) {
+      remoteEpicKey = await createRemoteIssueForOrg(epicIssue, org, mappings, null, syncResult, orgId);
+      if (remoteEpicKey) {
+        console.log(`🎯 Epic synced: ${localEpicKey} → ${remoteEpicKey}`);
+      }
+    }
+  }
+  
+  if (remoteEpicKey) {
+    return { fieldId: remoteEpicFieldId, epicKey: remoteEpicKey };
+  }
+  
+  console.log(`⚠️ Could not sync Epic Link - epic ${localEpicKey} not available`);
+  return null;
+}
+
+/**
+ * Process pending links that were waiting for this issue to be synced
+ * Called after an issue is successfully created on remote
+ */
+async function processPendingLinksForNewlySyncedIssue(localIssueKey, remoteIssueKey, org, orgId) {
+  try {
+    // Find any pending links that were waiting for this issue
+    const pendingLinks = await findPendingLinksToIssue(localIssueKey);
+    
+    if (pendingLinks.length === 0) {
+      return;
+    }
+    
+    console.log(`🔗 Found ${pendingLinks.length} pending link(s) waiting for ${localIssueKey}`);
+    
+    for (const pending of pendingLinks) {
+      // Only process links for this org
+      if (pending.orgId !== orgId && !(pending.orgId === null && orgId === null)) {
+        continue;
+      }
+      
+      try {
+        // Get the remote key for the source issue (the one that has the pending link)
+        const sourceRemoteKey = await getRemoteKey(pending.sourceIssueKey, orgId);
+        
+        if (!sourceRemoteKey) {
+          console.log(`⚠️ Source issue ${pending.sourceIssueKey} not synced yet, keeping link pending`);
+          continue;
+        }
+        
+        // Create the link on remote
+        const result = await createLinkOnRemote(
+          org,
+          sourceRemoteKey,
+          remoteIssueKey,
+          pending.linkTypeName,
+          pending.direction
+        );
+        
+        if (result.success) {
+          console.log(`${LOG_EMOJI.SUCCESS} Created pending link: ${pending.sourceIssueKey} → ${localIssueKey}`);
+          // Remove from pending
+          await removePendingLink(pending.sourceIssueKey, pending.linkId);
+        } else {
+          console.log(`${LOG_EMOJI.WARNING} Failed to create pending link: ${result.error}`);
+        }
+      } catch (error) {
+        console.error(`${LOG_EMOJI.ERROR} Error processing pending link:`, error);
+      }
+    }
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error processing pending links for ${localIssueKey}:`, error);
+  }
+}
 
 export async function syncIssue(event) {
   const issueKey = event.issue.key;
@@ -27,8 +203,8 @@ export async function syncIssue(event) {
     return;
   }
 
-  // Get all organizations
-  const organizations = await storage.get('organizations') || [];
+  // Get all organizations with their API tokens from secure storage
+  let organizations = await getOrganizationsWithTokens();
   
   // Legacy support: check for old single-org config
   const legacyConfig = await storage.get('syncConfig');
@@ -75,17 +251,19 @@ export async function syncIssue(event) {
     }
 
     // Fetch org-specific mappings
-    const [userMappings, fieldMappings, statusMappings, syncOptions] = await Promise.all([
+    const [userMappings, fieldMappings, statusMappings, issueTypeMappings, syncOptions] = await Promise.all([
       storage.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
       storage.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
       storage.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`),
+      storage.get(org.id === 'legacy' ? 'issueTypeMappings' : `issueTypeMappings:${org.id}`),
       storage.get(org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`)
     ]);
 
     const mappings = {
       userMappings: userMappings || {},
       fieldMappings: fieldMappings || {},
-      statusMappings: statusMappings || {}
+      statusMappings: statusMappings || {},
+      issueTypeMappings: issueTypeMappings || {}
     };
 
     const existingRemoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);
@@ -194,13 +372,28 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   } else {
     initialDescription = textToADF('');
   }
+
+  // Map issue type if mapping exists
+  const localIssueTypeName = issue.fields.issuetype.name;
+  let remoteIssueTypeName = localIssueTypeName;
+  
+  // Check if there's a mapping for this issue type (mappings are keyed by local ID, value contains remote info)
+  if (mappings.issueTypeMappings) {
+    for (const [remoteId, mapping] of Object.entries(mappings.issueTypeMappings)) {
+      if (mapping.localName === localIssueTypeName || mapping.localId === issue.fields.issuetype.id) {
+        remoteIssueTypeName = mapping.remoteName;
+        console.log(`🔄 Mapped issue type: ${localIssueTypeName} → ${remoteIssueTypeName}`);
+        break;
+      }
+    }
+  }
   
   const remoteIssue = {
     fields: {
       project: { key: org.remoteProjectKey },
       summary: issue.fields.summary,
       description: initialDescription,
-      issuetype: { name: issue.fields.issuetype.name }
+      issuetype: { name: remoteIssueTypeName }
     }
   };
   
@@ -265,6 +458,13 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
     } else {
       console.log(`⚠️ Could not sync parent ${issue.fields.parent.key}, creating child without parent link`);
     }
+  }
+
+  // Sync Epic Link for classic projects (next-gen uses parent field above)
+  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId);
+  if (epicLinkResult) {
+    remoteIssue.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
+    console.log(`🎯 Mapped Epic Link: → ${epicLinkResult.epicKey}`);
   }
 
   if (issue.fields.assignee && issue.fields.assignee.accountId) {
@@ -334,6 +534,9 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
 
       await storeMapping(issue.key, result.key, orgId);
+
+      // Process any pending links that were waiting for this issue to be synced
+      await processPendingLinksForNewlySyncedIssue(issue.key, result.key, org, orgId);
 
       if (issue.fields.status && issue.fields.status.name !== 'To Do') {
         await transitionRemoteIssue(result.key, issue.fields.status.name, org, mappings.statusMappings, syncResult);
@@ -574,10 +777,25 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
     console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
   }
   
+  // Map issue type if mapping exists
+  const localIssueTypeName = issue.fields.issuetype.name;
+  let remoteIssueTypeName = localIssueTypeName;
+  
+  if (mappings.issueTypeMappings) {
+    for (const [remoteId, mapping] of Object.entries(mappings.issueTypeMappings)) {
+      if (mapping.localName === localIssueTypeName || mapping.localId === issue.fields.issuetype.id) {
+        remoteIssueTypeName = mapping.remoteName;
+        console.log(`🔄 Mapped issue type: ${localIssueTypeName} → ${remoteIssueTypeName}`);
+        break;
+      }
+    }
+  }
+
   const updateData = {
     fields: {
       summary: issue.fields.summary,
-      description: finalDescription
+      description: finalDescription,
+      issuetype: { name: remoteIssueTypeName }
     }
   };
   
@@ -638,6 +856,23 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
   } else if (issue.fields.parent === null) {
     updateData.fields.parent = null;
     console.log(`🔗 Removing parent link`);
+  }
+
+  // Sync Epic Link for classic projects (next-gen uses parent field above)
+  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId);
+  if (epicLinkResult) {
+    updateData.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
+    console.log(`🎯 Updated Epic Link: → ${epicLinkResult.epicKey}`);
+  } else {
+    // Check if epic link was removed - need to clear it
+    const localEpicFieldId = await getLocalEpicLinkFieldId();
+    if (localEpicFieldId && issue.fields[localEpicFieldId] === null) {
+      const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
+      if (remoteEpicFieldId) {
+        updateData.fields[remoteEpicFieldId] = null;
+        console.log(`🎯 Clearing Epic Link`);
+      }
+    }
   }
 
   if (issue.fields.assignee && issue.fields.assignee.accountId) {

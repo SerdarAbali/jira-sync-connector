@@ -1,8 +1,8 @@
 import { storage } from '@forge/api';
-import { SYNC_FLAG_TTL_SECONDS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
+import { SYNC_FLAG_TTL_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 
 export async function markSyncing(issueKey) {
-  await storage.set(`syncing:${issueKey}`, 'true', { ttl: SYNC_FLAG_TTL_SECONDS });
+  await storage.set(`syncing:${issueKey}`, 'true', { ttl: SYNC_FLAG_TTL_MS });
 }
 
 export async function clearSyncFlag(issueKey) {
@@ -47,6 +47,29 @@ export async function storePendingLink(issueKey, linkData) {
 
 export async function getPendingLinks(issueKey) {
   return await storage.get(`pending-links:${issueKey}`) || [];
+}
+
+/**
+ * Find all pending links that reference a specific target issue
+ * Used when an issue gets synced to process any links waiting for it
+ */
+export async function findPendingLinksToIssue(targetIssueKey) {
+  const pendingLinksIndex = await storage.get('pending-links-index') || [];
+  const results = [];
+  
+  for (const sourceIssueKey of pendingLinksIndex) {
+    const pendingLinks = await storage.get(`pending-links:${sourceIssueKey}`) || [];
+    for (const link of pendingLinks) {
+      if (link.linkedIssueKey === targetIssueKey) {
+        results.push({
+          sourceIssueKey,
+          ...link
+        });
+      }
+    }
+  }
+  
+  return results;
 }
 
 export async function removePendingLink(issueKey, linkId) {

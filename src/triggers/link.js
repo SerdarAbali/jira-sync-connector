@@ -5,31 +5,54 @@ export async function run(event, context) {
   console.log(`🔗 Link creation trigger fired`);
   console.log(`🔗 Link event:`, JSON.stringify(event, null, 2));
   
-  // The link event contains information about both issues in the link
-  // We need to trigger a sync for the source issue to pick up the new link
   try {
-    // Try to get the issue key from the event
-    let issueKey = null;
+    // Get both source and target issue keys from the link
+    let sourceIssueKey = null;
+    let targetIssueKey = null;
     
-    if (event.issueLink && event.issueLink.sourceIssueId) {
-      // Fetch the source issue to get its key
-      const response = await api.asApp().requestJira(
-        route`/rest/api/3/issue/${event.issueLink.sourceIssueId}`
-      );
-      const issue = await response.json();
-      issueKey = issue.key;
+    if (event.issueLink) {
+      // Get source issue
+      if (event.issueLink.sourceIssueId) {
+        const response = await api.asApp().requestJira(
+          route`/rest/api/3/issue/${event.issueLink.sourceIssueId}`
+        );
+        const issue = await response.json();
+        sourceIssueKey = issue.key;
+      }
+      
+      // Get target/destination issue
+      if (event.issueLink.destinationIssueId) {
+        const response = await api.asApp().requestJira(
+          route`/rest/api/3/issue/${event.issueLink.destinationIssueId}`
+        );
+        const issue = await response.json();
+        targetIssueKey = issue.key;
+      }
     }
     
-    if (issueKey) {
-      console.log(`🔗 Triggering sync for issue: ${issueKey}`);
-      // Create a synthetic event to trigger sync
-      const syntheticEvent = {
+    // Sync target issue first (e.g., the Epic) if it exists
+    // This ensures the target is synced before we try to create the link
+    if (targetIssueKey) {
+      console.log(`🔗 Syncing target issue first: ${targetIssueKey}`);
+      const targetEvent = {
         eventType: 'avi:jira:updated:issue',
-        issue: { key: issueKey }
+        issue: { key: targetIssueKey }
       };
-      await syncIssue(syntheticEvent);
-    } else {
-      console.log(`⚠️ Could not determine issue key from link event`);
+      await syncIssue(targetEvent);
+    }
+    
+    // Now sync source issue (which will pick up the link)
+    if (sourceIssueKey) {
+      console.log(`🔗 Syncing source issue: ${sourceIssueKey}`);
+      const sourceEvent = {
+        eventType: 'avi:jira:updated:issue',
+        issue: { key: sourceIssueKey }
+      };
+      await syncIssue(sourceEvent);
+    }
+    
+    if (!sourceIssueKey && !targetIssueKey) {
+      console.log(`⚠️ Could not determine issue keys from link event`);
     }
   } catch (error) {
     console.error(`❌ Error processing link creation:`, error);

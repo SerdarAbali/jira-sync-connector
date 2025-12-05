@@ -1,5 +1,5 @@
 import api, { route, storage, fetch } from '@forge/api';
-import { getRemoteKey, addToMappingIndex, removeMapping, getAllMappings } from '../services/storage/mappings.js';
+import { getRemoteKey, addToMappingIndex, removeMapping, getAllMappings, getOrganizationsWithTokens } from '../services/storage/mappings.js';
 import { getFullIssue } from '../services/jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue, syncIssue } from '../services/sync/issue-sync.js';
 import { syncAttachments } from '../services/sync/attachment-sync.js';
@@ -67,8 +67,8 @@ export function defineSyncResolvers(resolver) {
     try {
       console.log('🔄 Manual retry of pending links requested');
       
-      // Get all organizations
-      const organizations = await storage.get('organizations') || [];
+      // Get all organizations with their API tokens from secure storage
+      let organizations = await getOrganizationsWithTokens();
       
       // Legacy support
       const legacyConfig = await storage.get('syncConfig');

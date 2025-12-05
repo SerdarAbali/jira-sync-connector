@@ -2,7 +2,7 @@ import api, { route, storage, fetch } from '@forge/api';
 import { LOG_EMOJI } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
 import { extractTextFromADF, textToADFWithAuthor } from '../../utils/adf.js';
-import { getRemoteKey, getLocalKey } from '../storage/mappings.js';
+import { getRemoteKey, getLocalKey, getOrganizationsWithTokens } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
 import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
@@ -154,8 +154,8 @@ export async function syncComment(event) {
   const issueKey = event.issue.key;
   const commentId = event.comment?.id;
 
-  // Get all organizations
-  const organizations = await storage.get('organizations') || [];
+  // Get all organizations with their API tokens from secure storage
+  let organizations = await getOrganizationsWithTokens();
   
   // Legacy support: check for old single-org config
   const legacyConfig = await storage.get('syncConfig');

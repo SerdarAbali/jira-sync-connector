@@ -13,7 +13,7 @@ export const BATCH_SIZE = 10; // Number of issues to process per batch in schedu
 export const BATCH_DELAY_MS = 5000; // Delay between batches (5 seconds) to avoid rate limits
 
 // Sync Detection & Loop Prevention
-export const SYNC_FLAG_TTL_SECONDS = 5; // TTL for "syncing" flag in storage
+export const SYNC_FLAG_TTL_MS = 120000; // TTL for "syncing" flag in storage (2 minutes for large issues with attachments)
 export const RECENT_CREATION_WINDOW_MS = 3000; // 3 seconds window to detect newly created issues
 
 // Storage Management

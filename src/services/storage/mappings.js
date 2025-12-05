@@ -1,5 +1,18 @@
 import { storage } from '@forge/api';
 
+// Helper to get organizations with their API tokens from secret storage
+export async function getOrganizationsWithTokens() {
+  const orgs = await storage.get('organizations') || [];
+  const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
+    const token = await storage.getSecret(`secret:${org.id}:token`);
+    return {
+      ...org,
+      remoteApiToken: token || org.remoteApiToken || '' // Fallback for migration
+    };
+  }));
+  return orgsWithTokens;
+}
+
 // Multi-org support: namespace mappings by orgId
 export async function getRemoteKey(localKey, orgId = null) {
   const key = orgId ? `${orgId}:local-to-remote:${localKey}` : `local-to-remote:${localKey}`;

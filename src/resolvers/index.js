@@ -53,7 +53,7 @@ defineDataResolvers(resolver);
 defineStatsResolvers(resolver);
 defineAuditResolvers(resolver);
 
-// Wrap sensitive operations with permission checks
+// List of protected resolvers that require admin permission
 const protectedResolvers = [
   'addOrganization',
   'updateOrganization',
@@ -64,9 +64,32 @@ const protectedResolvers = [
   'saveSyncOptions',
   'saveScheduledSyncConfig',
   'forceSyncIssue',
-  'retryPendingLinks'
+  'retryPendingLinks',
+  'importSettings',
+  'importIssues'
 ];
 
-// Export the handler directly - no wrapping needed for now
-// The resolver definitions are already registered
-export const handler = resolver.getDefinitions();
+// Get the raw definitions and wrap protected ones with admin checks
+const definitions = resolver.getDefinitions();
+
+// Override protected resolvers with permission-checked versions
+for (const resolverName of protectedResolvers) {
+  if (definitions[resolverName]) {
+    const originalFn = definitions[resolverName];
+    definitions[resolverName] = async (req) => {
+      try {
+        await requireAdminPermission(req.context);
+        return await originalFn(req);
+      } catch (error) {
+        logger.error('Permission denied', { 
+          resolver: resolverName,
+          error: error.message,
+          accountId: req.context?.accountId 
+        });
+        return { success: false, error: 'Unauthorized: Admin permissions required' };
+      }
+    };
+  }
+}
+
+export const handler = definitions;

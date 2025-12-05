@@ -3,6 +3,48 @@ import { LOG_EMOJI } from '../../constants.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 
+/**
+ * Create a link between two issues on the remote Jira instance
+ */
+export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKey, linkTypeName, direction) {
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  
+  const linkPayload = {
+    type: { name: linkTypeName }
+  };
+
+  if (direction === 'outward') {
+    linkPayload.inwardIssue = { key: sourceRemoteKey };
+    linkPayload.outwardIssue = { key: targetRemoteKey };
+    console.log(`${LOG_EMOJI.LINK} Creating link: ${sourceRemoteKey} → ${targetRemoteKey} (${linkTypeName})`);
+  } else {
+    linkPayload.inwardIssue = { key: targetRemoteKey };
+    linkPayload.outwardIssue = { key: sourceRemoteKey };
+    console.log(`${LOG_EMOJI.LINK} Creating link: ${targetRemoteKey} → ${sourceRemoteKey} (${linkTypeName})`);
+  }
+
+  const response = await fetch(
+    `${config.remoteUrl}/rest/api/3/issueLink`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(linkPayload)
+    }
+  );
+
+  if (response.ok || response.status === 201) {
+    console.log(`${LOG_EMOJI.SUCCESS} Created issue link (${linkTypeName})`);
+    return { success: true };
+  } else {
+    const errorText = await response.text();
+    console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
+    return { success: false, error: errorText };
+  }
+}
+
 export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null, forceCheck = false) {
   const result = { synced: 0, skipped: 0, failed: 0, pending: 0 };
   

@@ -85,12 +85,15 @@ const App = () => {
   const [localFields, setLocalFields] = useState([]);
   const [remoteStatuses, setRemoteStatuses] = useState([]);
   const [localStatuses, setLocalStatuses] = useState([]);
+  const [remoteIssueTypes, setRemoteIssueTypes] = useState([]);
+  const [localIssueTypes, setLocalIssueTypes] = useState([]);
   const [localProjects, setLocalProjects] = useState([]);
 
   // Mappings
   const [userMappings, setUserMappings] = useState({});
   const [fieldMappings, setFieldMappings] = useState({});
   const [statusMappings, setStatusMappings] = useState({});
+  const [issueTypeMappings, setIssueTypeMappings] = useState({});
 
   // Sync options
   const [syncOptions, setSyncOptions] = useState({
@@ -117,7 +120,8 @@ const App = () => {
     projects: false,
     users: false,
     fields: false,
-    statuses: false
+    statuses: false,
+    issueTypes: false
   });
 
   useEffect(() => {
@@ -147,16 +151,18 @@ const App = () => {
   const loadOrgData = async (orgId) => {
     try {
       // Load mappings
-      const [userMappingData, fieldMappingData, statusMappingData, syncOptionsData] = await Promise.all([
+      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, syncOptionsData] = await Promise.all([
         invoke('getUserMappings', { orgId }),
         invoke('getFieldMappings', { orgId }),
         invoke('getStatusMappings', { orgId }),
+        invoke('getIssueTypeMappings', { orgId }),
         invoke('getSyncOptions', { orgId })
       ]);
 
       if (userMappingData?.mappings) setUserMappings(userMappingData.mappings);
       if (fieldMappingData) setFieldMappings(fieldMappingData);
       if (statusMappingData) setStatusMappings(statusMappingData);
+      if (issueTypeMappingData) setIssueTypeMappings(issueTypeMappingData);
       if (syncOptionsData) setSyncOptions(syncOptionsData);
     } catch (error) {
       console.error('Error loading org data:', error);
@@ -184,7 +190,7 @@ const App = () => {
       return;
     }
 
-    setDataLoading(prev => ({ ...prev, users: true, fields: true, statuses: true }));
+    setDataLoading(prev => ({ ...prev, users: true, fields: true, statuses: true, issueTypes: true }));
 
     try {
       const [remoteData, localData] = await Promise.all([
@@ -195,16 +201,18 @@ const App = () => {
       if (remoteData.users) setRemoteUsers(remoteData.users);
       if (remoteData.fields) setRemoteFields(remoteData.fields);
       if (remoteData.statuses) setRemoteStatuses(remoteData.statuses);
+      if (remoteData.issueTypes) setRemoteIssueTypes(remoteData.issueTypes);
 
       if (localData.users) setLocalUsers(localData.users);
       if (localData.fields) setLocalFields(localData.fields);
       if (localData.statuses) setLocalStatuses(localData.statuses);
+      if (localData.issueTypes) setLocalIssueTypes(localData.issueTypes);
 
       showMessage('Mapping data loaded successfully', 'success');
     } catch (error) {
       showMessage('Error loading mapping data: ' + error.message, 'error');
     } finally {
-      setDataLoading(prev => ({ ...prev, users: false, fields: false, statuses: false }));
+      setDataLoading(prev => ({ ...prev, users: false, fields: false, statuses: false, issueTypes: false }));
     }
   };
 
@@ -431,6 +439,7 @@ const App = () => {
         case 'user': return { remote: remoteUsers, local: localUsers, setter: setUserMappings };
         case 'field': return { remote: remoteFields, local: localFields, setter: setFieldMappings };
         case 'status': return { remote: remoteStatuses, local: localStatuses, setter: setStatusMappings };
+        case 'issueType': return { remote: remoteIssueTypes, local: localIssueTypes, setter: setIssueTypeMappings };
       }
     };
 
@@ -449,7 +458,13 @@ const App = () => {
   };
 
   const deleteMapping = (type, remoteId) => {
-    const setter = type === 'user' ? setUserMappings : type === 'field' ? setFieldMappings : setStatusMappings;
+    const setterMap = {
+      'user': setUserMappings,
+      'field': setFieldMappings,
+      'status': setStatusMappings,
+      'issueType': setIssueTypeMappings
+    };
+    const setter = setterMap[type];
     setter(prev => {
       const updated = { ...prev };
       delete updated[remoteId];
@@ -462,8 +477,20 @@ const App = () => {
 
     setSaving(true);
     try {
-      const mappings = type === 'user' ? userMappings : type === 'field' ? fieldMappings : statusMappings;
-      const method = type === 'user' ? 'saveUserMappings' : type === 'field' ? 'saveFieldMappings' : 'saveStatusMappings';
+      const mappingsMap = {
+        'user': userMappings,
+        'field': fieldMappings,
+        'status': statusMappings,
+        'issueType': issueTypeMappings
+      };
+      const methodMap = {
+        'user': 'saveUserMappings',
+        'field': 'saveFieldMappings',
+        'status': 'saveStatusMappings',
+        'issueType': 'saveIssueTypeMappings'
+      };
+      const mappings = mappingsMap[type];
+      const method = methodMap[type];
 
       const payload = type === 'user'
         ? { orgId: selectedOrgId, mappings, config: { autoMapUsers: false, fallbackUser: 'unassigned' } }
@@ -949,9 +976,12 @@ const App = () => {
                     localFields={localFields}
                     remoteStatuses={remoteStatuses}
                     localStatuses={localStatuses}
+                    remoteIssueTypes={remoteIssueTypes}
+                    localIssueTypes={localIssueTypes}
                     userMappings={userMappings}
                     fieldMappings={fieldMappings}
                     statusMappings={statusMappings}
+                    issueTypeMappings={issueTypeMappings}
                     addMapping={addMapping}
                     deleteMapping={deleteMapping}
                     handleSaveMappings={handleSaveMappings}
@@ -1203,7 +1233,8 @@ const ConfigurationPanel = ({
 // Mappings Panel Component
 const MappingsPanel = ({
   selectedOrg, remoteUsers, localUsers, remoteFields, localFields,
-  remoteStatuses, localStatuses, userMappings, fieldMappings, statusMappings,
+  remoteStatuses, localStatuses, remoteIssueTypes, localIssueTypes,
+  userMappings, fieldMappings, statusMappings, issueTypeMappings,
   addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving
 }) => {
   const [newUserRemote, setNewUserRemote] = useState('');
@@ -1212,9 +1243,11 @@ const MappingsPanel = ({
   const [newFieldLocal, setNewFieldLocal] = useState('');
   const [newStatusRemote, setNewStatusRemote] = useState('');
   const [newStatusLocal, setNewStatusLocal] = useState('');
+  const [newIssueTypeRemote, setNewIssueTypeRemote] = useState('');
+  const [newIssueTypeLocal, setNewIssueTypeLocal] = useState('');
 
   const hasData = remoteUsers.length > 0 || localUsers.length > 0;
-  const isLoading = dataLoading.users || dataLoading.fields || dataLoading.statuses;
+  const isLoading = dataLoading.users || dataLoading.fields || dataLoading.statuses || dataLoading.issueTypes;
 
   const MappingSection = ({ title, type, remotePlaceholder, localPlaceholder, remoteItems, localItems, mappings, newRemote, setNewRemote, newLocal, setNewLocal }) => {
     const itemKey = type === 'user' ? 'accountId' : 'id';
@@ -1360,6 +1393,20 @@ const MappingsPanel = ({
             setNewRemote={setNewStatusRemote}
             newLocal={newStatusLocal}
             setNewLocal={setNewStatusLocal}
+          />
+
+          <MappingSection
+            title="Issue Type Mappings"
+            type="issueType"
+            remotePlaceholder="Select remote issue type"
+            localPlaceholder="Select local issue type"
+            remoteItems={remoteIssueTypes || []}
+            localItems={localIssueTypes || []}
+            mappings={issueTypeMappings || {}}
+            newRemote={newIssueTypeRemote}
+            setNewRemote={setNewIssueTypeRemote}
+            newLocal={newIssueTypeLocal}
+            setNewLocal={setNewIssueTypeLocal}
           />
         </div>
       )}

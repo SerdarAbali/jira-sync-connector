@@ -84,7 +84,15 @@ export function defineDataResolvers(resolver) {
       const statusData = await statusesResponse.json();
 
       const statusMap = new Map();
+      const issueTypeMap = new Map();
       statusData.forEach(issueType => {
+        // Collect issue types
+        if (!issueTypeMap.has(issueType.id)) {
+          issueTypeMap.set(issueType.id, {
+            id: issueType.id,
+            name: issueType.name
+          });
+        }
         issueType.statuses.forEach(status => {
           if (!statusMap.has(status.id)) {
             statusMap.set(status.id, {
@@ -95,6 +103,7 @@ export function defineDataResolvers(resolver) {
         });
       });
       const statuses = Array.from(statusMap.values());
+      const issueTypes = Array.from(issueTypeMap.values());
 
       return {
         users: users.map(u => ({
@@ -106,7 +115,8 @@ export function defineDataResolvers(resolver) {
           id: f.id,
           name: f.name
         })),
-        statuses: statuses
+        statuses: statuses,
+        issueTypes: issueTypes
       };
     } catch (error) {
       console.error('Error fetching local data:', error);
@@ -180,7 +190,15 @@ export function defineDataResolvers(resolver) {
       const statusData = await statusesResponse.json();
 
       const statusMap = new Map();
+      const issueTypeMap = new Map();
       statusData.forEach(issueType => {
+        // Collect issue types
+        if (!issueTypeMap.has(issueType.id)) {
+          issueTypeMap.set(issueType.id, {
+            id: issueType.id,
+            name: issueType.name
+          });
+        }
         issueType.statuses.forEach(status => {
           if (!statusMap.has(status.id)) {
             statusMap.set(status.id, {
@@ -191,6 +209,7 @@ export function defineDataResolvers(resolver) {
         });
       });
       const statuses = Array.from(statusMap.values());
+      const issueTypes = Array.from(issueTypeMap.values());
 
       return {
         users: users.map(u => ({
@@ -202,7 +221,8 @@ export function defineDataResolvers(resolver) {
           id: f.id,
           name: f.name
         })),
-        statuses: statuses
+        statuses: statuses,
+        issueTypes: issueTypes
       };
     } catch (error) {
       console.error('Error fetching remote data:', error);
