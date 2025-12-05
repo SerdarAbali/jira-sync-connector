@@ -124,14 +124,19 @@ export function validateMappings(mappings, fieldName) {
 }
 
 export async function isProjectAllowedToSync(projectKey, config) {
-  // If no filter is configured, allow all projects (backward compatibility)
-  if (!config.allowedProjects || !Array.isArray(config.allowedProjects) || config.allowedProjects.length === 0) {
-    console.log(`✅ No project filter configured - allowing ${projectKey}`);
-    return true;
+  const allowedProjects = Array.isArray(config.allowedProjects)
+    ? config.allowedProjects.filter(Boolean)
+    : [];
+
+  // Require at least one project selection before allowing syncs
+  if (allowedProjects.length === 0) {
+    const orgName = config.name || 'organization';
+    console.log(`⛔ No project filters selected for ${orgName} - skipping sync for ${projectKey}`);
+    return false;
   }
 
   // Check if project is in allowed list
-  const isAllowed = config.allowedProjects.includes(projectKey);
+  const isAllowed = allowedProjects.includes(projectKey);
 
   if (isAllowed) {
     console.log(`✅ Project ${projectKey} is in allowed list`);

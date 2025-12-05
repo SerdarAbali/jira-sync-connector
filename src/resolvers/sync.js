@@ -5,6 +5,7 @@ import { getRemoteKey, getOrganizationsWithTokens, storeMapping } from '../servi
 import { getFullIssue } from '../services/jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../services/sync/issue-sync.js';
 import { retryAllPendingLinks } from '../services/scheduled/scheduled-sync.js';
+import { isProjectAllowedToSync } from '../utils/validation.js';
 
 export function defineSyncResolvers(resolver) {
   resolver.define('forceSyncIssue', async ({ payload }) => {
@@ -49,8 +50,27 @@ export function defineSyncResolvers(resolver) {
       }
       
       const results = [];
+      const issueProjectKey = issue.fields.project.key;
       
       for (const org of orgsToSync) {
+        const allowedProjects = Array.isArray(org.allowedProjects)
+          ? org.allowedProjects.filter(Boolean)
+          : [];
+
+        if (allowedProjects.length === 0) {
+          const message = 'No project filters selected for this organization';
+          console.log(`⛔ ${org.name}: ${message}`);
+          results.push({ org: org.name, success: false, error: message });
+          continue;
+        }
+
+        const projectAllowed = await isProjectAllowedToSync(issueProjectKey, org);
+        if (!projectAllowed) {
+          const message = `Project ${issueProjectKey} not selected for sync`;
+          console.log(`⏭️ ${org.name}: ${message}`);
+          results.push({ org: org.name, success: false, error: message });
+          continue;
+        }
         // Fetch org-specific mappings
         const [userMappings, fieldMappings, statusMappings, issueTypeMappings, syncOptions] = await Promise.all([
           kvsStore.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),

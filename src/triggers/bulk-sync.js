@@ -82,7 +82,14 @@ export async function run(event, context) {
       };
       
       // Get LOCAL projects
-      const allowedProjects = orgWithToken.allowedProjects || [];
+      const allowedProjects = Array.isArray(orgWithToken.allowedProjects)
+        ? orgWithToken.allowedProjects.filter(Boolean)
+        : [];
+
+      if (allowedProjects.length === 0) {
+        console.log(`⛔ Skipping ${org.name} - no project filters selected`);
+        continue;
+      }
       
       const projectsResponse = await api.asApp().requestJira(
         route`/rest/api/3/project/search?maxResults=100`,
@@ -97,9 +104,7 @@ export async function run(event, context) {
       const projectsData = await projectsResponse.json();
       const localProjects = projectsData.values || [];
       
-      const projectsToScan = allowedProjects.length > 0
-        ? localProjects.filter(p => allowedProjects.includes(p.key))
-        : localProjects;
+      const projectsToScan = localProjects.filter(p => allowedProjects.includes(p.key));
 
       console.log(`📋 Found ${projectsToScan.length} local projects to scan`);
       
