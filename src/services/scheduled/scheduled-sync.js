@@ -179,10 +179,16 @@ async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgNam
   const localProjects = projectsData.values || [];
   
   // Filter to allowed projects
-  const allowedProjects = config.allowedProjects || [];
-  const projectsToScan = allowedProjects.length > 0
-    ? localProjects.filter(p => allowedProjects.includes(p.key))
-    : localProjects;
+  const allowedProjects = Array.isArray(config.allowedProjects)
+    ? config.allowedProjects.filter(Boolean)
+    : [];
+
+  if (allowedProjects.length === 0) {
+    console.log(`${LOG_EMOJI.WARNING} Skipping never-synced check for ${orgName} - no project filters selected`);
+    return;
+  }
+
+  const projectsToScan = localProjects.filter(p => allowedProjects.includes(p.key));
 
   let neverSyncedCount = 0;
   let createdCount = 0;
@@ -608,6 +614,21 @@ export async function performScheduledSync() {
     const orgName = org.name || 'Legacy';
     console.log(`\n🏢 Processing organization: ${orgName}`);
     
+    const allowedProjects = Array.isArray(org.allowedProjects)
+      ? org.allowedProjects.filter(Boolean)
+      : [];
+
+    if (allowedProjects.length === 0) {
+      console.log(`⛔ Skipping ${orgName} - no project filters selected`);
+      stats.issuesSkipped++;
+      recordEvent(stats, {
+        type: 'skip',
+        orgName,
+        message: 'No project filters selected'
+      });
+      continue;
+    }
+
     try {
       // Build config object compatible with sync functions
       const config = {
@@ -615,7 +636,7 @@ export async function performScheduledSync() {
         remoteEmail: org.remoteEmail,
         remoteApiToken: org.remoteApiToken,
         remoteProjectKey: org.remoteProjectKey,
-        allowedProjects: org.allowedProjects || [],
+        allowedProjects,
         jqlFilter: org.jqlFilter || ''
       };
 
