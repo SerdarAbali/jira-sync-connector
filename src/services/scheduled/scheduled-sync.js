@@ -157,6 +157,175 @@ async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgI
   console.log(`${LOG_EMOJI.INFO} Mapping verification complete: ${checkedCount} checked, ${deletedCount} deleted issues found`);
 }
 
+/**
+ * Sync ALL missing issues from local to remote
+ * This finds issues that were never synced and creates them on remote
+ */
+async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgName, stats) {
+  console.log(`${LOG_EMOJI.INFO} Checking for issues that were NEVER synced to ${orgName}...`);
+  
+  // Get all local projects
+  const projectsResponse = await api.asApp().requestJira(
+    route`/rest/api/3/project/search?maxResults=100`,
+    { method: 'GET' }
+  );
+
+  if (!projectsResponse.ok) {
+    console.error(`${LOG_EMOJI.ERROR} Failed to fetch local projects`);
+    return;
+  }
+
+  const projectsData = await projectsResponse.json();
+  const localProjects = projectsData.values || [];
+  
+  // Filter to allowed projects
+  const allowedProjects = config.allowedProjects || [];
+  const projectsToScan = allowedProjects.length > 0
+    ? localProjects.filter(p => allowedProjects.includes(p.key))
+    : localProjects;
+
+  let neverSyncedCount = 0;
+  let createdCount = 0;
+
+  for (const project of projectsToScan) {
+    const projectKey = project.key;
+    
+    // Build JQL with optional filter
+    let jql = `project = ${projectKey} ORDER BY key ASC`;
+    if (config.jqlFilter && config.jqlFilter.trim()) {
+      jql = `project = ${projectKey} AND (${config.jqlFilter}) ORDER BY key ASC`;
+    }
+    
+    let hasMore = true;
+    let nextPageToken = null;
+
+    while (hasMore) {
+      const requestBody = {
+        jql,
+        maxResults: 50,
+        fields: ['key']
+      };
+      
+      if (nextPageToken) {
+        requestBody.nextPageToken = nextPageToken;
+      }
+
+      const response = await api.asApp().requestJira(
+        route`/rest/api/3/search/jql`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        }
+      );
+
+      if (!response.ok) {
+        break;
+      }
+
+      const data = await response.json();
+      const issues = data.issues || [];
+      
+      for (const issue of issues) {
+        const localKey = issue.key;
+        
+        // Check if mapping exists
+        let remoteKey = await getRemoteKey(localKey, orgId);
+        if (!remoteKey && orgId) {
+          remoteKey = await getRemoteKey(localKey, null); // Try legacy
+        }
+
+        if (!remoteKey) {
+          // Never synced - but first check if issue already exists on remote to avoid duplicates
+          neverSyncedCount++;
+          
+          try {
+            const fullIssue = await getFullIssue(localKey);
+            if (fullIssue) {
+              // Search for existing issue on remote with same summary
+              const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+              const searchJql = `project = ${config.remoteProjectKey} AND summary ~ "${fullIssue.fields.summary.replace(/"/g, '\\"').substring(0, 50)}"`;
+              
+              const searchResponse = await fetch(
+                `${config.remoteUrl}/rest/api/3/search?jql=${encodeURIComponent(searchJql)}&maxResults=5&fields=key,summary`,
+                {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': `Basic ${auth}`,
+                    'Content-Type': 'application/json'
+                  }
+                }
+              );
+              
+              let existingRemoteIssue = null;
+              if (searchResponse.ok) {
+                const searchData = await searchResponse.json();
+                for (const remoteIssue of (searchData.issues || [])) {
+                  if (remoteIssue.fields.summary === fullIssue.fields.summary) {
+                    existingRemoteIssue = remoteIssue;
+                    break;
+                  }
+                }
+              }
+              
+              if (existingRemoteIssue) {
+                // Issue already exists - just store the mapping
+                console.log(`${LOG_EMOJI.WARNING} ${localKey} already exists on remote as ${existingRemoteIssue.key} - storing mapping only`);
+                const { storeMapping } = await import('../storage/mappings.js');
+                await storeMapping(localKey, existingRemoteIssue.key, orgId);
+                recordEvent(stats, {
+                  type: 'mapped',
+                  issueKey: localKey,
+                  remoteKey: existingRemoteIssue.key,
+                  orgName,
+                  reason: 'found-existing'
+                });
+              } else {
+                // Actually create the issue
+                console.log(`${LOG_EMOJI.WARNING} ${localKey} was NEVER synced - creating on ${orgName}`);
+                const createResult = await createRemoteIssue(fullIssue, config, mappings, null, syncOptions);
+                const newRemoteKey = createResult?.key || createResult;
+                
+                if (newRemoteKey) {
+                  createdCount++;
+                  stats.issuesCreated++;
+                  console.log(`${LOG_EMOJI.SUCCESS} Created ${localKey} → ${newRemoteKey}`);
+                  recordEvent(stats, {
+                    type: 'create',
+                    issueKey: localKey,
+                    remoteKey: newRemoteKey,
+                    orgName,
+                    reason: 'never-synced'
+                  });
+                } else {
+                  stats.errors.push(`Failed to create ${localKey} in ${orgName}`);
+                  recordEvent(stats, {
+                    type: 'error',
+                    issueKey: localKey,
+                    message: 'Failed to create (never synced)',
+                    orgName
+                  });
+                }
+              }
+            }
+            
+            await sleep(SCHEDULED_SYNC_DELAY_MS);
+            
+          } catch (error) {
+            console.error(`${LOG_EMOJI.ERROR} Error creating ${localKey}:`, error);
+            stats.errors.push(`${localKey}: ${error.message}`);
+          }
+        }
+      }
+
+      nextPageToken = data.nextPageToken;
+      hasMore = !!nextPageToken && issues.length > 0;
+    }
+  }
+  
+  console.log(`${LOG_EMOJI.INFO} Never-synced check complete: ${neverSyncedCount} found, ${createdCount} created`);
+}
+
 async function checkIfIssueNeedsSync(issueKey, issue, config, mappings, syncOptions = {}, orgId = null) {
   // Check if issue was created by remote sync
   const createdByRemote = await getLocalKey(issueKey);
@@ -446,7 +615,8 @@ export async function performScheduledSync() {
         remoteEmail: org.remoteEmail,
         remoteApiToken: org.remoteApiToken,
         remoteProjectKey: org.remoteProjectKey,
-        allowedProjects: org.allowedProjects || []
+        allowedProjects: org.allowedProjects || [],
+        jqlFilter: org.jqlFilter || ''
       };
 
       // Fetch org-specific mappings and sync options
@@ -495,6 +665,11 @@ export async function performScheduledSync() {
         await checkAndRecreateDeletedIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats);
       }
       
+      // ALWAYS sync issues that were never synced (no mapping exists)
+      // This ensures NO issue is left behind
+      console.log(`${LOG_EMOJI.INFO} Checking for never-synced issues for ${orgName}...`);
+      await syncAllMissingIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats);
+      
       // Build project filter for JQL
       let projectFilter;
       if (config.allowedProjects && Array.isArray(config.allowedProjects) && config.allowedProjects.length > 0) {
@@ -507,9 +682,15 @@ export async function performScheduledSync() {
         projectFilter = `project = ${config.remoteProjectKey}`;
       }
 
+      // Combine project filter with org's custom JQL filter if set
+      let baseFilter = projectFilter;
+      if (config.jqlFilter && config.jqlFilter.trim()) {
+        baseFilter = `${projectFilter} AND (${config.jqlFilter})`;
+      }
+
       const jql = scheduledConfig.syncScope === 'recent'
-        ? `${projectFilter} AND updated >= -24h ORDER BY updated DESC`
-        : `${projectFilter} ORDER BY updated DESC`;
+        ? `${baseFilter} AND updated >= -24h ORDER BY updated DESC`
+        : `${baseFilter} ORDER BY updated DESC`;
       
       console.log(`🔍 JQL: ${jql}`);
       

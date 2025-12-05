@@ -114,6 +114,14 @@ const App = () => {
   const [manualSyncLoading, setManualSyncLoading] = useState(false);
   const [issueExporting, setIssueExporting] = useState(false);
   const [scanningDeleted, setScanningDeleted] = useState(false);
+  const [scanProgress, setScanProgress] = useState(null); // Track scan progress across multiple runs
+
+  // Connection test
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState(null);
+  
+  // Last sync time
+  const [lastSyncTime, setLastSyncTime] = useState(null);
 
   // Data loading states
   const [dataLoading, setDataLoading] = useState({
@@ -150,13 +158,14 @@ const App = () => {
 
   const loadOrgData = async (orgId) => {
     try {
-      // Load mappings
-      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, syncOptionsData] = await Promise.all([
+      // Load mappings and last sync time
+      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, syncOptionsData, lastSyncData] = await Promise.all([
         invoke('getUserMappings', { orgId }),
         invoke('getFieldMappings', { orgId }),
         invoke('getStatusMappings', { orgId }),
         invoke('getIssueTypeMappings', { orgId }),
-        invoke('getSyncOptions', { orgId })
+        invoke('getSyncOptions', { orgId }),
+        invoke('getLastSyncTime', { orgId })
       ]);
 
       if (userMappingData?.mappings) setUserMappings(userMappingData.mappings);
@@ -164,6 +173,7 @@ const App = () => {
       if (statusMappingData) setStatusMappings(statusMappingData);
       if (issueTypeMappingData) setIssueTypeMappings(issueTypeMappingData);
       if (syncOptionsData) setSyncOptions(syncOptionsData);
+      if (lastSyncData?.lastSync) setLastSyncTime(lastSyncData.lastSync);
     } catch (error) {
       console.error('Error loading org data:', error);
     }
@@ -232,9 +242,18 @@ const App = () => {
     }
   };
 
-  const showMessage = (msg, type = 'success') => {
-    setMessage({ text: msg, type });
-    setTimeout(() => setMessage(null), 5000);
+  const showMessage = (msg, type = 'success', persistent = false) => {
+    setMessage({ text: msg, type, persistent });
+    // Persistent messages don't auto-dismiss (user must click to close)
+    // Errors stay 15 seconds, success messages stay 5 seconds
+    if (!persistent) {
+      const duration = type === 'error' ? 15000 : 5000;
+      setTimeout(() => setMessage(null), duration);
+    }
+  };
+
+  const dismissMessage = () => {
+    setMessage(null);
   };
 
   const resetImportState = () => {
@@ -384,6 +403,58 @@ const App = () => {
       showMessage('Error deleting organization: ' + error.message, 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!selectedOrgId) return;
+    
+    setTestingConnection(true);
+    setConnectionStatus(null);
+    try {
+      const result = await invoke('testConnection', { orgId: selectedOrgId });
+      setConnectionStatus(result);
+      if (result.success) {
+        showMessage(result.message, 'success');
+      } else {
+        showMessage(`Connection failed: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      setConnectionStatus({ success: false, error: error.message });
+      showMessage('Connection test failed: ' + error.message, 'error');
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleAutoMatch = async (type, remoteItems, localItems, currentMappings, setMappings) => {
+    if (!selectedOrgId) return;
+    
+    try {
+      const result = await invoke('autoMatchMappings', {
+        orgId: selectedOrgId,
+        type,
+        localItems,
+        remoteItems
+      });
+      
+      if (result.success && result.matchCount > 0) {
+        // Merge with existing mappings (don't overwrite)
+        const merged = { ...currentMappings };
+        for (const [key, value] of Object.entries(result.matches)) {
+          if (!merged[key]) {
+            merged[key] = value;
+          }
+        }
+        setMappings(merged);
+        showMessage(`Auto-matched ${result.matchCount} item(s)`, 'success');
+      } else if (result.matchCount === 0) {
+        showMessage('No new matches found', 'info');
+      } else {
+        showMessage(`Auto-match failed: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Auto-match failed: ' + error.message, 'error');
     }
   };
 
@@ -557,26 +628,139 @@ const App = () => {
     }
   };
 
-  const handleScanForDeletedIssues = async () => {
+  const handleScanForDeletedIssues = async (existingProgress = null, options = {}) => {
     setScanningDeleted(true);
+    const { updateExisting = false } = options;
+    
+    // Initialize or continue progress tracking
+    const currentProgress = existingProgress || scanProgress || { 
+      totalCreated: 0, 
+      totalAlreadySynced: 0, 
+      totalScanned: 0,
+      runs: 0 
+    };
+    
     try {
-      showMessage('Scanning all synced issues for deleted remote issues...', 'info');
-      const result = await invoke('scanForDeletedIssues', { orgId: selectedOrgId });
+      showMessage(`⏳ Starting bulk sync${updateExisting ? ' (updating existing)' : ''}...`, 'info', true);
+      const result = await invoke('scanForDeletedIssues', { orgId: selectedOrgId, updateExisting });
+      
       if (result.success) {
-        if (result.results.deleted > 0) {
-          showMessage(`Found ${result.results.deleted} deleted issues. Recreated: ${result.results.recreated}`, 'success');
+        // New async queue approach - poll for status
+        if (result.status === 'running' && result.jobId) {
+          showMessage(`⏳ Bulk sync started in background. Checking status...`, 'info', true);
+          
+          // Poll for completion
+          const pollStatus = async (attempts = 0) => {
+            if (attempts > 180) { // Max 3 minutes of polling (every 1 second)
+              showMessage('⏳ Sync is still running in background. Refresh to check status.', 'info', true);
+              setScanningDeleted(false);
+              return;
+            }
+            
+            try {
+              const statusResult = await invoke('getBulkSyncStatus');
+              const status = statusResult.status || {};
+              
+              if (status.status === 'complete') {
+                const results = status.results || {};
+                const parts = [];
+                if (results.created) parts.push(`${results.created} created`);
+                if (results.updated) parts.push(`${results.updated} updated`);
+                parts.push(`${results.alreadySynced || 0} already synced`);
+                showMessage(
+                  `✅ Sync complete! ${parts.join(', ')} (${results.elapsedSeconds || 0}s)`,
+                  'success',
+                  true
+                );
+                setScanProgress(null);
+                setScanningDeleted(false);
+                await loadStats();
+              } else if (status.status === 'error') {
+                showMessage(`❌ Sync failed: ${status.error}`, 'error', true);
+                setScanProgress(null);
+                setScanningDeleted(false);
+              } else if (status.status === 'cancelled') {
+                const results = status.results || {};
+                showMessage(
+                  `🛑 Sync cancelled. ${results.created || 0} created, ${results.alreadySynced || 0} already synced before cancel.`,
+                  'info',
+                  true
+                );
+                setScanProgress(null);
+                setScanningDeleted(false);
+              } else if (status.status === 'running') {
+                // Still running, poll again
+                setTimeout(() => pollStatus(attempts + 1), 1000);
+              } else {
+                // Unknown status, keep polling
+                setTimeout(() => pollStatus(attempts + 1), 1000);
+              }
+            } catch (pollError) {
+              console.error('Poll error:', pollError);
+              setTimeout(() => pollStatus(attempts + 1), 2000);
+            }
+          };
+          
+          // Start polling after a brief delay
+          setTimeout(() => pollStatus(0), 1000);
+          return;
+        }
+        
+        // Legacy response format (shouldn't happen anymore but just in case)
+        const newProgress = {
+          totalCreated: currentProgress.totalCreated + (result.results?.created || 0),
+          totalAlreadySynced: currentProgress.totalAlreadySynced + (result.results?.alreadySynced || 0),
+          totalScanned: currentProgress.totalScanned + (result.results?.scanned || 0),
+          runs: currentProgress.runs + 1
+        };
+        setScanProgress(newProgress);
+        
+        if (result.partial) {
+          showMessage(
+            `⏳ Progress: ${newProgress.totalCreated} created, ${newProgress.totalAlreadySynced} already synced (${newProgress.runs} runs). Continuing...`,
+            'info',
+            true
+          );
+          await loadStats();
+          setTimeout(() => handleScanForDeletedIssues(newProgress), 500);
+          return;
         } else {
-          showMessage(`Scanned ${result.results.scanned} issues. All remote issues are intact.`, 'success');
+          showMessage(
+            `✅ Sync complete! Total: ${newProgress.totalCreated} created, ${newProgress.totalAlreadySynced} already synced (${newProgress.runs} runs)`,
+            'success',
+            true
+          );
+          setScanProgress(null);
         }
         await loadStats();
+      } else {
+        showMessage(`Error: ${result.error}`, 'error', true);
+        setScanProgress(null);
+      }
+    } catch (error) {
+      showMessage('Error: ' + error.message, 'error', true);
+      setScanProgress(null);
+    }
+    setScanningDeleted(false);
+  };
+
+  // Cancel bulk sync
+  const handleCancelBulkSync = async () => {
+    try {
+      const result = await invoke('cancelBulkSync');
+      if (result.success) {
+        showMessage('🛑 Cancel request sent. Sync will stop after current issue.', 'info');
       } else {
         showMessage(`Error: ${result.error}`, 'error');
       }
     } catch (error) {
       showMessage('Error: ' + error.message, 'error');
-    } finally {
-      setScanningDeleted(false);
     }
+  };
+
+  const resetScanProgress = () => {
+    setScanProgress(null);
+    dismissMessage();
   };
 
   const handleClearWebhookErrors = async () => {
@@ -843,11 +1027,17 @@ const App = () => {
       {/* Main Content */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: canvasBackground }}>
         {message && (
-          <div style={{ padding: token('space.200', '16px') }}>
+          <div style={{ padding: token('space.200', '16px'), position: 'relative' }}>
             <SectionMessage
-              appearance={message.type === 'error' ? 'error' : 'success'}
+              appearance={message.type === 'error' ? 'error' : message.type === 'warning' ? 'warning' : message.type === 'info' ? 'information' : 'success'}
               title={message.text}
             />
+            {message.persistent && (
+              <div style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                <Button appearance="subtle" onClick={dismissMessage}>Dismiss</Button>
+                {scanProgress && <Button appearance="subtle" onClick={resetScanProgress}>Reset Progress</Button>}
+              </div>
+            )}
           </div>
         )}
 
@@ -875,14 +1065,29 @@ const App = () => {
               <div style={surfaceCard({ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: token('space.300', '24px') })}>
                 <div style={{ flex: 1 }}>
                   <h2 style={{ margin: '0 0 8px 0' }}>{selectedOrg.name}</h2>
-                  <div style={{ color: '#6B778C', fontSize: '14px', display: 'flex', alignItems: 'center', gap: token('space.150', '12px') }}>
+                  <div style={{ color: '#6B778C', fontSize: '14px', display: 'flex', alignItems: 'center', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
                     <Lozenge appearance={selectedOrg.remoteUrl ? 'success' : 'removed'} isBold>
                       {selectedOrg.remoteUrl ? 'Connected' : 'Not Configured'}
                     </Lozenge>
                     <span>{selectedOrg.remoteUrl || 'Add Jira details to start syncing.'}</span>
+                    {lastSyncTime && (
+                      <span style={{ color: '#6B778C' }}>
+                        • Last sync: {new Date(lastSyncTime).toLocaleString()}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: token('space.150', '12px') }}>
+                <div style={{ display: 'flex', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
+                  {selectedOrg.remoteUrl && (
+                    <Button
+                      appearance="subtle"
+                      onClick={handleTestConnection}
+                      isLoading={testingConnection}
+                      style={lozengeButtonStyle}
+                    >
+                      Test
+                    </Button>
+                  )}
                   <Button
                     appearance="subtle"
                     onClick={() => { setEditingOrg(selectedOrg); setShowOrgModal(true); }}
@@ -939,6 +1144,9 @@ const App = () => {
                     syncOptions={syncOptions}
                     handleScanForDeletedIssues={handleScanForDeletedIssues}
                     scanningDeleted={scanningDeleted}
+                    scanProgress={scanProgress}
+                    resetScanProgress={resetScanProgress}
+                    handleCancelBulkSync={handleCancelBulkSync}
                   />
                 </div>
               </TabPanel>
@@ -979,15 +1187,20 @@ const App = () => {
                     remoteIssueTypes={remoteIssueTypes}
                     localIssueTypes={localIssueTypes}
                     userMappings={userMappings}
+                    setUserMappings={setUserMappings}
                     fieldMappings={fieldMappings}
+                    setFieldMappings={setFieldMappings}
                     statusMappings={statusMappings}
+                    setStatusMappings={setStatusMappings}
                     issueTypeMappings={issueTypeMappings}
+                    setIssueTypeMappings={setIssueTypeMappings}
                     addMapping={addMapping}
                     deleteMapping={deleteMapping}
                     handleSaveMappings={handleSaveMappings}
                     loadMappingData={loadMappingData}
                     dataLoading={dataLoading}
                     saving={saving}
+                    handleAutoMatch={handleAutoMatch}
                   />
                 </div>
               </TabPanel>
@@ -1097,7 +1310,7 @@ const ConfigurationPanel = ({
     <div style={{ width: '100%' }}>
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+        gridTemplateColumns: 'repeat(2, 1fr)',
         gap: gridGap,
         alignItems: 'stretch'
       }}>
@@ -1234,8 +1447,10 @@ const ConfigurationPanel = ({
 const MappingsPanel = ({
   selectedOrg, remoteUsers, localUsers, remoteFields, localFields,
   remoteStatuses, localStatuses, remoteIssueTypes, localIssueTypes,
-  userMappings, fieldMappings, statusMappings, issueTypeMappings,
-  addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving
+  userMappings, setUserMappings, fieldMappings, setFieldMappings,
+  statusMappings, setStatusMappings, issueTypeMappings, setIssueTypeMappings,
+  addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving,
+  handleAutoMatch
 }) => {
   const [newUserRemote, setNewUserRemote] = useState('');
   const [newUserLocal, setNewUserLocal] = useState('');
@@ -1249,7 +1464,7 @@ const MappingsPanel = ({
   const hasData = remoteUsers.length > 0 || localUsers.length > 0;
   const isLoading = dataLoading.users || dataLoading.fields || dataLoading.statuses || dataLoading.issueTypes;
 
-  const MappingSection = ({ title, type, remotePlaceholder, localPlaceholder, remoteItems, localItems, mappings, newRemote, setNewRemote, newLocal, setNewLocal }) => {
+  const MappingSection = ({ title, type, remotePlaceholder, localPlaceholder, remoteItems, localItems, mappings, setMappings, newRemote, setNewRemote, newLocal, setNewLocal }) => {
     const itemKey = type === 'user' ? 'accountId' : 'id';
     const itemLabel = type === 'user' ? (item) => `${item.displayName}${item.emailAddress ? ` (${item.emailAddress})` : ''}` : (item) => `${item.name}`;
 
@@ -1259,7 +1474,18 @@ const MappingsPanel = ({
 
     return (
       <div style={surfaceCard({ marginBottom: token('space.250', '20px') })}>
-        <h4 style={{ margin: '0 0 16px 0' }}>{title} ({Object.keys(mappings).length})</h4>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.200', '16px') }}>
+          <h4 style={{ margin: 0 }}>{title} ({Object.keys(mappings).length})</h4>
+          {hasData && handleAutoMatch && (
+            <Button
+              appearance="subtle"
+              onClick={() => handleAutoMatch(type, remoteItems, localItems, mappings, setMappings)}
+              style={lozengeButtonStyle}
+            >
+              Auto-Match
+            </Button>
+          )}
+        </div>
 
         {hasData && (
           <>
@@ -1361,6 +1587,7 @@ const MappingsPanel = ({
             remoteItems={remoteUsers}
             localItems={localUsers}
             mappings={userMappings}
+            setMappings={setUserMappings}
             newRemote={newUserRemote}
             setNewRemote={setNewUserRemote}
             newLocal={newUserLocal}
@@ -1375,6 +1602,7 @@ const MappingsPanel = ({
             remoteItems={remoteFields}
             localItems={localFields}
             mappings={fieldMappings}
+            setMappings={setFieldMappings}
             newRemote={newFieldRemote}
             setNewRemote={setNewFieldRemote}
             newLocal={newFieldLocal}
@@ -1389,6 +1617,7 @@ const MappingsPanel = ({
             remoteItems={remoteStatuses}
             localItems={localStatuses}
             mappings={statusMappings}
+            setMappings={setStatusMappings}
             newRemote={newStatusRemote}
             setNewRemote={setNewStatusRemote}
             newLocal={newStatusLocal}
@@ -1403,6 +1632,7 @@ const MappingsPanel = ({
             remoteItems={remoteIssueTypes || []}
             localItems={localIssueTypes || []}
             mappings={issueTypeMappings || {}}
+            setMappings={setIssueTypeMappings}
             newRemote={newIssueTypeRemote}
             setNewRemote={setNewIssueTypeRemote}
             newLocal={newIssueTypeLocal}
@@ -1419,7 +1649,8 @@ const SyncActivityPanel = ({
   manualIssueKey, setManualIssueKey, handleManualSync, manualSyncLoading,
   syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors,
   organizations, onExportIssues, issueExporting, onIssueImportClick, issueImporting,
-  selectedOrg, syncOptions, handleScanForDeletedIssues, scanningDeleted
+  selectedOrg, syncOptions, handleScanForDeletedIssues, scanningDeleted,
+  scanProgress, resetScanProgress, handleCancelBulkSync
 }) => {
   console.log('[Debug] SyncActivityPanel rendered', { onExportIssues: !!onExportIssues, organizations: organizations?.length });
   const [eventsExpanded, setEventsExpanded] = useState(false);
@@ -2100,20 +2331,62 @@ const SyncActivityPanel = ({
             border: `1px solid ${token('color.border.accent.orange', '#FF8B00')}`
           })}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.100', '8px') }}>
-              <h4 style={{ margin: 0, color: '#974F0C' }}>Scan Deleted</h4>
-              <Lozenge appearance="moved">Recreate</Lozenge>
+              <h4 style={{ margin: 0, color: '#974F0C' }}>Sync All Issues</h4>
+              <Lozenge appearance="moved">{scanProgress ? `Run ${scanProgress.runs}` : 'Batch Sync'}</Lozenge>
             </div>
-            <p style={{ fontSize: '13px', color: '#974F0C', margin: '0 0 12px 0' }}>
-              Scan all synced issues and recreate deleted remote issues.
+            <p style={{ fontSize: '13px', color: '#974F0C', margin: '0 0 8px 0' }}>
+              Sync all missing issues from source to target, or update existing ones.
             </p>
-            <Button 
-              appearance="subtle" 
-              onClick={handleScanForDeletedIssues} 
-              isLoading={scanningDeleted}
-              style={lozengeButtonStyle}
-            >
-              Scan & Recreate Now
-            </Button>
+            {scanProgress && (
+              <div style={{ 
+                fontSize: '12px', 
+                color: '#974F0C', 
+                background: 'rgba(255,139,0,0.1)', 
+                padding: '8px', 
+                borderRadius: '4px',
+                marginBottom: '8px',
+                fontFamily: 'monospace'
+              }}>
+                📊 Progress: {scanProgress.totalCreated} created | {scanProgress.totalAlreadySynced} already synced | {scanProgress.runs} runs
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <Button 
+                appearance="subtle" 
+                onClick={() => handleScanForDeletedIssues(null, { updateExisting: false })} 
+                isLoading={scanningDeleted}
+                style={lozengeButtonStyle}
+              >
+                {scanningDeleted ? 'Syncing...' : 'Sync Missing'}
+              </Button>
+              <Button 
+                appearance="subtle" 
+                onClick={() => handleScanForDeletedIssues(null, { updateExisting: true })} 
+                isLoading={scanningDeleted}
+                style={{ ...lozengeButtonStyle, background: '#E3FCEF', color: '#006644' }}
+                title="Re-sync all issues including already synced ones (applies current field mappings)"
+              >
+                Update All
+              </Button>
+              {scanningDeleted && (
+                <Button 
+                  appearance="subtle" 
+                  onClick={handleCancelBulkSync}
+                  style={{ ...lozengeButtonStyle, background: '#FFEBE6', color: '#BF2600' }}
+                >
+                  Cancel
+                </Button>
+              )}
+              {scanProgress && !scanningDeleted && (
+                <Button 
+                  appearance="subtle" 
+                  onClick={resetScanProgress}
+                  style={{ ...lozengeButtonStyle, background: '#f4f5f7' }}
+                >
+                  Reset
+                </Button>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -2458,77 +2731,174 @@ const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, i
 // Org Modal Component
 const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
   <ModalDialog
-    heading={editingOrg ? `Edit ${editingOrg.name}` : 'Add Organization'}
+    heading={editingOrg ? `Edit Organization` : 'Add Organization'}
     onClose={onClose}
-    width="medium"
+    width="large"
   >
     <Form onSubmit={onSave}>
       {({ formProps }) => (
-        <form {...formProps}>
-          <Field
-            name="name"
-            defaultValue={editingOrg?.name || ''}
-            isRequired
-            label="Organization Name"
-          >
-            {({ fieldProps }) => (
-              <TextField {...fieldProps} placeholder="e.g., Production Org" autoFocus />
+        <form {...formProps} style={{ padding: token('space.200', '16px') }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.300', '24px') }}>
+            
+            {/* Connection Details Section */}
+            <div>
+              <h4 style={{ 
+                margin: `0 0 ${token('space.150', '12px')} 0`, 
+                fontSize: '11px', 
+                fontWeight: 600, 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.5px',
+                color: token('color.text.subtlest', '#6B778C') 
+              }}>
+                Connection Details
+              </h4>
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: '1fr 2fr', 
+                gap: token('space.200', '16px'),
+                background: token('color.background.neutral', '#F4F5F7'),
+                padding: token('space.200', '16px'),
+                borderRadius: token('border.radius', '8px')
+              }}>
+                <Field
+                  name="name"
+                  defaultValue={editingOrg?.name || ''}
+                  isRequired
+                  label="Organization Name"
+                >
+                  {({ fieldProps }) => (
+                    <TextField {...fieldProps} placeholder="e.g., Production" autoFocus />
+                  )}
+                </Field>
+
+                <Field
+                  name="remoteUrl"
+                  defaultValue={editingOrg?.remoteUrl || ''}
+                  isRequired
+                  label="Remote Jira URL"
+                >
+                  {({ fieldProps }) => (
+                    <TextField {...fieldProps} placeholder="https://yourorg.atlassian.net" />
+                  )}
+                </Field>
+              </div>
+            </div>
+
+            {/* Authentication Section */}
+            <div>
+              <h4 style={{ 
+                margin: `0 0 ${token('space.150', '12px')} 0`, 
+                fontSize: '11px', 
+                fontWeight: 600, 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.5px',
+                color: token('color.text.subtlest', '#6B778C') 
+              }}>
+                Authentication
+              </h4>
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: '1fr 1fr', 
+                gap: token('space.200', '16px'),
+                background: token('color.background.neutral', '#F4F5F7'),
+                padding: token('space.200', '16px'),
+                borderRadius: token('border.radius', '8px')
+              }}>
+                <Field
+                  name="remoteEmail"
+                  defaultValue={editingOrg?.remoteEmail || ''}
+                  isRequired
+                  label="Admin Email"
+                >
+                  {({ fieldProps }) => (
+                    <TextField {...fieldProps} placeholder="admin@example.com" />
+                  )}
+                </Field>
+
+                <Field
+                  name="remoteApiToken"
+                  defaultValue={editingOrg?.remoteApiToken || ''}
+                  isRequired
+                  label="API Token"
+                >
+                  {({ fieldProps }) => (
+                    <TextField {...fieldProps} type="password" placeholder="••••••••••••" />
+                  )}
+                </Field>
+              </div>
+            </div>
+
+            {/* Sync Configuration Section */}
+            <div>
+              <h4 style={{ 
+                margin: `0 0 ${token('space.150', '12px')} 0`, 
+                fontSize: '11px', 
+                fontWeight: 600, 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.5px',
+                color: token('color.text.subtlest', '#6B778C') 
+              }}>
+                Sync Configuration
+              </h4>
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: '1fr 2fr', 
+                gap: token('space.200', '16px'),
+                background: token('color.background.neutral', '#F4F5F7'),
+                padding: token('space.200', '16px'),
+                borderRadius: token('border.radius', '8px')
+              }}>
+                <Field
+                  name="remoteProjectKey"
+                  defaultValue={editingOrg?.remoteProjectKey || ''}
+                  isRequired
+                  label="Target Project Key"
+                >
+                  {({ fieldProps }) => (
+                    <TextField {...fieldProps} placeholder="PROJ" />
+                  )}
+                </Field>
+
+                <div>
+                  <Field
+                    name="jqlFilter"
+                    defaultValue={editingOrg?.jqlFilter || ''}
+                    label="JQL Filter (optional)"
+                  >
+                    {({ fieldProps }) => (
+                      <TextField {...fieldProps} placeholder="e.g., priority = High AND status != Done" />
+                    )}
+                  </Field>
+                  <p style={{ fontSize: '11px', color: token('color.text.subtlest', '#6B778C'), margin: `${token('space.050', '4px')} 0 0 0` }}>
+                    Only issues matching this JQL will sync
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {editingOrg && (
+              <Field
+                name="allowedProjects"
+                defaultValue={editingOrg?.allowedProjects || []}
+              >
+                {({ fieldProps }) => <input {...fieldProps} type="hidden" />}
+              </Field>
             )}
-          </Field>
-          <Field
-            name="remoteUrl"
-            defaultValue={editingOrg?.remoteUrl || ''}
-            isRequired
-            label="Remote Jira URL"
-          >
-            {({ fieldProps }) => (
-              <TextField {...fieldProps} placeholder="https://yourorg.atlassian.net" />
-            )}
-          </Field>
-          <Field
-            name="remoteEmail"
-            defaultValue={editingOrg?.remoteEmail || ''}
-            isRequired
-            label="Remote Admin Email"
-          >
-            {({ fieldProps }) => (
-              <TextField {...fieldProps} placeholder="admin@example.com" />
-            )}
-          </Field>
-          <Field
-            name="remoteApiToken"
-            defaultValue={editingOrg?.remoteApiToken || ''}
-            isRequired
-            label="Remote API Token"
-          >
-            {({ fieldProps }) => (
-              <TextField {...fieldProps} type="password" placeholder="API token" />
-            )}
-          </Field>
-          <Field
-            name="remoteProjectKey"
-            defaultValue={editingOrg?.remoteProjectKey || ''}
-            isRequired
-            label="Remote Project Key"
-          >
-            {({ fieldProps }) => (
-              <TextField {...fieldProps} placeholder="PROJ" />
-            )}
-          </Field>
-          {editingOrg && (
-            <Field
-              name="allowedProjects"
-              defaultValue={editingOrg?.allowedProjects || []}
-            >
-              {({ fieldProps }) => <input {...fieldProps} type="hidden" />}
-            </Field>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: token('space.150', '12px'), marginTop: token('space.300', '24px') }}>
-            <Button type="submit" appearance="subtle" isLoading={saving} style={lozengeButtonStyle}>
-              {editingOrg ? 'Update' : 'Add'}
-            </Button>
-            <Button appearance="subtle" onClick={onClose} type="button" style={lozengeButtonStyle}>
+          </div>
+
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'flex-end', 
+            gap: token('space.100', '8px'), 
+            marginTop: token('space.300', '24px'),
+            paddingTop: token('space.200', '16px'),
+            borderTop: `1px solid ${token('color.border', '#DFE1E6')}`
+          }}>
+            <Button appearance="subtle" onClick={onClose} type="button">
               Cancel
+            </Button>
+            <Button type="submit" appearance="primary" isLoading={saving}>
+              {editingOrg ? 'Save Changes' : 'Add Organization'}
             </Button>
           </div>
         </form>
