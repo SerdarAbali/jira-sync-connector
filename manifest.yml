@@ -27,6 +27,16 @@ modules:
       events:
         - avi:jira-issue-link:created
 
+    - key: issue-link-deleted
+      function: link-deleted-trigger
+      events:
+        - avi:jira-issue-link:deleted
+
+    - key: issue-deleted
+      function: issue-deleted-trigger
+      events:
+        - avi:jira:deleted:issue
+
   scheduledTrigger:
     - key: scheduled-sync
       interval: hour
@@ -42,6 +52,12 @@ modules:
     - key: link-trigger
       handler: index.runLinkCreated
 
+    - key: link-deleted-trigger
+      handler: index.runLinkDeleted
+
+    - key: issue-deleted-trigger
+      handler: index.runIssueDeleted
+
     - key: scheduled-sync-function
       handler: index.runScheduledSync
 
@@ -54,7 +70,6 @@ resources:
 
 app:
   id: ari:cloud:ecosystem::app/362d8e6b-b68c-4403-8020-d32ddcc02716
-  name: jira-sync-connector
   runtime:
     name: nodejs20.x
 
@@ -73,6 +88,6 @@ permissions:
   external:
     fetch:
       backend:
-        - '*.atlassian.net'
+        - address: "*.atlassian.net"
   content:
     styles: []

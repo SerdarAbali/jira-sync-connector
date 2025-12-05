@@ -95,6 +95,11 @@ export async function getLinkMapping(localLinkId, orgId = null) {
   return await storage.get(key);
 }
 
+export async function removeLinkMapping(localLinkId, orgId = null) {
+  const key = orgId ? `${orgId}:link-mapping:${localLinkId}` : `link-mapping:${localLinkId}`;
+  await storage.delete(key);
+}
+
 // Get all remote keys for a local issue (across all orgs)
 export async function getAllRemoteKeys(localKey) {
   const orgs = await storage.get('organizations') || [];

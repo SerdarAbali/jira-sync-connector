@@ -2,7 +2,7 @@ import api, { route, storage, fetch } from '@forge/api';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 import { sleep } from '../../utils/retry.js';
 import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex, getOrganizationsWithTokens } from '../storage/mappings.js';
-import { removePendingLink, getPendingLinks } from '../storage/flags.js';
+import { removePendingLink, getPendingLinks, removeIssueFromPendingLinksIndex } from '../storage/flags.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../sync/issue-sync.js';
 import { syncIssueLinks } from '../sync/link-sync.js';
@@ -207,12 +207,6 @@ function recordEvent(stats, event) {
   if (stats.events.length > MAX_SCHEDULED_EVENTS) {
     stats.events = stats.events.slice(0, MAX_SCHEDULED_EVENTS);
   }
-}
-
-async function removeIssueFromPendingLinksIndex(issueKey) {
-  const pendingLinksIndex = await storage.get('pending-links-index') || [];
-  const updatedIndex = pendingLinksIndex.filter(key => key !== issueKey);
-  await storage.set('pending-links-index', updatedIndex);
 }
 
 export async function retryAllPendingLinks(config, mappings, stats) {
