@@ -76,3 +76,34 @@ export async function downloadAttachment(attachmentUrl) {
     return null;
   }
 }
+
+export async function updateLocalIssueDescription(issueKey, description) {
+  try {
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          fields: {
+            description: description
+          }
+        })
+      }
+    );
+    
+    if (response.ok || response.status === 204) {
+      console.log(`✅ Updated local issue ${issueKey} description`);
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.error(`❌ Failed to update local issue ${issueKey}: ${errorText}`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`Error updating local issue ${issueKey}:`, error);
+    return false;
+  }
+}

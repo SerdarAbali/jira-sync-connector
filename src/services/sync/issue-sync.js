@@ -1,12 +1,12 @@
 import { storage, fetch } from '@forge/api';
 import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
-import { extractTextFromADF, textToADF, replaceMediaIdsInADF, extractSprintIds } from '../../utils/adf.js';
+import { extractTextFromADF, textToADF, replaceMediaIdsInADF, extractSprintIds, prependCrossReferenceToADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
 import { getRemoteKey, getLocalKey, storeMapping } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing } from '../storage/flags.js';
 import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
-import { getFullIssue } from '../jira/local-client.js';
+import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../jira/local-client.js';
 import { syncAttachments } from './attachment-sync.js';
 import { syncIssueLinks } from './link-sync.js';
 import { syncAllComments } from './comment-sync.js';
@@ -374,13 +374,37 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
         console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
       }
 
-      if (issue.fields.description &&
-          typeof issue.fields.description === 'object' &&
-          Object.keys(attachmentMapping).length > 0) {
+      // Check if cross-reference is enabled (default true for backward compatibility)
+      const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
 
-        const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
+      if (crossReferenceEnabled) {
+        // Add cross-reference to both issues' descriptions
+        const localOrgName = await getOrgName();
+        const remoteOrgName = org.name;
 
-        console.log(`🖼️ Updating description with corrected media references...`);
+        // Update REMOTE issue description with cross-reference
+        // Use the original ADF structure, replacing media IDs if needed
+        let remoteDescription;
+        if (issue.fields.description && typeof issue.fields.description === 'object') {
+          remoteDescription = Object.keys(attachmentMapping).length > 0
+            ? await replaceMediaIdsInADF(issue.fields.description, attachmentMapping)
+            : JSON.parse(JSON.stringify(issue.fields.description)); // Deep clone
+        } else if (issue.fields.description && typeof issue.fields.description === 'string') {
+          remoteDescription = textToADF(issue.fields.description);
+        } else {
+          remoteDescription = { type: 'doc', version: 1, content: [] };
+        }
+
+        // Prepend cross-reference to remote description
+        const remoteDescriptionWithRef = prependCrossReferenceToADF(
+          remoteDescription,
+          issue.key,
+          result.key,
+          localOrgName,
+          remoteOrgName
+        );
+
+        console.log(`🔗 Updating remote issue ${result.key} with cross-reference...`);
         const updateResponse = await retryWithBackoff(async () => {
           return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}`, {
             method: 'PUT',
@@ -390,19 +414,62 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
             },
             body: JSON.stringify({
               fields: {
-                description: correctedDescription
+                description: remoteDescriptionWithRef
               }
             })
           });
         }, `Update description for ${result.key}`);
 
         if (updateResponse.ok || updateResponse.status === HTTP_STATUS.NO_CONTENT) {
-          console.log(`${LOG_EMOJI.SUCCESS} Updated description with embedded media`);
+          console.log(`${LOG_EMOJI.SUCCESS} Updated remote issue with cross-reference`);
         } else {
-          const warningMsg = 'Could not update description with media - using text-only';
+          const warningMsg = 'Could not update remote description with cross-reference';
           console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
           if (syncResult) syncResult.addWarning(warningMsg);
         }
+
+        // Update LOCAL issue description with cross-reference back to remote
+        const localDescription = issue.fields.description && typeof issue.fields.description === 'object'
+          ? JSON.parse(JSON.stringify(issue.fields.description)) // Deep clone
+          : { type: 'doc', version: 1, content: [] };
+        
+        const localDescriptionWithRef = prependCrossReferenceToADF(
+          localDescription,
+          issue.key,
+          result.key,
+          localOrgName,
+          remoteOrgName
+        );
+
+        const localUpdateSuccess = await updateLocalIssueDescription(issue.key, localDescriptionWithRef);
+        if (localUpdateSuccess) {
+          console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${issue.key} with cross-reference`);
+        } else {
+          const warningMsg = 'Could not update local description with cross-reference';
+          console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
+          if (syncResult) syncResult.addWarning(warningMsg);
+        }
+      } else {
+        // Still need to update description with media IDs if there are attachments
+        if (issue.fields.description &&
+            typeof issue.fields.description === 'object' &&
+            Object.keys(attachmentMapping).length > 0) {
+          const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
+          console.log(`🖼️ Updating description with corrected media references...`);
+          await retryWithBackoff(async () => {
+            return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}`, {
+              method: 'PUT',
+              headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                fields: { description: correctedDescription }
+              })
+            });
+          }, `Update description for ${result.key}`);
+        }
+        console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
       }
 
       await clearSyncFlag(issue.key);
@@ -473,6 +540,9 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
     console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
   }
 
+  // Check if cross-reference is enabled (default true for backward compatibility)
+  const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
+
   let description;
   if (issue.fields.description) {
     if (typeof issue.fields.description === 'object') {
@@ -486,11 +556,28 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
   } else {
     description = textToADF('');
   }
+
+  // Add cross-reference to description if enabled
+  let finalDescription = description;
+  let localOrgName, remoteOrgName;
+  if (crossReferenceEnabled) {
+    localOrgName = await getOrgName();
+    remoteOrgName = org.name;
+    finalDescription = prependCrossReferenceToADF(
+      description,
+      localKey,
+      remoteKey,
+      localOrgName,
+      remoteOrgName
+    );
+  } else {
+    console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
+  }
   
   const updateData = {
     fields: {
       summary: issue.fields.summary,
-      description: description
+      description: finalDescription
     }
   };
   
@@ -611,6 +698,18 @@ async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings
 
     if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
       console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
+
+      // Also update local issue with cross-reference (if enabled)
+      if (crossReferenceEnabled) {
+        const localDescriptionWithRef = prependCrossReferenceToADF(
+          issue.fields.description || { type: 'doc', version: 1, content: [] },
+          localKey,
+          remoteKey,
+          localOrgName,
+          remoteOrgName
+        );
+        await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+      }
 
       if (issue.fields.status) {
         const transitioned = await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);

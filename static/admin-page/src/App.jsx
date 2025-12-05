@@ -98,6 +98,7 @@ const App = () => {
     syncAttachments: true,
     syncLinks: true,
     syncSprints: false,
+    syncCrossReference: true,
     recreateDeletedIssues: false
   });
 
@@ -1099,6 +1100,7 @@ const ConfigurationPanel = ({
               { key: 'syncAttachments', label: 'Sync Attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
               { key: 'syncSprints', label: 'Sync Sprints' },
+              { key: 'syncCrossReference', label: 'Add Cross-Reference in Description (show linked issue keys in both orgs)' },
               { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (re-sync issues deleted in target org)' }
             ].map(option => (
               <Checkbox
