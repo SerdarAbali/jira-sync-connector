@@ -121,17 +121,19 @@ sequenceDiagram
     end
 ```
 
-### Entity Support (Incoming - Current MVP)
+### Entity Support (Incoming - Current Coverage)
 
 | Entity | Behavior | Notes |
 | :--- | :--- | :--- |
-| **Fields** | Syncs Summary, Description. | **Limitation**: Does not yet sync Priority/Assignee. |
-| **Status** | **Not Synced** | Status changes in Org B do not reflect in Org A yet. |
-| **Comments** | **Not Synced** | Comments added in Org B do not appear in Org A yet. |
-| **Attachments** | **Not Synced** | Attachments added in Org B do not appear in Org A yet. |
-| **Links** | **Not Synced** | Link changes in Org B do not reflect in Org A yet. |
-| **Creation** | **Supported** | Creating an issue in Org B creates it in Org A (Target Project). |
-| **Deletion** | **Supported** | Deleting an issue in Org B deletes it in Org A. |
+| **Fields** | Mirrors summary, description, priority, labels, due date, components, fix versions, versions, and time tracking. | Uses the same field mapping config as outbound sync; skips rank metadata automatically. |
+| **Status** | Synced via `transitionLocalIssue`. | Reverse status mappings (ID or name based) drive the transition that is closest to the remote status. |
+| **Assignee / Reporter** | Synced when user mappings exist. | Falls back to logging a warning and leaves the field untouched if no mapping exists. |
+| **Hierarchy** | Parent/Epic relationships carried over. | If the parent already exists locally it is linked; otherwise the child remains standalone until the parent syncs. |
+| **Comments** | Synced with author attribution and deduplication. | Skips app-authored comments and replays using `[Comment from OrgName - User: ...]` headers. |
+| **Attachments** | **Not yet supported** | Planned next so that inbound files reuse the attachment service locks. |
+| **Links** | **Not yet supported** | Pending inbound link queueing and reconciliation. |
+| **Creation** | Supported | Creating an issue in Org B creates it in Org A (target project defined in org config). |
+| **Deletion** | Supported | Deleting an issue in Org B deletes it in Org A. |
 
 ---
 
@@ -149,6 +151,11 @@ The system uses a **Defense-in-Depth** approach to prevent infinite sync loops.
 *   **Rule**: Before writing to Jira, the app sets a flag `syncing:ISSUE-123`.
 *   **Effect**: If Layer 1 fails and a webhook comes back, the app sees the flag and ignores the request.
 
+### Layer 3: Comment Deduplication & App-Author Guard
+* **Mechanism**: Incoming comment IDs are stored under `incoming-comment:{orgId}:{commentId}` and rejected on repeat.
+* **Rule**: Any comment authored by the SyncApp (accountType `app`) is ignored to prevent round-trips.
+* **Effect**: Human-authored comments mirror once per issue, even if Jira retries the webhook.
+
 ---
 
 ## 6. Conflict Resolution
@@ -161,13 +168,16 @@ The system uses a **Defense-in-Depth** approach to prevent infinite sync loops.
 
 ## 7. Roadmap to Full Two-Way Parity
 
-To move from the current MVP (issue create/delete + summary/description updates inbound) to a complete two-way sync, implement the following sequence:
+### Recently Shipped
+- Remote payload retrieval per webhook to ensure complete field snapshots
+- Reverse user/field/status mapping inside `buildCreatePayload`/`buildUpdatePayload`
+- Parent/epic mirroring and inbound status transitions via `transitionLocalIssue`
+- Incoming comment ingestion with deduplication keys and SyncApp-author filtering
 
-1. **Remote Payload Retrieval** – On each incoming webhook, fetch the full issue/comment/attachment payload from Org B via REST so all fields are available (webhook bodies omit attachments, sprint data, etc.).
-2. **Bidirectional Mappings** – Extend storage helpers so user, field, status, issue type, attachment, and link mappings can be resolved in both directions without re-querying Forge storage each time.
-3. **Local Field Updates** – Enhance `buildCreatePayload`/`buildUpdatePayload` to populate priority, labels, components, estimates, custom fields, parents/epics, and add a `transitionLocalIssue` helper that mirrors outbound status transitions using the reverse mappings.
-4. **Inbound Entity Modules** – Reuse the existing attachment/comment/link sync modules with an "incoming" mode so Org B changes can create files, comments, and relationships inside Org A with the same locking/duplicate rules.
-5. **Sync Options & Loop Guards** – Add inbound toggles (e.g., `incomingComments`, `incomingAttachments`) so admins can control which entities Org B may push, and continue enforcing Org B JQL filters plus `markSyncing` around every inbound mutation.
-6. **Diagnostics & UI** – Expose webhook health, inbound toggle state, and latest inbound-sync timestamps inside the Admin UI and stats resolvers so operators can confirm both directions are active.
+### Next Steps
+1. **Inbound Attachments & Links** – Reuse the outbound attachment/link services in reverse, including lock keys and pending link queues.
+2. **Inbound Feature Toggles & Diagnostics** – Surface dedicated `incoming*` toggles in Sync Options plus webhook health indicators in the Diagnostics panel.
+3. **Sprint & Advanced Custom Fields** – Map agile boards, rank-safe values, and rich custom types symmetrically.
+4. **Conflict Messaging** – Extend stats/audit resolvers to highlight when Org A overrides Org B (and vice versa) for easier troubleshooting.
 
-Once these steps are complete, Org A and Org B will each propagate creations, updates, and deletes (including comments, attachments, status transitions, and links) with the same fidelity, while retaining the existing loop-prevention safeguards.
+Achieving these items brings Org A and Org B to near-parity while keeping the existing loop-prevention safeguards intact.

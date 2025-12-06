@@ -810,311 +810,312 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   return null;
 }
 
-async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
+export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
 
   await markSyncing(localKey);
 
-  // Track sync details for event logging
-  const syncDetails = {
-    fields: true,
-    attachments: 0,
-    attachmentsTotal: 0,
-    links: 0,
-    linksTotal: 0,
-    comments: 0,
-    commentsTotal: 0,
-    status: false
-  };
+  try {
+    // Track sync details for event logging
+    const syncDetails = {
+      fields: true,
+      attachments: 0,
+      attachmentsTotal: 0,
+      links: 0,
+      linksTotal: 0,
+      comments: 0,
+      commentsTotal: 0,
+      status: false
+    };
 
-  // Count totals from the issue for context
-  syncDetails.attachmentsTotal = issue.fields.attachment?.length || 0;
-  syncDetails.linksTotal = issue.fields.issuelinks?.length || 0;
+    // Count totals from the issue for context
+    syncDetails.attachmentsTotal = issue.fields.attachment?.length || 0;
+    syncDetails.linksTotal = issue.fields.issuelinks?.length || 0;
 
-  const attachmentEnabled = syncOptions?.syncAttachments !== false;
-  const linksEnabled = syncOptions?.syncLinks !== false;
-  const commentsEnabled = syncOptions?.syncComments !== false;
+    const attachmentEnabled = syncOptions?.syncAttachments !== false;
+    const linksEnabled = syncOptions?.syncLinks !== false;
+    const commentsEnabled = syncOptions?.syncComments !== false;
 
-  let attachmentMapping = {};
-  if (attachmentEnabled) {
-    attachmentMapping = await syncAttachments(localKey, remoteKey, issue, org, syncResult, orgId);
-    // Count newly synced attachments (those in the mapping)
-    syncDetails.attachments = Object.keys(attachmentMapping).length;
-  } else {
-    console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
-  }
+    let attachmentMapping = {};
+    if (attachmentEnabled) {
+      attachmentMapping = await syncAttachments(localKey, remoteKey, issue, org, syncResult, orgId);
+      // Count newly synced attachments (those in the mapping)
+      syncDetails.attachments = Object.keys(attachmentMapping).length;
+    } else {
+      console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
+    }
 
-  if (linksEnabled) {
-    const forceCheckLinks = syncOptions?.forceCheckLinks || false;
-    const linkResult = await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId, forceCheckLinks);
-    syncDetails.links = linkResult?.synced || 0;
-  } else {
-    console.log(`⏭️ Skipping links sync (disabled in sync options)`);
-  }
+    if (linksEnabled) {
+      const forceCheckLinks = syncOptions?.forceCheckLinks || false;
+      const linkResult = await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId, forceCheckLinks);
+      syncDetails.links = linkResult?.synced || 0;
+    } else {
+      console.log(`⏭️ Skipping links sync (disabled in sync options)`);
+    }
 
-  if (commentsEnabled) {
-    const commentResult = await syncAllComments(localKey, remoteKey, issue, org, syncResult, orgId);
-    syncDetails.comments = commentResult?.synced || 0;
-    syncDetails.commentsTotal = commentResult?.synced + commentResult?.skipped || 0;
-  } else {
-    console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
-  }
+    if (commentsEnabled) {
+      const commentResult = await syncAllComments(localKey, remoteKey, issue, org, syncResult, orgId);
+      syncDetails.comments = commentResult?.synced || 0;
+      syncDetails.commentsTotal = commentResult?.synced + commentResult?.skipped || 0;
+    } else {
+      console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
+    }
 
-  // Check if cross-reference is enabled (default true for backward compatibility)
-  const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
+    // Check if cross-reference is enabled (default true for backward compatibility)
+    const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
 
-  let description;
-  if (issue.fields.description) {
-    if (typeof issue.fields.description === 'object') {
-      const extractedText = extractTextFromADF(issue.fields.description);
-      description = extractedText ? textToADF(extractedText) : textToADF('');
-    } else if (typeof issue.fields.description === 'string') {
-      description = textToADF(issue.fields.description);
+    let description;
+    if (issue.fields.description) {
+      if (typeof issue.fields.description === 'object') {
+        const extractedText = extractTextFromADF(issue.fields.description);
+        description = extractedText ? textToADF(extractedText) : textToADF('');
+      } else if (typeof issue.fields.description === 'string') {
+        description = textToADF(issue.fields.description);
+      } else {
+        description = textToADF('');
+      }
     } else {
       description = textToADF('');
     }
-  } else {
-    description = textToADF('');
-  }
 
-  // Add cross-reference to description if enabled
-  let finalDescription = description;
-  let localOrgName, remoteOrgName;
-  if (crossReferenceEnabled) {
-    localOrgName = await getOrgName();
-    remoteOrgName = org.name;
-    finalDescription = prependCrossReferenceToADF(
-      description,
-      localKey,
-      remoteKey,
-      localOrgName,
-      remoteOrgName
-    );
-  } else {
-    console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
-  }
-  
-  // Map issue type if mapping exists
-  const localIssueTypeName = issue.fields.issuetype.name;
-  let remoteIssueTypeName = localIssueTypeName;
-  
-  if (mappings.issueTypeMappings) {
-    for (const [remoteId, mapping] of Object.entries(mappings.issueTypeMappings)) {
-      if (mapping.localName === localIssueTypeName || mapping.localId === issue.fields.issuetype.id) {
-        remoteIssueTypeName = mapping.remoteName;
-        console.log(`🔄 Mapped issue type: ${localIssueTypeName} → ${remoteIssueTypeName}`);
-        break;
-      }
-    }
-  }
-
-  const updateData = {
-    fields: {
-      summary: issue.fields.summary,
-      description: finalDescription,
-      issuetype: { name: remoteIssueTypeName }
-    }
-  };
-  
-  // ...existing update field mapping code...
-  if (issue.fields.priority) {
-    updateData.fields.priority = { name: issue.fields.priority.name };
-  }
-  
-  if (issue.fields.labels) {
-    updateData.fields.labels = issue.fields.labels;
-  }
-
-  if (issue.fields.duedate) {
-    updateData.fields.duedate = issue.fields.duedate;
-  }
-
-  if (issue.fields.components && issue.fields.components.length > 0) {
-    updateData.fields.components = issue.fields.components.map(c => ({ name: c.name }));
-    console.log(`🏷️ Updating ${issue.fields.components.length} component(s): ${issue.fields.components.map(c => c.name).join(', ')}`);
-  } else if (issue.fields.components && issue.fields.components.length === 0) {
-    updateData.fields.components = [];
-    console.log(`🏷️ Clearing components`);
-  }
-
-  if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
-    updateData.fields.fixVersions = issue.fields.fixVersions.map(v => ({ name: v.name }));
-    console.log(`🔖 Updating ${issue.fields.fixVersions.length} fix version(s): ${issue.fields.fixVersions.map(v => v.name).join(', ')}`);
-  } else if (issue.fields.fixVersions && issue.fields.fixVersions.length === 0) {
-    updateData.fields.fixVersions = [];
-    console.log(`🔖 Clearing fix versions`);
-  }
-
-  if (issue.fields.versions && issue.fields.versions.length > 0) {
-    updateData.fields.versions = issue.fields.versions.map(v => ({ name: v.name }));
-    console.log(`📌 Updating ${issue.fields.versions.length} affects version(s): ${issue.fields.versions.map(v => v.name).join(', ')}`);
-  } else if (issue.fields.versions && issue.fields.versions.length === 0) {
-    updateData.fields.versions = [];
-    console.log(`📌 Clearing affects versions`);
-  }
-
-  if (issue.fields.timetracking && Object.keys(issue.fields.timetracking).length > 0) {
-    updateData.fields.timetracking = {};
-    if (issue.fields.timetracking.originalEstimate) {
-      updateData.fields.timetracking.originalEstimate = issue.fields.timetracking.originalEstimate;
-    }
-    if (issue.fields.timetracking.remainingEstimate) {
-      updateData.fields.timetracking.remainingEstimate = issue.fields.timetracking.remainingEstimate;
-    }
-    console.log(`⏱️ Updating time tracking: ${issue.fields.timetracking.originalEstimate || 'no estimate'}`);
-  }
-
-  if (issue.fields.parent && issue.fields.parent.key) {
-    const remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
-    if (remoteParentKey) {
-      updateData.fields.parent = { key: remoteParentKey };
-      console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
-    }
-  } else if (issue.fields.parent === null) {
-    updateData.fields.parent = null;
-    console.log(`🔗 Removing parent link`);
-  }
-
-  // Sync Epic Link for classic projects (next-gen uses parent field above)
-  // Note: During update, we don't recursively sync missing epics (depth 0 with check)
-  const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId, 0);
-  if (epicLinkResult) {
-    updateData.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
-    console.log(`🎯 Updated Epic Link: → ${epicLinkResult.epicKey}`);
-  } else {
-    // Check if epic link was removed - need to clear it
-    const localEpicFieldId = await getLocalEpicLinkFieldId();
-    if (localEpicFieldId && issue.fields[localEpicFieldId] === null) {
-      const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
-      if (remoteEpicFieldId) {
-        updateData.fields[remoteEpicFieldId] = null;
-        console.log(`🎯 Clearing Epic Link`);
-      }
-    }
-  }
-
-  if (issue.fields.assignee && issue.fields.assignee.accountId) {
-    const mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, mappings.userMappings);
-    if (mappedAssignee) {
-      updateData.fields.assignee = { accountId: mappedAssignee };
-      console.log(`👤 Mapped assignee: ${issue.fields.assignee.accountId} → ${mappedAssignee}`);
-    }
-  } else if (issue.fields.assignee === null) {
-    updateData.fields.assignee = null;
-    console.log(`👤 Unassigning issue`);
-  }
-
-  const reversedFieldMap = reverseMapping(mappings.fieldMappings);
-  const syncFieldOptions = syncOptions || { syncSprints: false };
-  
-  // Fields that should never be synced (Jira internal fields)
-  const blockedFields = [
-    'rankBeforeIssue', 'rankAfterIssue', 'rank', 'lexoRank',
-    'created', 'updated', 'creator', 'reporter', 'project',
-    'issuetype', 'status', 'resolution', 'resolutiondate',
-    'watches', 'votes', 'worklog', 'aggregatetimespent',
-    'aggregatetimeoriginalestimate', 'aggregatetimeestimate',
-    'aggregateprogress', 'progress', 'lastViewed', 'issuelinks',
-    'subtasks', 'attachment', 'comment'
-  ];
-
-  for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
-    // Skip blocked fields
-    if (blockedFields.includes(localFieldId) || blockedFields.includes(remoteFieldId)) {
-      console.log(`⏭️ Skipping blocked field: ${localFieldId} → ${remoteFieldId}`);
-      continue;
+    // Add cross-reference to description if enabled
+    let finalDescription = description;
+    let localOrgName, remoteOrgName;
+    if (crossReferenceEnabled) {
+      localOrgName = await getOrgName();
+      remoteOrgName = org.name;
+      finalDescription = prependCrossReferenceToADF(
+        description,
+        localKey,
+        remoteKey,
+        localOrgName,
+        remoteOrgName
+      );
+    } else {
+      console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
     }
     
-    if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
-      let fieldValue = issue.fields[localFieldId];
-      
-      // Skip rank/lexorank fields (string values like "0|i00067:")
-      if (isRankLikeString(fieldValue)) {
-        console.log(`⏭️ Skipping lexorank field ${localFieldId} - value looks like rank data`);
-        continue;
-      }
-      
-      // Skip rank fields that might be stored with customfield IDs
-      // These fields have object values with rankBeforeIssue/rankAfterIssue properties
-      if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
-        if (fieldValue.rankBeforeIssue !== undefined || fieldValue.rankAfterIssue !== undefined) {
-          console.log(`⏭️ Skipping rank field ${localFieldId} - contains rank data`);
-          continue;
+    // Map issue type if mapping exists
+    const localIssueTypeName = issue.fields.issuetype.name;
+    let remoteIssueTypeName = localIssueTypeName;
+    
+    if (mappings.issueTypeMappings) {
+      for (const [remoteId, mapping] of Object.entries(mappings.issueTypeMappings)) {
+        if (mapping.localName === localIssueTypeName || mapping.localId === issue.fields.issuetype.id) {
+          remoteIssueTypeName = mapping.remoteName;
+          console.log(`🔄 Mapped issue type: ${localIssueTypeName} → ${remoteIssueTypeName}`);
+          break;
         }
       }
-
-      console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
-
-      const sprintIds = extractSprintIds(fieldValue);
-      if (sprintIds !== null) {
-        if (!syncFieldOptions.syncSprints) {
-          console.log(`⏭️ Skipping sprint field ${localFieldId} - sprint sync disabled`);
-          continue;
-        }
-        fieldValue = sprintIds;
-        console.log(`🏃 Extracted sprint IDs for ${localFieldId} → ${remoteFieldId}: ${JSON.stringify(fieldValue)}`);
-      } else if (Array.isArray(fieldValue) && fieldValue.length > 0 && typeof fieldValue[0] === 'object') {
-        console.warn(`⚠️ Skipping ${localFieldId} - looks like sprint data but couldn't extract IDs. Original value:`, JSON.stringify(fieldValue[0]));
-        continue;
-      }
-
-      if (Array.isArray(fieldValue) && fieldValue.length === 0) {
-        console.log(`⚠️ Skipping empty array for ${localFieldId}`);
-        continue;
-      }
-
-      updateData.fields[remoteFieldId] = fieldValue;
     }
-  }
 
-  try {
-    console.log(`Updating remote issue: ${localKey} → ${remoteKey}`);
-
-    const response = await retryWithBackoff(async () => {
-      return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(updateData)
-      });
-    }, `Update issue ${remoteKey}`);
-
-    if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
-      console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
-
-      // Also update local issue with cross-reference (if enabled)
-      if (crossReferenceEnabled) {
-        const localDescriptionWithRef = prependCrossReferenceToADF(
-          issue.fields.description || { type: 'doc', version: 1, content: [] },
-          localKey,
-          remoteKey,
-          localOrgName,
-          remoteOrgName
-        );
-        await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+    const updateData = {
+      fields: {
+        summary: issue.fields.summary,
+        description: finalDescription,
+        issuetype: { name: remoteIssueTypeName }
       }
+    };
+    
+    // ...existing update field mapping code...
+    if (issue.fields.priority) {
+      updateData.fields.priority = { name: issue.fields.priority.name };
+    }
+    
+    if (issue.fields.labels) {
+      updateData.fields.labels = issue.fields.labels;
+    }
 
-      if (issue.fields.status) {
-        const transitioned = await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);
-        syncDetails.status = transitioned || false;
+    if (issue.fields.duedate) {
+      updateData.fields.duedate = issue.fields.duedate;
+    }
+
+    if (issue.fields.components && issue.fields.components.length > 0) {
+      updateData.fields.components = issue.fields.components.map(c => ({ name: c.name }));
+      console.log(`🏷️ Updating ${issue.fields.components.length} component(s): ${issue.fields.components.map(c => c.name).join(', ')}`);
+    } else if (issue.fields.components && issue.fields.components.length === 0) {
+      updateData.fields.components = [];
+      console.log(`🏷️ Clearing components`);
+    }
+
+    if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
+      updateData.fields.fixVersions = issue.fields.fixVersions.map(v => ({ name: v.name }));
+      console.log(`🔖 Updating ${issue.fields.fixVersions.length} fix version(s): ${issue.fields.fixVersions.map(v => v.name).join(', ')}`);
+    } else if (issue.fields.fixVersions && issue.fields.fixVersions.length === 0) {
+      updateData.fields.fixVersions = [];
+      console.log(`🔖 Clearing fix versions`);
+    }
+
+    if (issue.fields.versions && issue.fields.versions.length > 0) {
+      updateData.fields.versions = issue.fields.versions.map(v => ({ name: v.name }));
+      console.log(`📌 Updating ${issue.fields.versions.length} affects version(s): ${issue.fields.versions.map(v => v.name).join(', ')}`);
+    } else if (issue.fields.versions && issue.fields.versions.length === 0) {
+      updateData.fields.versions = [];
+      console.log(`📌 Clearing affects versions`);
+    }
+
+    if (issue.fields.timetracking && Object.keys(issue.fields.timetracking).length > 0) {
+      updateData.fields.timetracking = {};
+      if (issue.fields.timetracking.originalEstimate) {
+        updateData.fields.timetracking.originalEstimate = issue.fields.timetracking.originalEstimate;
       }
-      await clearSyncFlag(localKey);
-      return syncDetails;
+      if (issue.fields.timetracking.remainingEstimate) {
+        updateData.fields.timetracking.remainingEstimate = issue.fields.timetracking.remainingEstimate;
+      }
+      console.log(`⏱️ Updating time tracking: ${issue.fields.timetracking.originalEstimate || 'no estimate'}`);
+    }
+
+    if (issue.fields.parent && issue.fields.parent.key) {
+      const remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
+      if (remoteParentKey) {
+        updateData.fields.parent = { key: remoteParentKey };
+        console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
+      }
+    } else if (issue.fields.parent === null) {
+      updateData.fields.parent = null;
+      console.log(`🔗 Removing parent link`);
+    }
+
+    // Sync Epic Link for classic projects (next-gen uses parent field above)
+    // Note: During update, we don't recursively sync missing epics (depth 0 with check)
+    const epicLinkResult = await syncEpicLink(issue, org, mappings, syncResult, orgId, 0);
+    if (epicLinkResult) {
+      updateData.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
+      console.log(`🎯 Updated Epic Link: → ${epicLinkResult.epicKey}`);
     } else {
-      const errorText = await response.text();
-      console.error(`${LOG_EMOJI.ERROR} Update failed: ${errorText}`);
-      if (syncResult) syncResult.addError(`Update failed: ${errorText}`);
-      await clearSyncFlag(localKey);
+      // Check if epic link was removed - need to clear it
+      const localEpicFieldId = await getLocalEpicLinkFieldId();
+      if (localEpicFieldId && issue.fields[localEpicFieldId] === null) {
+        const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
+        if (remoteEpicFieldId) {
+          updateData.fields[remoteEpicFieldId] = null;
+          console.log(`🎯 Clearing Epic Link`);
+        }
+      }
+    }
+
+    if (issue.fields.assignee && issue.fields.assignee.accountId) {
+      const mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, mappings.userMappings);
+      if (mappedAssignee) {
+        updateData.fields.assignee = { accountId: mappedAssignee };
+        console.log(`👤 Mapped assignee: ${issue.fields.assignee.accountId} → ${mappedAssignee}`);
+      }
+    } else if (issue.fields.assignee === null) {
+      updateData.fields.assignee = null;
+      console.log(`👤 Unassigning issue`);
+    }
+
+    const reversedFieldMap = reverseMapping(mappings.fieldMappings);
+    const syncFieldOptions = syncOptions || { syncSprints: false };
+    
+    // Fields that should never be synced (Jira internal fields)
+    const blockedFields = [
+      'rankBeforeIssue', 'rankAfterIssue', 'rank', 'lexoRank',
+      'created', 'updated', 'creator', 'reporter', 'project',
+      'issuetype', 'status', 'resolution', 'resolutiondate',
+      'watches', 'votes', 'worklog', 'aggregatetimespent',
+      'aggregatetimeoriginalestimate', 'aggregatetimeestimate',
+      'aggregateprogress', 'progress', 'lastViewed', 'issuelinks',
+      'subtasks', 'attachment', 'comment'
+    ];
+
+    for (const [localFieldId, remoteFieldId] of Object.entries(reversedFieldMap)) {
+      // Skip blocked fields
+      if (blockedFields.includes(localFieldId) || blockedFields.includes(remoteFieldId)) {
+        console.log(`⏭️ Skipping blocked field: ${localFieldId} → ${remoteFieldId}`);
+        continue;
+      }
+      
+      if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
+        let fieldValue = issue.fields[localFieldId];
+        
+        // Skip rank/lexorank fields (string values like "0|i00067:")
+        if (isRankLikeString(fieldValue)) {
+          console.log(`⏭️ Skipping lexorank field ${localFieldId} - value looks like rank data`);
+          continue;
+        }
+        
+        // Skip rank fields that might be stored with customfield IDs
+        // These fields have object values with rankBeforeIssue/rankAfterIssue properties
+        if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
+          if (fieldValue.rankBeforeIssue !== undefined || fieldValue.rankAfterIssue !== undefined) {
+            console.log(`⏭️ Skipping rank field ${localFieldId} - contains rank data`);
+            continue;
+          }
+        }
+
+        console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
+
+        const sprintIds = extractSprintIds(fieldValue);
+        if (sprintIds !== null) {
+          if (!syncFieldOptions.syncSprints) {
+            console.log(`⏭️ Skipping sprint field ${localFieldId} - sprint sync disabled`);
+            continue;
+          }
+          fieldValue = sprintIds;
+          console.log(`🏃 Extracted sprint IDs for ${localFieldId} → ${remoteFieldId}: ${JSON.stringify(fieldValue)}`);
+        } else if (Array.isArray(fieldValue) && fieldValue.length > 0 && typeof fieldValue[0] === 'object') {
+          console.warn(`⚠️ Skipping ${localFieldId} - looks like sprint data but couldn't extract IDs. Original value:`, JSON.stringify(fieldValue[0]));
+          continue;
+        }
+
+        if (Array.isArray(fieldValue) && fieldValue.length === 0) {
+          console.log(`⚠️ Skipping empty array for ${localFieldId}`);
+          continue;
+        }
+
+        updateData.fields[remoteFieldId] = fieldValue;
+      }
+    }
+
+    try {
+      console.log(`Updating remote issue: ${localKey} → ${remoteKey}`);
+
+      const response = await retryWithBackoff(async () => {
+        return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(updateData)
+        });
+      }, `Update issue ${remoteKey}`);
+
+      if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
+        console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
+
+        // Also update local issue with cross-reference (if enabled)
+        if (crossReferenceEnabled) {
+          const localDescriptionWithRef = prependCrossReferenceToADF(
+            issue.fields.description || { type: 'doc', version: 1, content: [] },
+            localKey,
+            remoteKey,
+            localOrgName,
+            remoteOrgName
+          );
+          await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+        }
+
+        if (issue.fields.status) {
+          const transitioned = await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);
+          syncDetails.status = transitioned || false;
+        }
+        return syncDetails;
+      } else {
+        const errorText = await response.text();
+        console.error(`${LOG_EMOJI.ERROR} Update failed: ${errorText}`);
+        if (syncResult) syncResult.addError(`Update failed: ${errorText}`);
+        return null;
+      }
+    } catch (error) {
+      console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
+      if (syncResult) syncResult.addError(`Error updating remote issue: ${error.message}`);
       return null;
     }
-  } catch (error) {
-    console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
-    if (syncResult) syncResult.addError(`Error updating remote issue: ${error.message}`);
+  } finally {
     await clearSyncFlag(localKey);
-    return null;
   }
 }
 

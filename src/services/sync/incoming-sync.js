@@ -278,6 +278,11 @@ async function handleRemoteCommentCreated(payload, context) {
     return;
   }
 
+  if (comment.author?.accountType === 'app') {
+    console.log(`${LOG_EMOJI.INFO} Skipping SyncApp-authored comment ${comment.id} on ${remoteIssueKey}`);
+    return;
+  }
+
   if (isSyncAppComment(comment.body, context.org.name)) {
     console.log(`${LOG_EMOJI.INFO} Skipping comment from SyncApp to avoid loops`);
     return;

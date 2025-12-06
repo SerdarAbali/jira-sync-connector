@@ -29,6 +29,10 @@ Atlassian Forge app for one-way issue sync between two Jira Cloud orgs. Real-tim
 - `src/services/sync/` - Core sync logic (issue, comment, attachment, link, transition)
 - `src/services/storage/` - Forge Storage wrappers using `@forge/kvs` (mappings, flags, stats, kvs)
 - `src/services/jira/` - API clients (local=`@forge/api`, remote=fetch with Basic Auth)
+- `src/services/scheduled/` - Hourly fallback sync + maintenance jobs invoked by Forge scheduler
+- `webtriggers/` - Incoming webhook entry points (e.g., remote org calling into this app)
+- `static/admin-page/` - React/Atlaskit admin UI bundled with cache busting before deploy
+- `src/utils/` - Shared helpers (ADF conversion, retry/backoff, logging, validation, mapping lookups)
 
 ### Storage Layer (`@forge/kvs`)
 All storage operations go through `src/services/storage/kvs.js` wrapper:
