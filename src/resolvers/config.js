@@ -1,4 +1,4 @@
-import api, { route, fetch } from '@forge/api';
+import api, { route, fetch, webTrigger } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
 import { MAX_STORAGE_SIZE } from '../constants.js';
 import { 
@@ -35,9 +35,23 @@ export function defineConfigResolvers(resolver) {
     // Fetch API tokens from secret storage for each org
     const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
       const token = await kvsStore.getSecret(`secret:${org.id}:token`);
+      const incomingSecret = await kvsStore.getSecret(`secret:${org.id}:incomingSecret`);
+      
+      let incomingWebhookUrl = null;
+      // Only fetch URL if needed to avoid unnecessary API calls
+      if (org.syncDirection === 'bidirectional') {
+         try {
+           incomingWebhookUrl = await webTrigger.getUrl('incoming-webhook');
+         } catch (e) {
+           console.error('Failed to get webtrigger url', e);
+         }
+      }
+
       return {
         ...org,
-        remoteApiToken: token || org.remoteApiToken || '' // Fallback for migration
+        remoteApiToken: token || org.remoteApiToken || '', // Fallback for migration
+        incomingSecret: incomingSecret || '',
+        incomingWebhookUrl
       };
     }));
     return orgsWithTokens;
@@ -56,6 +70,13 @@ export function defineConfigResolvers(resolver) {
       if (validated.remoteApiToken) {
         await kvsStore.setSecret(`secret:${orgId}:token`, validated.remoteApiToken);
       }
+
+      // Generate incoming secret if bidirectional
+      let incomingSecret = null;
+      if (payload.syncDirection === 'bidirectional') {
+        incomingSecret = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        await kvsStore.setSecret(`secret:${orgId}:incomingSecret`, incomingSecret);
+      }
       
       const newOrg = {
         id: orgId,
@@ -66,6 +87,7 @@ export function defineConfigResolvers(resolver) {
         remoteProjectKey: validated.remoteProjectKey,
         allowedProjects: validated.allowedProjects || [],
         jqlFilter: validated.jqlFilter || '',
+        syncDirection: payload.syncDirection || 'push',
         createdAt: new Date().toISOString()
       };
       orgs.push(newOrg);
@@ -103,6 +125,18 @@ export function defineConfigResolvers(resolver) {
       if (validated.remoteApiToken) {
         await kvsStore.setSecret(`secret:${payload.id}:token`, validated.remoteApiToken);
       }
+
+      // Handle sync direction change
+      const syncDirection = payload.syncDirection || orgs[index].syncDirection || 'push';
+      
+      // Generate incoming secret if switching to bidirectional and doesn't exist
+      if (syncDirection === 'bidirectional') {
+        const existingSecret = await kvsStore.getSecret(`secret:${payload.id}:incomingSecret`);
+        if (!existingSecret) {
+           const newSecret = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+           await kvsStore.setSecret(`secret:${payload.id}:incomingSecret`, newSecret);
+        }
+      }
       
       orgs[index] = {
         ...orgs[index],
@@ -113,6 +147,7 @@ export function defineConfigResolvers(resolver) {
         remoteProjectKey: validated.remoteProjectKey,
         allowedProjects: validated.allowedProjects || [],
         jqlFilter: validated.jqlFilter || '',
+        syncDirection: syncDirection,
         updatedAt: new Date().toISOString()
       };
       

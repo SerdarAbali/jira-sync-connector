@@ -1565,11 +1565,56 @@ const ConfigurationPanel = ({
             flex: 1
           }}>
             <dt style={{ fontWeight: 600 }}>URL</dt>
-            <dd style={{ margin: 0 }}>{selectedOrg.remoteUrl || '—'}</dd>
+            <dd style={{ margin: 0, wordBreak: 'break-all' }}>{selectedOrg.remoteUrl || '—'}</dd>
             <dt style={{ fontWeight: 600 }}>Email</dt>
-            <dd style={{ margin: 0 }}>{selectedOrg.remoteEmail || '—'}</dd>
+            <dd style={{ margin: 0, wordBreak: 'break-all' }}>{selectedOrg.remoteEmail || '—'}</dd>
             <dt style={{ fontWeight: 600 }}>Project</dt>
             <dd style={{ margin: 0 }}>{selectedOrg.remoteProjectKey || '—'}</dd>
+            <dt style={{ fontWeight: 600 }}>Direction</dt>
+            <dd style={{ margin: 0 }}>
+              <Lozenge appearance={selectedOrg.syncDirection === 'bidirectional' ? 'success' : 'default'}>
+                {selectedOrg.syncDirection === 'bidirectional' ? 'Two-Way' : 'One-Way'}
+              </Lozenge>
+            </dd>
+            
+            {selectedOrg.syncDirection === 'bidirectional' && (
+              <>
+                <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Incoming URL</dt>
+                <dd style={{ margin: 0 }}>
+                  {selectedOrg.incomingWebhookUrl ? (
+                    <code style={{ 
+                      display: 'block', 
+                      padding: '4px 8px', 
+                      background: '#F4F5F7', 
+                      borderRadius: '4px', 
+                      fontSize: '11px', 
+                      wordBreak: 'break-all',
+                      border: '1px solid #DFE1E6'
+                    }}>
+                      {selectedOrg.incomingWebhookUrl}
+                    </code>
+                  ) : (
+                    <span style={{ fontStyle: 'italic', color: '#DE350B' }}>Not generated (Save Org first)</span>
+                  )}
+                </dd>
+                <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Secret</dt>
+                <dd style={{ margin: 0 }}>
+                  {selectedOrg.incomingSecret ? (
+                    <code style={{ 
+                      display: 'block', 
+                      padding: '4px 8px', 
+                      background: '#F4F5F7', 
+                      borderRadius: '4px', 
+                      fontSize: '11px', 
+                      wordBreak: 'break-all',
+                      border: '1px solid #DFE1E6'
+                    }}>
+                      {selectedOrg.incomingSecret}
+                    </code>
+                  ) : '—'}
+                </dd>
+              </>
+            )}
           </dl>
         </div>
 
@@ -2969,10 +3014,13 @@ const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, i
 };
 
 // Org Modal Component
-const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
+const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
+  const [syncDirection, setSyncDirection] = useState(editingOrg?.syncDirection || 'push');
+
+  return (
   <ModalDialog onClose={onClose} width="large">
     <ModalHeader>
-      <ModalTitle>{editingOrg ? `Edit Organization` : 'Add Organization'}</ModalTitle>
+      <ModalTitle>{editingOrg ? `Edit Organization (Two-Way)` : 'Add Organization (Two-Way)'}</ModalTitle>
     </ModalHeader>
     <ModalBody>
       <Form onSubmit={onSave}>
@@ -3116,6 +3164,105 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
               </div>
             </div>
 
+            {/* Sync Direction Section */}
+            <div>
+              <h4 style={{ 
+                margin: `0 0 ${token('space.150', '12px')} 0`, 
+                fontSize: '11px', 
+                fontWeight: 600, 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.5px',
+                color: token('color.text.subtlest', '#6B778C') 
+              }}>
+                Sync Direction
+              </h4>
+              <div style={{ 
+                background: token('color.background.neutral', '#F4F5F7'),
+                padding: token('space.200', '16px'),
+                borderRadius: token('border.radius', '8px')
+              }}>
+                <Field
+                  name="syncDirection"
+                  defaultValue={syncDirection}
+                  label="Direction"
+                >
+                  {({ fieldProps }) => (
+                    <Select
+                      {...fieldProps}
+                      options={[
+                        { label: 'One-Way (Push Only)', value: 'push' },
+                        { label: 'Two-Way (Bidirectional)', value: 'bidirectional' }
+                      ]}
+                      value={fieldProps.value === 'bidirectional' 
+                        ? { label: 'Two-Way (Bidirectional)', value: 'bidirectional' }
+                        : { label: 'One-Way (Push Only)', value: 'push' }
+                      }
+                      onChange={(option) => {
+                        fieldProps.onChange(option.value);
+                        setSyncDirection(option.value);
+                      }}
+                    />
+                  )}
+                </Field>
+
+                {syncDirection === 'bidirectional' && (
+                  <div style={{ marginTop: '16px' }}>
+                    {editingOrg?.incomingWebhookUrl ? (
+                      <div style={{ 
+                        background: token('color.background.accent.green.subtlest', '#E3FCEF'), 
+                        padding: '12px', 
+                        borderRadius: '4px',
+                        border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
+                      }}>
+                        <h5 style={{ margin: '0 0 8px 0', color: '#006644' }}>Incoming Webhook Configuration</h5>
+                        <p style={{ fontSize: '12px', margin: '0 0 8px 0' }}>
+                          Configure a System Webhook in the <strong>Remote Jira</strong> with these details:
+                        </p>
+                        <div style={{ marginBottom: '8px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#006644' }}>URL:</div>
+                          <code style={{ 
+                            display: 'block', 
+                            padding: '8px', 
+                            background: '#FFFFFF', 
+                            borderRadius: '4px', 
+                            fontSize: '11px', 
+                            wordBreak: 'break-all',
+                            border: '1px solid #A1BDD9'
+                          }}>
+                            {editingOrg.incomingWebhookUrl}?secret={editingOrg.incomingSecret}
+                          </code>
+                        </div>
+                        <div style={{ marginBottom: '8px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#006644' }}>JQL Filter (CRITICAL):</div>
+                          <div style={{ fontSize: '11px', color: '#172B4D', marginBottom: '4px' }}>
+                            You MUST exclude the sync user to prevent loops!
+                          </div>
+                          <code style={{ 
+                            display: 'block', 
+                            padding: '8px', 
+                            background: '#FFFFFF', 
+                            borderRadius: '4px', 
+                            fontSize: '11px', 
+                            wordBreak: 'break-all',
+                            border: '1px solid #A1BDD9'
+                          }}>
+                            project = "{editingOrg.remoteProjectKey}" AND creator != "{editingOrg.remoteEmail}" AND updatedBy != "{editingOrg.remoteEmail}"
+                          </code>
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#006644' }}>
+                          <strong>Events:</strong> Issue Created, Updated, Deleted
+                        </div>
+                      </div>
+                    ) : (
+                      <SectionMessage appearance="info">
+                        <p>Save this organization to generate the Incoming Webhook URL.</p>
+                      </SectionMessage>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {editingOrg && (
               <Field
                 name="allowedProjects"
@@ -3146,7 +3293,8 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
     </Form>
     </ModalBody>
   </ModalDialog>
-);
+  );
+};
 
 // Wait for DOM to be ready
 if (document.readyState === 'loading') {
