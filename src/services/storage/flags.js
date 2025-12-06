@@ -51,7 +51,8 @@ export async function storePendingLink(issueKey, linkData) {
 
   // Store as queryable key instead of maintaining index array
   // Key pattern allows finding all pending links via query
-  await kvsStore.set(`pending-link-idx:${issueKey}`, true);
+  // OPTIMIZATION: Store the pending links in the index value to avoid N+1 lookups
+  await kvsStore.set(`pending-link-idx:${issueKey}`, pendingLinks);
 
   console.log(`📌 Stored pending link: ${issueKey} → ${linkData.linkedIssueKey}`);
 }
@@ -66,18 +67,28 @@ export async function getPendingLinks(issueKey) {
  */
 export async function findPendingLinksToIssue(targetIssueKey) {
   // Query for all pending link index entries
+  // OPTIMIZATION: The value now contains the pending links array
   const indexEntries = await kvsStore.queryByPrefix('pending-link-idx:', 500);
   const results = [];
   
   for (const entry of indexEntries) {
     const sourceIssueKey = entry.key.replace('pending-link-idx:', '');
-    const pendingLinks = await kvsStore.get(`pending-links:${sourceIssueKey}`) || [];
-    for (const link of pendingLinks) {
-      if (link.linkedIssueKey === targetIssueKey) {
-        results.push({
-          sourceIssueKey,
-          ...link
-        });
+    // Use the value from the query if available (new format), otherwise fetch (migration/fallback)
+    let pendingLinks = entry.value;
+    
+    // Handle legacy case where value was just 'true'
+    if (pendingLinks === true || pendingLinks === 'true') {
+      pendingLinks = await kvsStore.get(`pending-links:${sourceIssueKey}`) || [];
+    }
+    
+    if (Array.isArray(pendingLinks)) {
+      for (const link of pendingLinks) {
+        if (link.linkedIssueKey === targetIssueKey) {
+          results.push({
+            sourceIssueKey,
+            ...link
+          });
+        }
       }
     }
   }
@@ -93,6 +104,8 @@ export async function removePendingLink(issueKey, linkId) {
     await kvsStore.del(`pending-link-idx:${issueKey}`);
   } else {
     await kvsStore.set(`pending-links:${issueKey}`, filtered);
+    // Update the index with the new filtered list
+    await kvsStore.set(`pending-link-idx:${issueKey}`, filtered);
   }
 }
 

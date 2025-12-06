@@ -5,6 +5,7 @@ import { defineSyncResolvers } from './sync.js';
 import { defineDataResolvers } from './data.js';
 import { defineStatsResolvers } from './stats.js';
 import { defineAuditResolvers } from './audit.js';
+import { defineDiagnosticsResolvers } from './diagnostics.js';
 import logger from '../utils/logger.js';
 
 const resolver = new Resolver();
@@ -52,6 +53,7 @@ defineSyncResolvers(resolver);
 defineDataResolvers(resolver);
 defineStatsResolvers(resolver);
 defineAuditResolvers(resolver);
+defineDiagnosticsResolvers(resolver);
 
 // List of protected resolvers that require admin permission
 const protectedResolvers = [
@@ -66,7 +68,8 @@ const protectedResolvers = [
   'forceSyncIssue',
   'retryPendingLinks',
   'importSettings',
-  'importIssues'
+  'importIssues',
+  'runSystemTest'
 ];
 
 // Get the raw definitions and wrap protected ones with admin checks
