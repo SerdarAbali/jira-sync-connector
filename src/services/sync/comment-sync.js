@@ -211,6 +211,17 @@ export async function syncComment(event) {
     return;
   }
 
+  if (fullComment.author?.accountType === 'app') {
+    console.log(`${LOG_EMOJI.INFO} Skipping app-authored comment ${commentId} on ${issueKey}`);
+    await trackWebhookSync('comment', false, 'Comment authored by SyncApp (loop prevention)', null, issueKey, {
+      reason: 'app-authored',
+      commentId,
+      projectKey,
+      author: fullComment.author?.displayName || 'SyncApp'
+    });
+    return;
+  }
+
   const orgName = await getOrgName();
   const userName = fullComment.author?.displayName || fullComment.author?.emailAddress || 'Unknown User';
 

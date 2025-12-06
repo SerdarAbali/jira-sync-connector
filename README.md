@@ -1,6 +1,6 @@
 # Jira Sync Connector
 
-Atlassian Forge application for one-way synchronization between two Jira Cloud organizations.
+Atlassian Forge application for resilient org-to-org synchronization on Atlassian Forge. The app still treats Org A as the hub, but now mirrors the key updates, status changes, parents, and comments that originate in Org B back into Org A.
 
 ## Overview
 
@@ -9,9 +9,11 @@ This application syncs issues from a source Jira organization to a target organi
 ## Features
 
 ### Sync Capabilities
+
+**Outbound (Org A → Org B)**
 - Issue creation and updates (summary, description, priority, labels, due date)
 - Status synchronization with configurable mappings
-- Epic/Parent relationships
+- Epic/Parent relationships and subtasks
 - Comments with author attribution
 - Attachments (10MB limit per file)
 - Issue links (blocks, relates to, duplicates, etc.)
@@ -19,6 +21,15 @@ This application syncs issues from a source Jira organization to a target organi
 - Time tracking (original and remaining estimates)
 - Custom field mapping including sprints
 - User mapping for assignee and reporter
+
+**Inbound (Org B → Org A, current coverage)**
+- Issue creation into the configured local project and deletions that mirror remote removals
+- Field mirroring for summary, description, priority, labels, due date, components, fix/affects versions, and time tracking
+- Assignee and reporter mapping using the existing user map (logs when unmapped)
+- Parent/Epic mapping so subtasks follow their hierarchy once the parent exists locally
+- Status transitions applied via reverse mappings to keep boards aligned
+- Comments recreated in Org A with the original author attribution, skip-if-duplicate protection, and loop prevention for SyncApp-authored confirmations
+- Upcoming: inbound attachments, links, and sprint/custom field expansion (see roadmap below)
 
 ### Reliability Features
 - Real-time webhook sync (1-3 seconds)
@@ -230,13 +241,14 @@ Slow initial sync:
 - Forge cold starts can take several seconds
 - Subsequent syncs are faster (1-3 seconds)
 
-## TODO
+## Two-Way Sync Status
 
-### Two-Way Sync (Upcoming)
-- [ ] Implement incoming webhook handler (Web Trigger) for remote events
-- [ ] Implement `createIssue` and `updateIssue` in `local-client.js`
-- [ ] Implement reverse mapping logic (Remote -> Local)
-- [ ] Add loop prevention for incoming webhooks
+- ✅ Incoming webhook/webtrigger pipeline with secret validation
+- ✅ Reverse field/user/status mapping, parent mirroring, and local transitions
+- ✅ Comment ingestion with deduplication, SyncApp loop guards, and per-comment tracking
+- 🔄 Next: inbound attachments and links (reuse attachment/link services in reverse)
+- 🔄 Next: inbound feature toggles in sync options plus diagnostics surfacing for webhook health
+- 🔄 Next: Sprint/custom field transformations to close the parity gap
 
 ## Roadmap
 

@@ -1088,7 +1088,7 @@ const App = () => {
                     <span>{selectedOrg.remoteUrl || 'Add Jira details to start syncing.'}</span>
                     {lastSyncTime && (
                       <span style={{ color: '#6B778C' }}>
-                        • Last sync: {new Date(lastSyncTime).toLocaleString()}
+                        • Last sync: {formatDateTimeEuro(lastSyncTime)}
                       </span>
                     )}
                   </div>
@@ -1136,8 +1136,8 @@ const App = () => {
                   <Tab>Sync Activity</Tab>
                   <Tab>Configuration</Tab>
                   <Tab>Mappings</Tab>
-                  <Tab>Security & Info</Tab>
                   <Tab>Diagnostics</Tab>
+                  <Tab>Security & Info</Tab>
                 </TabList>
 
               {/* Sync Activity Tab */}
@@ -1220,6 +1220,15 @@ const App = () => {
                     saving={saving}
                     handleAutoMatch={handleAutoMatch}
                   />
+                </div>
+              </TabPanel>
+
+              {/* Diagnostics Tab */}
+              <TabPanel>
+                <div style={tabPanelContainerStyle}>
+                  <div style={surfaceCard()}>
+                    <Diagnostics selectedOrgId={selectedOrgId} />
+                  </div>
                 </div>
               </TabPanel>
 
@@ -1401,15 +1410,6 @@ const App = () => {
                         Please report any bugs or feature requests to the email above.
                       </p>
                     </div>
-                  </div>
-                </div>
-              </TabPanel>
-
-              {/* Diagnostics Tab */}
-              <TabPanel>
-                <div style={tabPanelContainerStyle}>
-                  <div style={surfaceCard()}>
-                    <Diagnostics selectedOrgId={selectedOrgId} />
                   </div>
                 </div>
               </TabPanel>
@@ -2069,41 +2069,55 @@ const SyncActivityPanel = ({
     });
   };
 
-  const formatHelsinkiTime = (timestamp) => {
+  const formatDateTimeEuro = (timestamp, options = {}) => {
     if (!timestamp) return 'Not available';
     try {
-      return new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Europe/Helsinki',
+      return new Intl.DateTimeFormat('fi-FI', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit'
+        second: '2-digit',
+        hour12: false,
+        ...options
       }).format(new Date(timestamp));
     } catch (error) {
-      console.error('Error formatting Helsinki time:', error);
-      return new Date(timestamp).toLocaleString();
+      console.error('Error formatting date/time:', error);
+      return new Date(timestamp).toLocaleString('fi-FI', { hour12: false, ...options });
     }
   };
 
-  const getNextRunTime = () => {
+  const formatHelsinkiTime = (timestamp) => formatDateTimeEuro(timestamp, { timeZone: 'Europe/Helsinki' });
+
+  const formatDuration = (ms) => {
+    if (!ms || ms < 60000) {
+      return 'under 1m';
+    }
+    const totalMinutes = Math.floor(ms / 60000);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours > 0) {
+      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    }
+    return `${minutes}m`;
+  };
+
+  const getNextRunInfo = () => {
     const lastRun = syncStats?.scheduled?.lastRun;
-    if (!lastRun) return null;
+    if (!lastRun) return { state: 'pending' };
     const next = new Date(lastRun);
     next.setHours(next.getHours() + 1);
-    
-    // If the calculated "next run" is in the past, the job is overdue/running soon
     const now = new Date();
-    if (next < now) {
-      // Return null to indicate it should run soon
-      return 'overdue';
+    if (next <= now) {
+      return { state: 'overdue', next, overdueMs: now - next };
     }
-    return next;
+    return { state: 'scheduled', next };
   };
 
   const scheduledEvents = Array.isArray(syncStats?.scheduled?.events) ? syncStats.scheduled.events : [];
   const hasScheduledEvents = scheduledEvents.length > 0;
+  const nextRunInfo = getNextRunInfo();
 
   const eventTypeMeta = {
     create: { label: 'Created', appearance: 'success' },
@@ -2204,7 +2218,7 @@ const SyncActivityPanel = ({
               </div>
               {syncStats.webhook.lastSync && (
                 <div style={{ fontSize: '12px', color: '#6B778C' }}>
-                  Last sync: {new Date(syncStats.webhook.lastSync).toLocaleString()}
+                  Last sync: {formatDateTimeEuro(syncStats.webhook.lastSync)}
                 </div>
               )}
 
@@ -2242,7 +2256,7 @@ const SyncActivityPanel = ({
                         border: `1px solid ${token('color.border.danger', '#DE350B')}`
                       }}>
                         <div style={{ marginBottom: '8px' }}>
-                          <strong style={{ fontSize: '13px' }}>{new Date(err.timestamp).toLocaleString()}</strong>
+                          <strong style={{ fontSize: '13px' }}>{formatDateTimeEuro(err.timestamp)}</strong>
                         </div>
                         <div style={{ marginBottom: '4px' }}>
                           <strong>Error:</strong> {err.error}
@@ -2295,7 +2309,7 @@ const SyncActivityPanel = ({
               </div>
               {syncStats.scheduled.lastRun && (
                 <div style={{ fontSize: '12px', color: '#6B778C' }}>
-                  Last run: {new Date(syncStats.scheduled.lastRun).toLocaleString()}
+                  Last run: {formatDateTimeEuro(syncStats.scheduled.lastRun)}
                 </div>
               )}
             </div>
@@ -2319,7 +2333,7 @@ const SyncActivityPanel = ({
                     color: '#DE350B',
                     borderRadius: '4px'
                   }}>
-                    Last rate limit: {new Date(syncStats.apiUsage.lastRateLimitHit).toLocaleString()}
+                    Last rate limit: {formatDateTimeEuro(syncStats.apiUsage.lastRateLimitHit)}
                   </span>
                 )}
               </div>
@@ -2445,7 +2459,7 @@ const SyncActivityPanel = ({
 
               {syncStats.apiUsage.lastUpdated && (
                 <div style={{ fontSize: '12px', color: '#6B778C', marginTop: token('space.200', '16px') }}>
-                  Last updated: {new Date(syncStats.apiUsage.lastUpdated).toLocaleString()}
+                  Last updated: {formatDateTimeEuro(syncStats.apiUsage.lastUpdated)}
                 </div>
               )}
             </div>
@@ -2467,11 +2481,20 @@ const SyncActivityPanel = ({
                   <div style={{ fontSize: '12px', color: '#6B778C' }}>Next scheduled run</div>
                   <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
                     {(() => {
-                      const nextRun = getNextRunTime();
-                      if (nextRun === 'overdue') {
-                        return <span style={{ color: '#00875A' }}>⏳ Running soon (within the hour)</span>;
+                      if (nextRunInfo.state === 'pending') {
+                        return 'Pending first schedule';
                       }
-                      return nextRun ? formatHelsinkiTime(nextRun) : 'Pending first schedule';
+                      if (nextRunInfo.state === 'scheduled') {
+                        return formatHelsinkiTime(nextRunInfo.next);
+                      }
+                      if (nextRunInfo.state === 'overdue') {
+                        return (
+                          <span style={{ color: '#DE350B' }}>
+                            Overdue by {formatDuration(nextRunInfo.overdueMs)}
+                          </span>
+                        );
+                      }
+                      return '—';
                     })()}
                   </div>
                 </div>
@@ -2479,6 +2502,16 @@ const SyncActivityPanel = ({
               <div style={{ marginTop: '12px', fontSize: '12px', color: '#6B778C' }}>
                 Runs every 60 minutes; next run is calculated from the last completed execution.
               </div>
+              {nextRunInfo.state === 'overdue' && (
+                <div style={{ marginTop: token('space.100', '8px') }}>
+                  <SectionMessage appearance="warning" title="Scheduler overdue">
+                    <p>
+                      The hourly Forge trigger has not reported a completion for {formatDuration(nextRunInfo.overdueMs)}.
+                      The job should resume automatically, but you can trigger a manual sync if updates are urgent.
+                    </p>
+                  </SectionMessage>
+                </div>
+              )}
               <div style={{ marginTop: token('space.300', '24px') }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.150', '12px') }}>
                   <strong style={{ fontSize: '13px' }}>Recent events ({scheduledEvents.length})</strong>
@@ -2895,7 +2928,7 @@ const ImportSettingsModal = ({ importData, sections, onToggleSection, onConfirm,
       <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.200', '16px') }}>
         <div style={{ fontSize: '13px', color: '#6B778C' }}>
           <div><strong>Source org:</strong> {importData?.org?.name || 'Unknown organization'}</div>
-          <div><strong>Exported:</strong> {importData?.exportedAt ? new Date(importData.exportedAt).toLocaleString() : 'Not specified'}</div>
+          <div><strong>Exported:</strong> {importData?.exportedAt ? formatDateTimeEuro(importData.exportedAt) : 'Not specified'}</div>
           {importData?.version && (
             <div><strong>Schema version:</strong> {importData.version}</div>
           )}
@@ -2955,7 +2988,7 @@ const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, i
           <div><strong>Issues detected:</strong> {data.issueKeys.length}</div>
           {meta.sourceOrg && <div><strong>Source org:</strong> {meta.sourceOrg}</div>}
           {meta.query && <div><strong>Original JQL:</strong> {meta.query}</div>}
-          {meta.exportedAt && <div><strong>Exported:</strong> {new Date(meta.exportedAt).toLocaleString()}</div>}
+          {meta.exportedAt && <div><strong>Exported:</strong> {formatDateTimeEuro(meta.exportedAt)}</div>}
         </div>
         <div>
           <h4 style={{ margin: '0 0 8px 0' }}>Import options</h4>
