@@ -8,6 +8,7 @@ import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.j
 import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
 import { SyncResult } from './sync-result.js';
+import { isSyncing } from '../storage/flags.js';
 
 /**
  * Sync all comments from a local issue to a remote issue
@@ -154,6 +155,15 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
 export async function syncComment(event) {
   const issueKey = event.issue.key;
   const commentId = event.comment?.id;
+
+  if (await isSyncing(issueKey)) {
+    console.log(`⏭️ Skipping comment sync for ${issueKey} - issue is currently syncing`);
+    await trackWebhookSync('comment', false, 'Issue currently syncing (loop prevention)', null, issueKey, {
+      reason: 'loop-prevention',
+      commentId
+    });
+    return;
+  }
 
   // Get all organizations with their API tokens from secure storage
   let organizations = await getOrganizationsWithTokens();

@@ -2,6 +2,38 @@ import { fetch } from '@forge/api';
 import { retryWithBackoff } from '../../utils/retry.js';
 import { LOG_EMOJI } from '../../constants.js';
 
+export async function getRemoteIssue(remoteKey, config, fields = []) {
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  const url = new URL(`${config.remoteUrl}/rest/api/3/issue/${remoteKey}`);
+
+  if (fields.length > 0) {
+    url.searchParams.set('fields', fields.join(','));
+  }
+
+  try {
+    const response = await retryWithBackoff(async () => {
+      return await fetch(url.toString(), {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': 'application/json'
+        }
+      });
+    }, `Get remote issue ${remoteKey}`);
+
+    if (response.ok) {
+      return await response.json();
+    }
+
+    const errorText = await response.text();
+    console.error(`${LOG_EMOJI.ERROR} Failed to get remote issue ${remoteKey}: ${errorText}`);
+    return null;
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error getting remote issue ${remoteKey}:`, error);
+    return null;
+  }
+}
+
 export async function getRemoteIssueAttachments(remoteKey, config) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   
