@@ -1,5 +1,8 @@
 # Two-Way Sync Architecture & Handshake Protocol
 
+# Disclaimer
+Always check official Forge docs for compliancy https://developer.atlassian.com/platform/forge/
+
 ## 1. Overview
 To support bidirectional synchronization while maintaining security and granular control, we will implement a "Handshake Protocol" and an optional "Two-Way" configuration mode.
 
@@ -34,7 +37,8 @@ Since we cannot assume the app is installed on the remote side (or that we have 
 3.  **Local Admin**: Copies this URL.
 4.  **Remote Admin**: Manually creates a System Webhook in Remote Jira.
     *   URL: `<incomingWebhookUrl>?secret=<incomingSecret>`
-    *   JQL: `project = "REMOTE_PROJ"` (This satisfies the "select what to expose" requirement).
+    *   JQL: `project = "REMOTE_PROJ" AND creator != "sync_user_account_id" AND updatedBy != "sync_user_account_id"`
+        *   *Note: This JQL filter is the PRIMARY loop prevention mechanism. It ensures the webhook never fires for changes made by the sync app itself.*
     *   Events: Issue Created, Updated, Deleted.
 
 ### Scenario B: Remote Side has "Sync App" (Symmetric)
@@ -45,24 +49,35 @@ Since we cannot assume the app is installed on the remote side (or that we have 
 
 *For MVP, we will focus on Scenario A (Universal Compatibility), as it doesn't require the remote side to install our app, but still gives them full control via standard Jira Webhook filters.*
 
-## 4. Loop Prevention (Failsafe)
-To prevent infinite loops (A→B→A→B...), we will implement a "Echo Detection" mechanism.
+## 4. Loop Prevention & Reliability
 
+### Primary Defense: Source Filtering (JQL)
+The most robust way to prevent loops is to stop the echo at the source. The Remote Admin MUST configure the webhook JQL to exclude the user account that the Sync App uses to authenticate.
+*   **JQL**: `... AND updatedBy != "557058:..."`
+*   This prevents the Remote Jira from ever sending a webhook for a change that *we* just made.
+
+### Secondary Defense: Echo Detection (Internal Flag)
+As a failsafe for race conditions or misconfiguration:
 1.  **Outgoing (Local → Remote)**:
-    *   App sets `syncing:ISSUE-123` flag in KVS before pushing.
+    *   App sets `syncing:ISSUE-123` flag in KVS (TTL: 60s).
     *   App pushes update to Remote.
-    *   Remote Jira fires Webhook back to Local (Echo).
+    *   (If JQL fails) Remote Jira fires Webhook back to Local.
     *   App clears `syncing:ISSUE-123` flag.
 
 2.  **Incoming (Remote → Local)**:
     *   Webtrigger receives webhook.
     *   **CHECK 1**: Is `syncing:ISSUE-123` flag set?
-        *   YES: It's an echo of our own change. **IGNORE**.
+        *   YES: It's an echo. **IGNORE**.
         *   NO: It's a genuine remote change. **PROCESS**.
-    *   **ACTION**:
-        *   Set `syncing:ISSUE-123` flag (to prevent Local Trigger from firing back).
-        *   Update Local Issue.
-        *   Clear `syncing:ISSUE-123` flag.
+
+### Idempotency (Deduplication)
+Jira may send the same webhook multiple times.
+*   **Mechanism**: Store `processed-webhook:{webhookEventId}` in KVS with 5-minute TTL.
+*   **Check**: If ID exists, return `200 OK` immediately and skip processing.
+
+### Conflict Resolution
+*   **Policy**: "Last Write Wins" based on webhook arrival time.
+*   Since webhooks are real-time, we assume the latest event represents the current truth.
 
 ## 5. Implementation Plan
 
@@ -74,12 +89,14 @@ To prevent infinite loops (A→B→A→B...), we will implement a "Echo Detectio
 ### Phase 2: Incoming Webhook (Webtrigger)
 - [ ] Create `src/webtriggers/incoming-webhook.js`.
 - [ ] Implement Secret validation.
+- [ ] Implement Idempotency check (`webhookEventId`).
 - [ ] Implement Loop Prevention check (`isSyncing`).
 
 ### Phase 3: Reverse Sync Logic
 - [ ] Implement `handleRemoteEvent` in `src/services/sync/incoming-sync.js`.
 - [ ] Implement `createLocalIssue` and `updateLocalIssue` in `local-client.js`.
 - [ ] Implement `reverseMapping` (Remote Fields → Local Fields).
+- [ ] **Note**: Ensure `remoteToLocalMappings` are respected if strict reversal isn't possible.
 
 ### Phase 4: Testing
 - [ ] Unit tests for Loop Prevention logic.

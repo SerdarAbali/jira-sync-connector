@@ -47,6 +47,10 @@ modules:
       queue: bulk-sync-queue
       function: bulk-sync-function
 
+  webtrigger:
+    - key: incoming-webhook
+      function: incoming-webhook-func
+
   function:
     - key: sync-trigger
       handler: index.run
@@ -70,6 +74,9 @@ modules:
     - key: bulk-sync-function
       handler: index.runBulkSync
       timeoutSeconds: 900
+
+    - key: incoming-webhook-func
+      handler: index.runIncomingWebhook
 
     - key: resolver
       handler: index.handler

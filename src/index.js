@@ -7,3 +7,4 @@ export { run as runLinkDeleted } from './triggers/link-deleted.js';
 export { run as runIssueDeleted } from './triggers/issue-deleted.js';
 export { run as runScheduledSync } from './triggers/scheduled.js';
 export { run as runBulkSync } from './triggers/bulk-sync.js';
+export { run as runIncomingWebhook } from './webtriggers/incoming-webhook.js';
