@@ -156,3 +156,18 @@ The system uses a **Defense-in-Depth** approach to prevent infinite sync loops.
 *   **Strategy**: "Last Write Wins"
 *   **Logic**: The system assumes that the most recent event (whether from Org A or Org B) represents the current truth.
 *   **Latency**: Webhooks typically arrive within 1-3 seconds. Race conditions are rare but possible; the `isSyncing` flag helps mitigate them by locking the issue during active sync operations.
+
+---
+
+## 7. Roadmap to Full Two-Way Parity
+
+To move from the current MVP (issue create/delete + summary/description updates inbound) to a complete two-way sync, implement the following sequence:
+
+1. **Remote Payload Retrieval** – On each incoming webhook, fetch the full issue/comment/attachment payload from Org B via REST so all fields are available (webhook bodies omit attachments, sprint data, etc.).
+2. **Bidirectional Mappings** – Extend storage helpers so user, field, status, issue type, attachment, and link mappings can be resolved in both directions without re-querying Forge storage each time.
+3. **Local Field Updates** – Enhance `buildCreatePayload`/`buildUpdatePayload` to populate priority, labels, components, estimates, custom fields, parents/epics, and add a `transitionLocalIssue` helper that mirrors outbound status transitions using the reverse mappings.
+4. **Inbound Entity Modules** – Reuse the existing attachment/comment/link sync modules with an "incoming" mode so Org B changes can create files, comments, and relationships inside Org A with the same locking/duplicate rules.
+5. **Sync Options & Loop Guards** – Add inbound toggles (e.g., `incomingComments`, `incomingAttachments`) so admins can control which entities Org B may push, and continue enforcing Org B JQL filters plus `markSyncing` around every inbound mutation.
+6. **Diagnostics & UI** – Expose webhook health, inbound toggle state, and latest inbound-sync timestamps inside the Admin UI and stats resolvers so operators can confirm both directions are active.
+
+Once these steps are complete, Org A and Org B will each propagate creations, updates, and deletes (including comments, attachments, status transitions, and links) with the same fidelity, while retaining the existing loop-prevention safeguards.
