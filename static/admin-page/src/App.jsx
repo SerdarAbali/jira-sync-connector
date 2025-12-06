@@ -78,6 +78,10 @@ const App = () => {
   const [showOrgModal, setShowOrgModal] = useState(false);
   const [editingOrg, setEditingOrg] = useState(null);
 
+  // Delete confirmation state
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [orgToDelete, setOrgToDelete] = useState(null);
+
   // Auto-loaded data
   const [remoteUsers, setRemoteUsers] = useState([]);
   const [localUsers, setLocalUsers] = useState([]);
@@ -384,16 +388,22 @@ const App = () => {
     }
   };
 
-  const handleDeleteOrg = async (orgId) => {
-    if (!confirm('Delete this organization? Mappings will be preserved.')) return;
+  const handleDeleteOrg = (orgId) => {
+    const org = organizations.find(o => o.id === orgId);
+    setOrgToDelete(org);
+    setDeleteModalOpen(true);
+  };
+
+  const executeDeleteOrg = async () => {
+    if (!orgToDelete) return;
 
     setSaving(true);
     try {
-      const result = await invoke('deleteOrganization', { id: orgId });
+      const result = await invoke('deleteOrganization', { id: orgToDelete.id });
       if (result.success) {
         showMessage('Organization deleted successfully', 'success');
         await loadOrganizations();
-        if (selectedOrgId === orgId) {
+        if (selectedOrgId === orgToDelete.id) {
           setSelectedOrgId(organizations[0]?.id || null);
         }
       } else {
@@ -403,6 +413,8 @@ const App = () => {
       showMessage('Error deleting organization: ' + error.message, 'error');
     } finally {
       setSaving(false);
+      setDeleteModalOpen(false);
+      setOrgToDelete(null);
     }
   };
 
@@ -1268,45 +1280,77 @@ const App = () => {
                     <div style={{ marginTop: '24px', display: 'grid', gap: '24px', gridTemplateColumns: '1fr 1fr' }}>
                       <div>
                         <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          🔒 Zero Data Egress
+                          Zero Data Egress
                         </h4>
-                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
-                          Your issue data never leaves the Atlassian cloud environment. We do not transmit your data to any external servers, databases, or third-party processors.
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5', marginBottom: '12px' }}>
+                          Your issue data never leaves the Atlassian cloud environment. This app does not transmit your data to any external servers, databases, or third-party processors.
                         </p>
+                        <div style={{ background: token('color.background.neutral.subtle', '#F4F5F7'), padding: '12px', borderRadius: '4px', borderLeft: `3px solid ${token('color.border.brand', '#0052CC')}` }}>
+                          <p style={{ fontSize: '12px', fontStyle: 'italic', color: token('color.text.subtle', '#6B778C'), marginBottom: '8px' }}>
+                            "The Forge runtime isolates the apps from the environment in which they execute... Apps cannot make requests to the Internet except as defined by the egress permissions in the app manifest."
+                          </p>
+                          <a href="https://developer.atlassian.com/platform/forge/security/#app-runtime" target="_blank" rel="noopener noreferrer" style={{ fontSize: '11px', fontWeight: 600, color: token('color.link', '#0052CC') }}>
+                            Atlassian Forge Security Docs ↗
+                          </a>
+                        </div>
                       </div>
                       
                       <div>
                         <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          🛡️ Enterprise Compliance
+                          Enterprise Compliance
                         </h4>
-                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5', marginBottom: '12px' }}>
                           By running natively on Atlassian's FaaS (Function as a Service) infrastructure, this app inherits Atlassian's platform security, compliance, and reliability controls.
                         </p>
+                        <div style={{ background: token('color.background.neutral.subtle', '#F4F5F7'), padding: '12px', borderRadius: '4px', borderLeft: `3px solid ${token('color.border.brand', '#0052CC')}` }}>
+                          <p style={{ fontSize: '12px', fontStyle: 'italic', color: token('color.text.subtle', '#6B778C'), marginBottom: '8px' }}>
+                            "Atlassian is responsible for running the platform used by Forge applications. This includes enforcing what applications can and can't do."
+                          </p>
+                          <a href="https://developer.atlassian.com/platform/forge/security/#forge-security-principles" target="_blank" rel="noopener noreferrer" style={{ fontSize: '11px', fontWeight: 600, color: token('color.link', '#0052CC') }}>
+                            Atlassian Shared Responsibility Model ↗
+                          </a>
+                        </div>
                       </div>
 
                       <div>
                         <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          ⚡ No External Infrastructure
+                          No External Infrastructure
                         </h4>
-                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
-                          We do not maintain any external servers. All compute and storage resources are provisioned and managed directly by Atlassian.
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5', marginBottom: '12px' }}>
+                          This app does not maintain any external servers. All compute and storage resources are provisioned and managed directly by Atlassian.
                         </p>
+                        <div style={{ background: token('color.background.neutral.subtle', '#F4F5F7'), padding: '12px', borderRadius: '4px', borderLeft: `3px solid ${token('color.border.brand', '#0052CC')}` }}>
+                          <p style={{ fontSize: '12px', fontStyle: 'italic', color: token('color.text.subtle', '#6B778C'), marginBottom: '8px' }}>
+                            "Forge apps run in AWS as lambdas. AWS Lambda provides per-app isolation... All of these accounts are separate from the other Atlassian services."
+                          </p>
+                          <a href="https://developer.atlassian.com/platform/forge/security/#app-runtime" target="_blank" rel="noopener noreferrer" style={{ fontSize: '11px', fontWeight: 600, color: token('color.link', '#0052CC') }}>
+                            Forge Runtime Architecture ↗
+                          </a>
+                        </div>
                       </div>
 
                       <div>
                         <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          🔐 Encrypted Storage
+                          Encrypted Storage
                         </h4>
-                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5', marginBottom: '12px' }}>
                           API tokens and configuration data are stored using Atlassian's encrypted storage service. Secrets are never exposed to the client browser.
                         </p>
+                        <div style={{ background: token('color.background.neutral.subtle', '#F4F5F7'), padding: '12px', borderRadius: '4px', borderLeft: `3px solid ${token('color.border.brand', '#0052CC')}` }}>
+                          <p style={{ fontSize: '12px', fontStyle: 'italic', color: token('color.text.subtle', '#6B778C'), marginBottom: '8px' }}>
+                            "Forge provides several options for persistent hosted storage. Each option provide data residency features that allow admins to control where app data is hosted."
+                          </p>
+                          <a href="https://developer.atlassian.com/platform/forge/storage/#forge-hosted-storage" target="_blank" rel="noopener noreferrer" style={{ fontSize: '11px', fontWeight: 600, color: token('color.link', '#0052CC') }}>
+                            Forge Hosted Storage Docs ↗
+                          </a>
+                        </div>
                       </div>
                     </div>
 
                     <div style={{ marginTop: '32px', borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: '24px' }}>
                       <div style={{ display: 'grid', gap: '32px', gridTemplateColumns: '1fr 1fr' }}>
                         <div>
-                          <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>✅ Current Capabilities</h3>
+                          <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Current Capabilities</h3>
                           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
                             {[
                               'Real-time One-Way Issue Sync',
@@ -1319,14 +1363,14 @@ const App = () => {
                               'Multi-Organization Support'
                             ].map((item, i) => (
                               <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: token('color.text', '#172B4D') }}>
-                                <span style={{ color: token('color.icon.success', '#36B37E') }}>✓</span> {item}
+                                <span style={{ color: token('color.icon.success', '#36B37E') }}>•</span> {item}
                               </li>
                             ))}
                           </ul>
                         </div>
 
                         <div>
-                          <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>🚀 Roadmap</h3>
+                          <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Roadmap</h3>
                           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
                             {[
                               'Two-Way Synchronization',
@@ -1344,6 +1388,17 @@ const App = () => {
                         </div>
                       </div>
                     </div>
+
+                    <div style={{ marginTop: '32px', borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: '24px' }}>
+                      <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Developer Contact</h3>
+                      <p style={{ fontSize: '14px', color: token('color.text', '#172B4D'), lineHeight: '1.5' }}>
+                        <strong>Serdar Abali</strong><br />
+                        <a href="mailto:serdar@live.fi" style={{ color: token('color.link', '#0052CC') }}>serdar@live.fi</a>
+                      </p>
+                      <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), marginTop: '8px' }}>
+                        Please report any bugs or feature requests to the email above.
+                      </p>
+                    </div>
                   </div>
                 </div>
               </TabPanel>
@@ -1352,6 +1407,29 @@ const App = () => {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <ModalTransition>
+        {deleteModalOpen && (
+          <ModalDialog
+            heading="Delete Organization?"
+            onClose={() => setDeleteModalOpen(false)}
+            actions={[
+              { text: 'Delete', onClick: executeDeleteOrg, appearance: 'danger', isLoading: saving },
+              { text: 'Cancel', onClick: () => setDeleteModalOpen(false), isDisabled: saving }
+            ]}
+          >
+            <p>
+              Are you sure you want to delete <strong>{orgToDelete?.name}</strong>?
+            </p>
+            <SectionMessage appearance="warning" title="Configuration will be lost">
+              <p>
+                This will remove the connection configuration. However, your issue mappings and sync history will be preserved in the database.
+              </p>
+            </SectionMessage>
+          </ModalDialog>
+        )}
+      </ModalTransition>
 
       {/* Org Modal */}
       <ModalTransition>
