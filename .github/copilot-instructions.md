@@ -15,6 +15,11 @@ Atlassian Forge app for one-way issue sync between two Jira Cloud orgs. Real-tim
 | Transactions | `@forge/kvs` only, max 25 ops, set/delete only |
 | Query API | `beginsWith` filter on keys only, max 100 results |
 
+## API Deprecations
+- **Jira Search API**: The `GET /rest/api/3/search` endpoint is deprecated and removed in some instances (returning 410 Gone). Always use `POST /rest/api/3/search/jql` instead.
+  - **Old (Do Not Use)**: `GET /rest/api/3/search?jql=...`
+  - **New (Use This)**: `POST /rest/api/3/search/jql` with body `{ "jql": "...", "fields": [...] }`
+
 ## Architecture
 
 ### Entry Point & Module Structure

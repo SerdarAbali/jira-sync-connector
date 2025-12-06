@@ -253,13 +253,18 @@ async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgNam
               const searchJql = `project = ${config.remoteProjectKey} AND summary ~ "${fullIssue.fields.summary.replace(/"/g, '\\"').substring(0, 50)}"`;
               
               const searchResponse = await fetch(
-                `${config.remoteUrl}/rest/api/3/search?jql=${encodeURIComponent(searchJql)}&maxResults=5&fields=key,summary`,
+                `${config.remoteUrl}/rest/api/3/search/jql`,
                 {
-                  method: 'GET',
+                  method: 'POST',
                   headers: {
                     'Authorization': `Basic ${auth}`,
                     'Content-Type': 'application/json'
-                  }
+                  },
+                  body: JSON.stringify({
+                    jql: searchJql,
+                    maxResults: 5,
+                    fields: ['key', 'summary']
+                  })
                 }
               );
               

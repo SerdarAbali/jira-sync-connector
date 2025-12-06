@@ -195,13 +195,18 @@ export async function run(event, context) {
                   const searchJql = `project = ${orgWithToken.remoteProjectKey} AND summary ~ "${fullIssue.fields.summary.replace(/"/g, '\\"').substring(0, 50)}"`;
                   
                   const searchResponse = await fetch(
-                    `${orgWithToken.remoteUrl}/rest/api/3/search?jql=${encodeURIComponent(searchJql)}&maxResults=5&fields=key,summary`,
+                    `${orgWithToken.remoteUrl}/rest/api/3/search/jql`,
                     {
-                      method: 'GET',
+                      method: 'POST',
                       headers: {
                         'Authorization': `Basic ${auth}`,
                         'Content-Type': 'application/json'
-                      }
+                      },
+                      body: JSON.stringify({
+                        jql: searchJql,
+                        maxResults: 5,
+                        fields: ['key', 'summary']
+                      })
                     }
                   );
                   

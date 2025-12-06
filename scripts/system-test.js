@@ -111,9 +111,13 @@ async function runTest() {
     console.log('🔎 Checking Remote Jira...');
     const searchResult = await jiraRequest(
       CONFIG.REMOTE_URL, 
-      'GET', 
-      `/rest/api/3/search?jql=project=${CONFIG.REMOTE_PROJECT} AND summary ~ "${createPayload.fields.summary}"`, 
-      remoteAuth
+      'POST', 
+      '/rest/api/3/search/jql', 
+      remoteAuth,
+      {
+        jql: `project=${CONFIG.REMOTE_PROJECT} AND summary ~ "${createPayload.fields.summary}"`,
+        fields: ['key', 'summary']
+      }
     );
 
     if (searchResult.issues && searchResult.issues.length > 0) {
