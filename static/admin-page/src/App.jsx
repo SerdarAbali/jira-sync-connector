@@ -996,7 +996,10 @@ const App = () => {
         boxShadow: token('elevation.shadow.raised', '0 2px 4px rgba(9, 30, 66, 0.13)')
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: token('space.200', '16px'), flex: 1, minWidth: '320px' }}>
-          <h3 style={{ margin: 0, fontSize: '18px' }}>Jira Sync Connector</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h3 style={{ margin: 0, fontSize: '18px' }}>Jira Sync Connector</h3>
+            <Lozenge appearance="new" isBold>v1.0.0-beta.1</Lozenge>
+          </div>
           <div style={{ width: '250px' }}>
             <Select
               options={organizations.map(org => ({
@@ -1120,6 +1123,7 @@ const App = () => {
                   <Tab>Sync Activity</Tab>
                   <Tab>Configuration</Tab>
                   <Tab>Mappings</Tab>
+                  <Tab>Security & Info</Tab>
                 </TabList>
 
               {/* Sync Activity Tab */}
@@ -1202,6 +1206,145 @@ const App = () => {
                     saving={saving}
                     handleAutoMatch={handleAutoMatch}
                   />
+                </div>
+              </TabPanel>
+
+              {/* Security & Info Tab */}
+              <TabPanel>
+                <div style={tabPanelContainerStyle}>
+                  <div style={surfaceCard()}>
+                    <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Security & Architecture</h3>
+                    <SectionMessage appearance="info" title="Native Forge Application">
+                      <p>
+                        This application is built on <strong>Atlassian Forge</strong>, the next-generation cloud development platform.
+                        Unlike legacy Connect apps, it runs entirely within Atlassian's secure infrastructure.
+                      </p>
+                    </SectionMessage>
+
+                    <div style={{ margin: '32px 0', padding: '24px', background: token('color.background.neutral.subtle', '#F4F5F7'), borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <h4 style={{ marginBottom: '16px', fontSize: '14px', fontWeight: 600, color: token('color.text.subtle', '#6B778C') }}>DATA FLOW ARCHITECTURE</h4>
+                      <svg width="600" height="180" viewBox="0 0 600 180" xmlns="http://www.w3.org/2000/svg">
+                        {/* Atlassian Cloud Boundary */}
+                        <rect x="10" y="10" width="580" height="160" rx="10" fill="none" stroke="#0052CC" strokeWidth="2" strokeDasharray="5,5" />
+                        <text x="300" y="30" textAnchor="middle" fill="#0052CC" fontSize="12" fontWeight="bold">ATLASSIAN CLOUD INFRASTRUCTURE (SECURE BOUNDARY)</text>
+
+                        {/* Source Org */}
+                        <rect x="40" y="60" width="120" height="80" rx="4" fill="#FFFFFF" stroke="#DFE1E6" strokeWidth="1" />
+                        <rect x="40" y="60" width="120" height="6" rx="4" fill="#0052CC" />
+                        <text x="100" y="105" textAnchor="middle" fill="#172B4D" fontSize="14" fontWeight="bold">Source Org</text>
+                        <text x="100" y="125" textAnchor="middle" fill="#6B778C" fontSize="11">Jira Cloud</text>
+
+                        {/* Target Org */}
+                        <rect x="440" y="60" width="120" height="80" rx="4" fill="#FFFFFF" stroke="#DFE1E6" strokeWidth="1" />
+                        <rect x="440" y="60" width="120" height="6" rx="4" fill="#0052CC" />
+                        <text x="500" y="105" textAnchor="middle" fill="#172B4D" fontSize="14" fontWeight="bold">Target Org</text>
+                        <text x="500" y="125" textAnchor="middle" fill="#6B778C" fontSize="11">Jira Cloud</text>
+
+                        {/* Forge App (Middle) */}
+                        <circle cx="300" cy="100" r="40" fill="#DEEBFF" stroke="#0052CC" strokeWidth="2" />
+                        <text x="300" y="95" textAnchor="middle" fill="#0052CC" fontSize="12" fontWeight="bold">FORGE</text>
+                        <text x="300" y="115" textAnchor="middle" fill="#0052CC" fontSize="10">App Runtime</text>
+
+                        {/* Arrows */}
+                        <defs>
+                          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#0052CC" />
+                          </marker>
+                        </defs>
+                        
+                        {/* Arrow 1: Source -> Forge */}
+                        <line x1="170" y1="100" x2="250" y2="100" stroke="#0052CC" strokeWidth="2" markerEnd="url(#arrowhead)" />
+                        <text x="210" y="90" textAnchor="middle" fill="#0052CC" fontSize="10">Webhook</text>
+
+                        {/* Arrow 2: Forge -> Target */}
+                        <line x1="350" y1="100" x2="430" y2="100" stroke="#0052CC" strokeWidth="2" markerEnd="url(#arrowhead)" />
+                        <text x="390" y="90" textAnchor="middle" fill="#0052CC" fontSize="10">REST API</text>
+                      </svg>
+                      <p style={{ marginTop: '12px', fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
+                        Data flows directly between organizations without ever leaving the secure Atlassian network.
+                      </p>
+                    </div>
+                    
+                    <div style={{ marginTop: '24px', display: 'grid', gap: '24px', gridTemplateColumns: '1fr 1fr' }}>
+                      <div>
+                        <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          🔒 Zero Data Egress
+                        </h4>
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
+                          Your issue data never leaves the Atlassian cloud environment. We do not transmit your data to any external servers, databases, or third-party processors.
+                        </p>
+                      </div>
+                      
+                      <div>
+                        <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          🛡️ Enterprise Compliance
+                        </h4>
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
+                          By running natively on Atlassian's FaaS (Function as a Service) infrastructure, this app inherits Atlassian's platform security, compliance, and reliability controls.
+                        </p>
+                      </div>
+
+                      <div>
+                        <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          ⚡ No External Infrastructure
+                        </h4>
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
+                          We do not maintain any external servers. All compute and storage resources are provisioned and managed directly by Atlassian.
+                        </p>
+                      </div>
+
+                      <div>
+                        <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          🔐 Encrypted Storage
+                        </h4>
+                        <p style={{ fontSize: '14px', color: token('color.text.subtle', '#6B778C'), lineHeight: '1.5' }}>
+                          API tokens and configuration data are stored using Atlassian's encrypted storage service. Secrets are never exposed to the client browser.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: '32px', borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: '24px' }}>
+                      <div style={{ display: 'grid', gap: '32px', gridTemplateColumns: '1fr 1fr' }}>
+                        <div>
+                          <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>✅ Current Capabilities</h3>
+                          <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
+                            {[
+                              'Real-time One-Way Issue Sync',
+                              'Comments & Attachments (10MB limit)',
+                              'Issue Links & Subtasks Support',
+                              'Epic & Parent/Child Relationships',
+                              'Status, Priority & User Mapping',
+                              'Hourly Scheduled Backup Sync',
+                              'Automatic Rate Limit Handling',
+                              'Multi-Organization Support'
+                            ].map((item, i) => (
+                              <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: token('color.text', '#172B4D') }}>
+                                <span style={{ color: token('color.icon.success', '#36B37E') }}>✓</span> {item}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        <div>
+                          <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>🚀 Roadmap</h3>
+                          <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
+                            {[
+                              'Two-Way Synchronization',
+                              'Advanced Field Transformation Rules',
+                              'Project-to-Project Mapping (Granular)',
+                              'Bulk Migration Wizard',
+                              'Sync History & Audit Log Export',
+                              'Custom Field Type Expansions'
+                            ].map((item, i) => (
+                              <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: token('color.text.subtle', '#6B778C') }}>
+                                <span style={{ fontSize: '12px', background: token('color.background.neutral', '#EBECF0'), padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>PLANNED</span> {item}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </TabPanel>
               </Tabs>
