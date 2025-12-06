@@ -9,7 +9,7 @@ import Select from '@atlaskit/select';
 import Spinner from '@atlaskit/spinner';
 import SectionMessage from '@atlaskit/section-message';
 import Checkbox from '@atlaskit/checkbox';
-import ModalDialog, { ModalTransition } from '@atlaskit/modal-dialog';
+import ModalDialog, { ModalTransition, ModalHeader, ModalTitle, ModalBody, ModalFooter } from '@atlaskit/modal-dialog';
 import Lozenge from '@atlaskit/lozenge';
 import { token } from '@atlaskit/tokens';
 import '@atlaskit/css-reset';
@@ -1411,22 +1411,28 @@ const App = () => {
       {/* Delete Confirmation Modal */}
       <ModalTransition>
         {deleteModalOpen && (
-          <ModalDialog
-            heading="Delete Organization?"
-            onClose={() => setDeleteModalOpen(false)}
-            actions={[
-              { text: 'Delete', onClick: executeDeleteOrg, appearance: 'danger', isLoading: saving },
-              { text: 'Cancel', onClick: () => setDeleteModalOpen(false), isDisabled: saving }
-            ]}
-          >
-            <p>
-              Are you sure you want to delete <strong>{orgToDelete?.name}</strong>?
-            </p>
-            <SectionMessage appearance="warning" title="Configuration will be lost">
+          <ModalDialog onClose={() => setDeleteModalOpen(false)}>
+            <ModalHeader>
+              <ModalTitle>Delete Organization?</ModalTitle>
+            </ModalHeader>
+            <ModalBody>
               <p>
-                This will remove the connection configuration. However, your issue mappings and sync history will be preserved in the database.
+                Are you sure you want to delete <strong>{orgToDelete?.name}</strong>?
               </p>
-            </SectionMessage>
+              <SectionMessage appearance="warning" title="Configuration will be lost">
+                <p>
+                  This will remove the connection configuration. However, your issue mappings and sync history will be preserved in the database.
+                </p>
+              </SectionMessage>
+            </ModalBody>
+            <ModalFooter>
+              <Button appearance="subtle" onClick={() => setDeleteModalOpen(false)} isDisabled={saving}>
+                Cancel
+              </Button>
+              <Button appearance="danger" onClick={executeDeleteOrg} isLoading={saving}>
+                Delete
+              </Button>
+            </ModalFooter>
           </ModalDialog>
         )}
       </ModalTransition>
@@ -2825,11 +2831,11 @@ const ImportSettingsModal = ({ importData, sections, onToggleSection, onConfirm,
   const hasSelection = sectionOptions.some(option => sections?.[option.key]);
 
   return (
-    <ModalDialog
-      heading="Import Settings"
-      onClose={onClose}
-      width="medium"
-    >
+    <ModalDialog onClose={onClose} width="medium">
+      <ModalHeader>
+        <ModalTitle>Import Settings</ModalTitle>
+      </ModalHeader>
+      <ModalBody>
       <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.200', '16px') }}>
         <div style={{ fontSize: '13px', color: '#6B778C' }}>
           <div><strong>Source org:</strong> {importData?.org?.name || 'Unknown organization'}</div>
@@ -2872,6 +2878,7 @@ const ImportSettingsModal = ({ importData, sections, onToggleSection, onConfirm,
           </Button>
         </div>
       </div>
+      </ModalBody>
     </ModalDialog>
   );
 };
@@ -2881,11 +2888,11 @@ const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, i
   const disabled = importing;
 
   return (
-    <ModalDialog
-      heading="Import Issues"
-      onClose={onClose}
-      width="medium"
-    >
+    <ModalDialog onClose={onClose} width="medium">
+      <ModalHeader>
+        <ModalTitle>Import Issues</ModalTitle>
+      </ModalHeader>
+      <ModalBody>
       <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.200', '16px') }}>
         <div style={{ fontSize: '13px', color: '#6B778C' }}>
           <div><strong>Destination:</strong> {selectedOrg?.name || 'Selected organization'}</div>
@@ -2945,18 +2952,19 @@ const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, i
           </Button>
         </div>
       </div>
+      </ModalBody>
     </ModalDialog>
   );
 };
 
 // Org Modal Component
 const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
-  <ModalDialog
-    heading={editingOrg ? `Edit Organization` : 'Add Organization'}
-    onClose={onClose}
-    width="large"
-  >
-    <Form onSubmit={onSave}>
+  <ModalDialog onClose={onClose} width="large">
+    <ModalHeader>
+      <ModalTitle>{editingOrg ? `Edit Organization` : 'Add Organization'}</ModalTitle>
+    </ModalHeader>
+    <ModalBody>
+      <Form onSubmit={onSave}>
       {({ formProps }) => (
         <form {...formProps} style={{ padding: token('space.200', '16px') }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.300', '24px') }}>
@@ -3125,6 +3133,7 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => (
         </form>
       )}
     </Form>
+    </ModalBody>
   </ModalDialog>
 );
 
