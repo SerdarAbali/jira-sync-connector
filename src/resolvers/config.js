@@ -1,5 +1,6 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
+import { MAX_STORAGE_SIZE } from '../constants.js';
 import { 
   validateOrganizationPayload, 
   validateOrgId, 
@@ -9,7 +10,6 @@ import {
   validateString
 } from '../utils/validation.js';
 
-const MAX_STORAGE_SIZE = 240000; // 240 KiB limit per key in Forge (verified)
 const DEFAULT_SYNC_OPTIONS = {
   syncComments: true,
   syncAttachments: true,

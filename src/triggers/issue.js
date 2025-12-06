@@ -30,7 +30,24 @@ export async function run(event, context) {
   
   // For updated events, check if this is right after creation (prevents duplicate creation)
   if (event.eventType === 'avi:jira:updated:issue') {
-    const createdAt = await kvsStore.get(`created-timestamp:${event.issue.key}`);
+    const createdData = await kvsStore.get(`created-timestamp:${event.issue.key}`);
+    let createdAt = null;
+
+    // Handle both old format (string) and new format (object with expiresAt)
+    if (createdData) {
+      if (typeof createdData === 'string') {
+        createdAt = createdData;
+      } else if (createdData.value && createdData.expiresAt) {
+        // Check expiration
+        if (Date.now() < createdData.expiresAt) {
+          createdAt = createdData.value;
+        } else {
+          // Expired, clean it up
+          await kvsStore.del(`created-timestamp:${event.issue.key}`);
+        }
+      }
+    }
+
     if (createdAt) {
       const timeSinceCreation = Date.now() - parseInt(createdAt, 10);
       if (timeSinceCreation < RECENT_CREATION_WINDOW_MS) {
@@ -46,9 +63,13 @@ export async function run(event, context) {
     }
   }
   
-  // Store creation timestamp for new issues
+  // Store creation timestamp for new issues with TTL (1 hour)
   if (event.eventType === 'avi:jira:created:issue') {
-    await kvsStore.set(`created-timestamp:${event.issue.key}`, Date.now().toString());
+    const TTL_MS = 60 * 60 * 1000; // 1 hour
+    await kvsStore.set(`created-timestamp:${event.issue.key}`, {
+      value: Date.now().toString(),
+      expiresAt: Date.now() + TTL_MS
+    });
   }
   
   await syncIssue(event);

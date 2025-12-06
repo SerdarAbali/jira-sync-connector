@@ -1,4 +1,5 @@
-import { getRemoteKey, removeMapping, getOrganizationsWithTokens } from '../services/storage/mappings.js';
+import { getRemoteKey, getOrganizationsWithTokens } from '../services/storage/mappings.js';
+import { cleanupIssueData } from '../services/storage/cleanup.js';
 import { fetch } from '@forge/api';
 
 export async function run(event, context) {
@@ -48,20 +49,17 @@ export async function run(event, context) {
         });
 
         if (response.ok || response.status === 204) {
-          console.log(`✅ Deleted remote issue ${remoteKey} from ${org.name}`);
-          // Remove the mapping (need both localKey and remoteKey)
-          await removeMapping(issueKey, remoteKey, orgId);
+          console.log(`✅ Deleted remote issue ${remoteKey}`);
+          // Use centralized cleanup
+          await cleanupIssueData(issueKey, remoteKey, orgId);
         } else {
-          const errorText = await response.text();
-          console.error(`❌ Failed to delete ${remoteKey} from ${org.name}: ${errorText}`);
+          console.error(`❌ Failed to delete remote issue ${remoteKey}: ${response.status}`);
         }
       } catch (error) {
-        console.error(`❌ Error deleting ${remoteKey} from ${org.name}:`, error);
+        console.error(`Error deleting remote issue ${remoteKey}:`, error);
       }
     }
-
-    console.log(`✅ Completed deletion processing for ${issueKey}`);
   } catch (error) {
-    console.error(`❌ Error processing issue deletion:`, error);
+    console.error(`Error processing issue deletion:`, error);
   }
 }

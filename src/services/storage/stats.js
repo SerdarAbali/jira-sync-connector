@@ -68,13 +68,19 @@ export async function trackApiCall(endpoint, success, isRateLimited = false, org
     stats.byEndpoint[endpointType].calls++;
     if (isRateLimited) stats.byEndpoint[endpointType].rateLimits++;
 
-    // Track by org
+    // Track by org (limit to 50 orgs to prevent unbounded growth)
     if (orgId) {
       if (!stats.byOrg[orgId]) {
-        stats.byOrg[orgId] = { calls: 0, rateLimits: 0 };
+        // If we hit the limit, don't add new orgs to stats (or could implement LRU)
+        if (Object.keys(stats.byOrg).length < 50) {
+          stats.byOrg[orgId] = { calls: 0, rateLimits: 0 };
+        }
       }
-      stats.byOrg[orgId].calls++;
-      if (isRateLimited) stats.byOrg[orgId].rateLimits++;
+      
+      if (stats.byOrg[orgId]) {
+        stats.byOrg[orgId].calls++;
+        if (isRateLimited) stats.byOrg[orgId].rateLimits++;
+      }
     }
 
     stats.lastUpdated = now.toISOString();

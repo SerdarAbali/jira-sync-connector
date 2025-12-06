@@ -1,5 +1,4 @@
-import { fetch } from '@forge/api';
-import api, { route } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
@@ -18,9 +17,11 @@ import { isProjectAllowedToSync } from '../../utils/validation.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
-  local: null,
-  remote: {} // keyed by org id
+  local: { id: null, expiresAt: 0 },
+  remote: {} // keyed by org id: { id: string, expiresAt: number }
 };
+
+const CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
 
 function isRankLikeString(value) {
   return typeof value === 'string' && /^\d+\|[A-Za-z0-9]+:/.test(value);
@@ -30,8 +31,9 @@ function isRankLikeString(value) {
  * Find the Epic Link custom field ID for the local Jira instance
  */
 async function getLocalEpicLinkFieldId() {
-  if (epicLinkFieldCache.local) {
-    return epicLinkFieldCache.local;
+  const now = Date.now();
+  if (epicLinkFieldCache.local.id && epicLinkFieldCache.local.expiresAt > now) {
+    return epicLinkFieldCache.local.id;
   }
   
   try {
@@ -44,7 +46,7 @@ async function getLocalEpicLinkFieldId() {
         (f.schema && f.schema.custom === 'com.pyxis.greenhopper.jira:gh-epic-link')
       );
       if (epicLinkField) {
-        epicLinkFieldCache.local = epicLinkField.id;
+        epicLinkFieldCache.local = { id: epicLinkField.id, expiresAt: now + CACHE_TTL_MS };
         console.log(`🎯 Found local Epic Link field: ${epicLinkField.id}`);
         return epicLinkField.id;
       }
@@ -59,8 +61,9 @@ async function getLocalEpicLinkFieldId() {
  * Find the Epic Link custom field ID for a remote Jira instance
  */
 async function getRemoteEpicLinkFieldId(org) {
-  if (epicLinkFieldCache.remote[org.id]) {
-    return epicLinkFieldCache.remote[org.id];
+  const now = Date.now();
+  if (epicLinkFieldCache.remote[org.id] && epicLinkFieldCache.remote[org.id].expiresAt > now) {
+    return epicLinkFieldCache.remote[org.id].id;
   }
   
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
@@ -82,7 +85,7 @@ async function getRemoteEpicLinkFieldId(org) {
         (f.schema && f.schema.custom === 'com.pyxis.greenhopper.jira:gh-epic-link')
       );
       if (epicLinkField) {
-        epicLinkFieldCache.remote[org.id] = epicLinkField.id;
+        epicLinkFieldCache.remote[org.id] = { id: epicLinkField.id, expiresAt: now + CACHE_TTL_MS };
         console.log(`🎯 Found remote Epic Link field for ${org.name}: ${epicLinkField.id}`);
         return epicLinkField.id;
       }

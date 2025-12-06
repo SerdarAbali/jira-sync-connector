@@ -1,5 +1,6 @@
 import { fetch } from '@forge/api';
 import { LOG_EMOJI } from '../../constants.js';
+import { retryWithBackoff } from '../../utils/retry.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 
@@ -23,25 +24,32 @@ export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKe
     console.log(`${LOG_EMOJI.LINK} Creating link: ${targetRemoteKey} → ${sourceRemoteKey} (${linkTypeName})`);
   }
 
-  const response = await fetch(
-    `${config.remoteUrl}/rest/api/3/issueLink`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(linkPayload)
-    }
-  );
+  try {
+    const response = await retryWithBackoff(async () => {
+      return await fetch(
+        `${config.remoteUrl}/rest/api/3/issueLink`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(linkPayload)
+        }
+      );
+    }, `Create link ${linkTypeName} between ${sourceRemoteKey} and ${targetRemoteKey}`);
 
-  if (response.ok || response.status === 201) {
-    console.log(`${LOG_EMOJI.SUCCESS} Created issue link (${linkTypeName})`);
-    return { success: true };
-  } else {
-    const errorText = await response.text();
-    console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
-    return { success: false, error: errorText };
+    if (response.ok || response.status === 201) {
+      console.log(`${LOG_EMOJI.SUCCESS} Created issue link (${linkTypeName})`);
+      return { success: true };
+    } else {
+      const errorText = await response.text();
+      console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
+      return { success: false, error: errorText };
+    }
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error creating link: ${error.message}`);
+    return { success: false, error: error.message };
   }
 }
 

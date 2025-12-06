@@ -14,6 +14,7 @@ import Lozenge from '@atlaskit/lozenge';
 import { token } from '@atlaskit/tokens';
 import '@atlaskit/css-reset';
 import ErrorBoundary from './components/ErrorBoundary';
+import Diagnostics from './components/Diagnostics';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -1136,6 +1137,7 @@ const App = () => {
                   <Tab>Configuration</Tab>
                   <Tab>Mappings</Tab>
                   <Tab>Security & Info</Tab>
+                  <Tab>Diagnostics</Tab>
                 </TabList>
 
               {/* Sync Activity Tab */}
@@ -1399,6 +1401,15 @@ const App = () => {
                         Please report any bugs or feature requests to the email above.
                       </p>
                     </div>
+                  </div>
+                </div>
+              </TabPanel>
+
+              {/* Diagnostics Tab */}
+              <TabPanel>
+                <div style={tabPanelContainerStyle}>
+                  <div style={surfaceCard()}>
+                    <Diagnostics selectedOrgId={selectedOrgId} />
                   </div>
                 </div>
               </TabPanel>

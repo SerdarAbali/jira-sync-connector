@@ -232,22 +232,11 @@ Slow initial sync:
 
 ## TODO
 
-Pending optimizations identified during code review:
-
-### Performance
-- [ ] Cache `getOrganizationsWithTokens()` per invocation to reduce KVS calls
-- [ ] Optimize `findPendingLinksToIssue()` N+1 query pattern (sequential KVS calls)
-- [ ] Add TTL cleanup for `created-timestamp:` keys (currently unbounded)
-
-### Reliability
-- [ ] Add `retryWithBackoff()` wrapper to `createLinkOnRemote()` in link-sync.js
-- [ ] Add TTL/expiration to epic field cache (`epicLinkFieldCache`)
-- [ ] Create centralized `cleanupIssueData()` for consistent mapping cleanup on issue delete
-
-### Code Quality
-- [ ] Remove duplicate `fetch` imports in issue-sync.js, comment-sync.js, scheduled-sync.js
-- [ ] Move `MAX_STORAGE_SIZE` constant to constants.js (currently duplicated in config.js)
-- [ ] Add size limits to `apiUsageStats.byEndpoint` and `byOrg` objects
+### Two-Way Sync (Upcoming)
+- [ ] Implement incoming webhook handler (Web Trigger) for remote events
+- [ ] Implement `createIssue` and `updateIssue` in `local-client.js`
+- [ ] Implement reverse mapping logic (Remote -> Local)
+- [ ] Add loop prevention for incoming webhooks
 
 ## Roadmap
 

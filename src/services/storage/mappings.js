@@ -1,7 +1,19 @@
 import * as kvsStore from './kvs.js';
 
+// Cache for organizations to reduce KVS calls
+let orgsCache = {
+  data: null,
+  timestamp: 0
+};
+const ORG_CACHE_TTL = 5000; // 5 seconds
+
 // Helper to get organizations with their API tokens from secret storage
 export async function getOrganizationsWithTokens() {
+  const now = Date.now();
+  if (orgsCache.data && (now - orgsCache.timestamp < ORG_CACHE_TTL)) {
+    return orgsCache.data;
+  }
+
   const orgs = await kvsStore.get('organizations') || [];
   const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
     const token = await kvsStore.getSecret(`secret:${org.id}:token`);
@@ -10,6 +22,12 @@ export async function getOrganizationsWithTokens() {
       remoteApiToken: token || org.remoteApiToken || '' // Fallback for migration
     };
   }));
+
+  orgsCache = {
+    data: orgsWithTokens,
+    timestamp: now
+  };
+  
   return orgsWithTokens;
 }
 

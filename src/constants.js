@@ -3,6 +3,7 @@
 // File Upload Limits
 export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10MB in bytes
 export const MAX_ATTACHMENT_SIZE_MB = 10; // For user-facing messages
+export const MAX_STORAGE_SIZE = 240000; // 240 KiB limit per key in Forge (verified)
 
 // Rate Limiting & Performance
 export const SCHEDULED_SYNC_DELAY_MS = 500; // Delay between issues in scheduled sync
