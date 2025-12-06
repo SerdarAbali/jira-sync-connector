@@ -168,3 +168,9 @@ console.log(`${LOG_EMOJI.ERROR} Failed: ${error.message}`);  // ❌
 | Storage schema change | `services/storage/mappings.js`, `services/storage/kvs.js` |
 | Admin UI feature | `static/admin-page/src/App.jsx` + resolver in `resolvers/*.js` |
 | Rate limit tuning | `constants.js` (RETRY_*, BATCH_*) |
+
+## Documentation & UI Guidelines
+
+- **No Hype Language**: Avoid marketing fluff like "First in the world", "Best", "Revolutionary". Use objective, technical language (e.g., "Zero Data Egress", "Native Forge Architecture").
+- **No Emojis in UI**: Do not use emojis in the Admin UI or user-facing documentation. Keep the interface professional and clean. (Note: Emojis in server-side logs are permitted for parsing).
+- **Professional Tone**: Use "This app" or passive voice instead of "We".
