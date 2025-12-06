@@ -56,6 +56,41 @@ const DEFAULT_ISSUE_IMPORT_OPTIONS = {
   skipIfRemoteExists: false
 };
 
+// Utility function for date formatting (European style)
+const formatDateTimeEuro = (timestamp, options = {}) => {
+  if (!timestamp) return 'Not available';
+  try {
+    return new Intl.DateTimeFormat('fi-FI', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      ...options
+    }).format(new Date(timestamp));
+  } catch (error) {
+    console.error('Error formatting date/time:', error);
+    return new Date(timestamp).toLocaleString('fi-FI', { hour12: false, ...options });
+  }
+};
+
+const formatHelsinkiTime = (timestamp) => formatDateTimeEuro(timestamp, { timeZone: 'Europe/Helsinki' });
+
+const formatDuration = (ms) => {
+  if (!ms || ms < 60000) {
+    return 'under 1m';
+  }
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
+};
+
 
 const App = () => {
   const [organizations, setOrganizations] = useState([]);
@@ -99,13 +134,13 @@ const App = () => {
   const [fieldMappings, setFieldMappings] = useState({});
   const [statusMappings, setStatusMappings] = useState({});
   const [issueTypeMappings, setIssueTypeMappings] = useState({});
+  const [projectMappings, setProjectMappings] = useState({});
 
   // Sync options
   const [syncOptions, setSyncOptions] = useState({
     syncComments: true,
     syncAttachments: true,
     syncLinks: true,
-    syncSprints: false,
     syncCrossReference: true,
     recreateDeletedIssues: false
   });
@@ -164,11 +199,12 @@ const App = () => {
   const loadOrgData = async (orgId) => {
     try {
       // Load mappings and last sync time
-      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, syncOptionsData, lastSyncData] = await Promise.all([
+      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, projectMappingData, syncOptionsData, lastSyncData] = await Promise.all([
         invoke('getUserMappings', { orgId }),
         invoke('getFieldMappings', { orgId }),
         invoke('getStatusMappings', { orgId }),
         invoke('getIssueTypeMappings', { orgId }),
+        invoke('getProjectMappings', { orgId }),
         invoke('getSyncOptions', { orgId }),
         invoke('getLastSyncTime', { orgId })
       ]);
@@ -177,6 +213,7 @@ const App = () => {
       if (fieldMappingData) setFieldMappings(fieldMappingData);
       if (statusMappingData) setStatusMappings(statusMappingData);
       if (issueTypeMappingData) setIssueTypeMappings(issueTypeMappingData);
+      if (projectMappingData) setProjectMappings(projectMappingData);
       if (syncOptionsData) setSyncOptions(syncOptionsData);
       if (lastSyncData?.lastSync) setLastSyncTime(lastSyncData.lastSync);
     } catch (error) {
@@ -565,13 +602,15 @@ const App = () => {
         'user': userMappings,
         'field': fieldMappings,
         'status': statusMappings,
-        'issueType': issueTypeMappings
+        'issueType': issueTypeMappings,
+        'project': projectMappings
       };
       const methodMap = {
         'user': 'saveUserMappings',
         'field': 'saveFieldMappings',
         'status': 'saveStatusMappings',
-        'issueType': 'saveIssueTypeMappings'
+        'issueType': 'saveIssueTypeMappings',
+        'project': 'saveProjectMappings'
       };
       const mappings = mappingsMap[type];
       const method = methodMap[type];
@@ -1212,6 +1251,8 @@ const App = () => {
                     setStatusMappings={setStatusMappings}
                     issueTypeMappings={issueTypeMappings}
                     setIssueTypeMappings={setIssueTypeMappings}
+                    projectMappings={projectMappings}
+                    setProjectMappings={setProjectMappings}
                     addMapping={addMapping}
                     deleteMapping={deleteMapping}
                     handleSaveMappings={handleSaveMappings}
@@ -1364,14 +1405,19 @@ const App = () => {
                           <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Current Capabilities</h3>
                           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
                             {[
-                              'Real-time One-Way Issue Sync',
+                              'Real-time Bidirectional Issue Sync',
+                              'Zero Footprint on Target Org (No App Install Required)',
                               'Comments & Attachments (10MB limit)',
                               'Issue Links & Subtasks Support',
                               'Epic & Parent/Child Relationships',
                               'Status, Priority & User Mapping',
+                              'Issue Type Mapping',
+                              'Custom Field Mapping',
                               'Hourly Scheduled Backup Sync',
                               'Automatic Rate Limit Handling',
-                              'Multi-Organization Support'
+                              'Multi-Organization Support',
+                              'JQL-based Project Filtering',
+                              'Settings Import/Export'
                             ].map((item, i) => (
                               <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: token('color.text', '#172B4D') }}>
                                 <span style={{ color: token('color.icon.success', '#36B37E') }}>•</span> {item}
@@ -1384,12 +1430,11 @@ const App = () => {
                           <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Roadmap</h3>
                           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
                             {[
-                              'Two-Way Synchronization',
+                              'Inbound Attachments (Remote → Local)',
+                              'Inbound Issue Links (Remote → Local)',
                               'Advanced Field Transformation Rules',
-                              'Project-to-Project Mapping (Granular)',
                               'Bulk Migration Wizard',
-                              'Sync History & Audit Log Export',
-                              'Custom Field Type Expansions'
+                              'Sync History & Audit Log Export'
                             ].map((item, i) => (
                               <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: token('color.text.subtle', '#6B778C') }}>
                                 <span style={{ fontSize: '12px', background: token('color.background.neutral', '#EBECF0'), padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>PLANNED</span> {item}
@@ -1625,7 +1670,6 @@ const ConfigurationPanel = ({
               { key: 'syncComments', label: 'Sync Comments' },
               { key: 'syncAttachments', label: 'Sync Attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
-              { key: 'syncSprints', label: 'Sync Sprints' },
               { key: 'syncCrossReference', label: 'Add Cross-Reference in Description (show linked issue keys in both orgs)' },
               { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (re-sync issues deleted in target org)' }
             ].map(option => (
@@ -1732,6 +1776,7 @@ const MappingsPanel = ({
   remoteStatuses, localStatuses, remoteIssueTypes, localIssueTypes,
   userMappings, setUserMappings, fieldMappings, setFieldMappings,
   statusMappings, setStatusMappings, issueTypeMappings, setIssueTypeMappings,
+  projectMappings, setProjectMappings,
   addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving,
   handleAutoMatch
 }) => {
@@ -1743,6 +1788,8 @@ const MappingsPanel = ({
   const [newStatusLocal, setNewStatusLocal] = useState('');
   const [newIssueTypeRemote, setNewIssueTypeRemote] = useState('');
   const [newIssueTypeLocal, setNewIssueTypeLocal] = useState('');
+  const [newProjectSource, setNewProjectSource] = useState('');
+  const [newProjectTarget, setNewProjectTarget] = useState('');
 
   const hasData = remoteUsers.length > 0 || localUsers.length > 0;
   const isLoading = dataLoading.users || dataLoading.fields || dataLoading.statuses || dataLoading.issueTypes;
@@ -1921,6 +1968,87 @@ const MappingsPanel = ({
             newLocal={newIssueTypeLocal}
             setNewLocal={setNewIssueTypeLocal}
           />
+
+          {/* Project Mappings - simple text inputs, no dropdowns needed */}
+          <div style={surfaceCard({ marginBottom: token('space.250', '20px') })}>
+            <div style={{ marginBottom: token('space.200', '16px') }}>
+              <h4 style={{ margin: 0, marginBottom: '8px' }}>Project Mappings ({Object.keys(projectMappings || {}).length})</h4>
+              <p style={{ color: '#6B778C', fontSize: '13px', margin: 0 }}>
+                Map source project keys to target project keys. Issues from a source project will be synced to the corresponding target project.
+                If no mapping exists, issues go to the default remote project configured for this organization.
+              </p>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: token('space.150', '12px'), marginBottom: token('space.200', '16px') }}>
+              <TextField
+                value={newProjectSource}
+                onChange={(e) => setNewProjectSource(e.target.value.toUpperCase())}
+                placeholder="Source project key (e.g., PROJ)"
+              />
+              <TextField
+                value={newProjectTarget}
+                onChange={(e) => setNewProjectTarget(e.target.value.toUpperCase())}
+                placeholder="Target project key (e.g., SYNC)"
+              />
+              <Button
+                appearance="subtle"
+                onClick={() => {
+                  if (newProjectSource && newProjectTarget) {
+                    setProjectMappings({ ...projectMappings, [newProjectSource]: newProjectTarget });
+                    setNewProjectSource('');
+                    setNewProjectTarget('');
+                  }
+                }}
+                isDisabled={!newProjectSource || !newProjectTarget}
+                style={lozengeButtonStyle}
+              >
+                Add
+              </Button>
+            </div>
+
+            <div style={{ marginBottom: token('space.200', '16px') }}>
+              {Object.keys(projectMappings || {}).length === 0 ? (
+                <div style={{ color: '#6B778C', fontSize: '13px', fontStyle: 'italic' }}>
+                  No project mappings configured. All issues will sync to the default remote project.
+                </div>
+              ) : (
+                Object.entries(projectMappings).map(([sourceKey, targetKey]) => (
+                  <div key={sourceKey} style={{
+                    padding: '8px 12px',
+                    background: token('color.background.neutral.subtle', '#F4F5F7'),
+                    borderRadius: token('border.radius', '8px'),
+                    marginBottom: '4px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: '13px'
+                  }}>
+                    <span><strong>{sourceKey}</strong> → {targetKey}</span>
+                    <Button
+                      appearance="subtle"
+                      onClick={() => {
+                        const updated = { ...projectMappings };
+                        delete updated[sourceKey];
+                        setProjectMappings(updated);
+                      }}
+                      style={lozengeButtonStyle}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <Button
+              appearance="subtle"
+              onClick={() => handleSaveMappings('project')}
+              isLoading={saving}
+              style={lozengeButtonStyle}
+            >
+              Save Project Mappings
+            </Button>
+          </div>
         </div>
       )}
     </div>
@@ -2069,40 +2197,6 @@ const SyncActivityPanel = ({
     });
   };
 
-  const formatDateTimeEuro = (timestamp, options = {}) => {
-    if (!timestamp) return 'Not available';
-    try {
-      return new Intl.DateTimeFormat('fi-FI', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-        ...options
-      }).format(new Date(timestamp));
-    } catch (error) {
-      console.error('Error formatting date/time:', error);
-      return new Date(timestamp).toLocaleString('fi-FI', { hour12: false, ...options });
-    }
-  };
-
-  const formatHelsinkiTime = (timestamp) => formatDateTimeEuro(timestamp, { timeZone: 'Europe/Helsinki' });
-
-  const formatDuration = (ms) => {
-    if (!ms || ms < 60000) {
-      return 'under 1m';
-    }
-    const totalMinutes = Math.floor(ms / 60000);
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    if (hours > 0) {
-      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-    }
-    return `${minutes}m`;
-  };
-
   const getNextRunInfo = () => {
     const lastRun = syncStats?.scheduled?.lastRun;
     if (!lastRun) return { state: 'pending' };
@@ -2214,6 +2308,7 @@ const SyncActivityPanel = ({
                 <StatCard label="Issues Created" value={syncStats.webhook.issuesCreated || 0} color="#00875A" />
                 <StatCard label="Issues Updated" value={syncStats.webhook.issuesUpdated || 0} color="#0052CC" />
                 <StatCard label="Comments Synced" value={syncStats.webhook.commentsSynced || 0} color="#403294" />
+                <StatCard label="Loops Prevented" value={syncStats.webhook.loopsPrevented || 0} color="#00875A" />
                 <StatCard label="Issues Skipped" value={syncStats.webhook.issuesSkipped || 0} color="#FF991F" />
               </div>
               {syncStats.webhook.lastSync && (

@@ -89,7 +89,6 @@ export const LOG_EMOJI = {
   ATTACHMENT: '📎',
   LINK: '🔗',
   COMPONENT: '🏷️',
-  SPRINT: '🏃',
   STATUS: '🚦',
   WARNING: '⚠️',
   STOP: '⛔',

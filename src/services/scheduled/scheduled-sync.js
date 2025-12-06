@@ -677,7 +677,6 @@ export async function performScheduledSync() {
         syncComments: true,
         syncAttachments: true,
         syncLinks: true,
-        syncSprints: false,
         recreateDeletedIssues: false
       };
       

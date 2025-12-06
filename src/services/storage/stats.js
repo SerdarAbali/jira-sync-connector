@@ -198,6 +198,7 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
       issuesUpdated: 0,
       commentsSynced: 0,
       issuesSkipped: 0,
+      loopsPrevented: 0,
       errors: [],
       lastSync: null,
       byOrg: {} // Track stats per org
@@ -205,6 +206,9 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
 
     stats.totalSyncs++;
     stats.lastSync = new Date().toISOString();
+
+    // Check if this is a loop prevention skip (not a real error)
+    const isLoopPrevention = type === 'skip' && error === 'Already syncing';
 
     // Track per-org stats if orgId provided
     if (orgId) {
@@ -215,6 +219,7 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
           issuesUpdated: 0,
           commentsSynced: 0,
           issuesSkipped: 0,
+          loopsPrevented: 0,
           lastSync: null
         };
       }
@@ -225,6 +230,8 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
         if (type === 'create') stats.byOrg[orgId].issuesCreated++;
         else if (type === 'update') stats.byOrg[orgId].issuesUpdated++;
         else if (type === 'comment') stats.byOrg[orgId].commentsSynced++;
+      } else if (isLoopPrevention) {
+        stats.byOrg[orgId].loopsPrevented = (stats.byOrg[orgId].loopsPrevented || 0) + 1;
       } else {
         stats.byOrg[orgId].issuesSkipped++;
       }
@@ -235,6 +242,10 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
       if (type === 'create') stats.issuesCreated++;
       else if (type === 'update') stats.issuesUpdated++;
       else if (type === 'comment') stats.commentsSynced++;
+    } else if (isLoopPrevention) {
+      // Loop prevention is a feature, not an error - track separately
+      stats.loopsPrevented = (stats.loopsPrevented || 0) + 1;
+      // Don't add to error list
     } else {
       stats.issuesSkipped++;
       if (error) {

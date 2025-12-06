@@ -3,6 +3,7 @@ import { invoke } from '@forge/bridge';
 import Button, { LoadingButton } from '@atlaskit/button';
 import SectionMessage from '@atlaskit/section-message';
 import Spinner from '@atlaskit/spinner';
+import TextField from '@atlaskit/textfield';
 import { token } from '@atlaskit/tokens';
 import CheckCircleIcon from '@atlaskit/icon/glyph/check-circle';
 import ErrorIcon from '@atlaskit/icon/glyph/error';
@@ -13,6 +14,12 @@ const Diagnostics = ({ selectedOrgId }) => {
   const [testType, setTestType] = useState(null); // 'health' or 'system'
   const [results, setResults] = useState(null);
   const [logs, setLogs] = useState([]);
+  
+  // Issue lookup state
+  const [issueKey, setIssueKey] = useState('');
+  const [issueLookupLoading, setIssueLookupLoading] = useState(false);
+  const [issueMapping, setIssueMapping] = useState(null);
+  const [forceSyncLoading, setForceSyncLoading] = useState(false);
 
   const runHealthCheck = async () => {
     if (!selectedOrgId) return;
@@ -33,7 +40,7 @@ const Diagnostics = ({ selectedOrgId }) => {
 
   const runSystemTest = async () => {
     if (!selectedOrgId) return;
-    if (!confirm('⚠️ WARNING: This will create and delete a real issue in your Jira project. Do you want to proceed?')) return;
+    if (!confirm('WARNING: This will create and delete a real issue in your Jira project. Do you want to proceed?')) return;
 
     setLoading(true);
     setTestType('system');
@@ -48,6 +55,37 @@ const Diagnostics = ({ selectedOrgId }) => {
       setResults({ success: false, error: error.message });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const checkIssueMapping = async () => {
+    if (!selectedOrgId || !issueKey.trim()) return;
+    setIssueLookupLoading(true);
+    setIssueMapping(null);
+    
+    try {
+      const res = await invoke('checkIssueMapping', { orgId: selectedOrgId, issueKey: issueKey.trim().toUpperCase() });
+      setIssueMapping(res);
+    } catch (error) {
+      setIssueMapping({ error: error.message });
+    } finally {
+      setIssueLookupLoading(false);
+    }
+  };
+
+  const forceSyncIssue = async () => {
+    if (!selectedOrgId || !issueKey.trim()) return;
+    if (!confirm(`This will remove any existing mapping for ${issueKey} and force sync it to the remote. Proceed?`)) return;
+    
+    setForceSyncLoading(true);
+    
+    try {
+      const res = await invoke('forceSyncIssue', { orgId: selectedOrgId, issueKey: issueKey.trim().toUpperCase() });
+      setIssueMapping(res);
+    } catch (error) {
+      setIssueMapping({ error: error.message });
+    } finally {
+      setForceSyncLoading(false);
     }
   };
 

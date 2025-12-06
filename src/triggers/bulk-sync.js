@@ -244,58 +244,70 @@ export async function run(event, context) {
                 totalErrors++;
               }
             } else {
-              // Has mapping - already synced
-              totalAlreadySynced++;
+              // Has mapping - verify remote issue still exists
+              const auth = Buffer.from(`${orgWithToken.remoteEmail}:${orgWithToken.remoteApiToken}`).toString('base64');
               
-              // Update existing issues if updateExisting is enabled
-              if (updateExisting) {
-                try {
-                  const fullIssue = await getFullIssue(localKey);
-                  if (fullIssue) {
-                    console.log(`🔄 Updating existing issue ${localKey} → ${remoteKey}`);
-                    await updateRemoteIssue(localKey, remoteKey, fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
-                    totalUpdated++;
-                  }
-                } catch (updateError) {
-                  console.error(`❌ Error updating ${localKey}:`, updateError.message);
-                  totalErrors++;
-                }
-              }
-              // Only do expensive verification if syncMissingData is enabled
-              else if (syncMissingData) {
-                const auth = Buffer.from(`${orgWithToken.remoteEmail}:${orgWithToken.remoteApiToken}`).toString('base64');
-                
-                try {
-                  const checkResponse = await fetch(
-                    `${orgWithToken.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=key`,
-                    {
-                      method: 'GET',
-                      headers: {
-                        'Authorization': `Basic ${auth}`,
-                        'Content-Type': 'application/json'
-                      }
+              let remoteExists = true;
+              try {
+                const checkResponse = await fetch(
+                  `${orgWithToken.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=key`,
+                  {
+                    method: 'GET',
+                    headers: {
+                      'Authorization': `Basic ${auth}`,
+                      'Content-Type': 'application/json'
                     }
-                  );
-
-                  if (checkResponse.status === 404) {
-                    // Remote was deleted - recreate
-                    console.log(`❌ Remote ${remoteKey} was DELETED - recreating`);
-                    await removeMapping(localKey, remoteKey, orgWithToken.id);
-
+                  }
+                );
+                remoteExists = checkResponse.ok;
+                
+                if (checkResponse.status === 404) {
+                  console.log(`⚠️ STALE MAPPING: ${localKey} → ${remoteKey} (remote deleted)`);
+                  remoteExists = false;
+                }
+              } catch (e) {
+                console.log(`⚠️ Could not verify ${remoteKey}: ${e.message}`);
+              }
+              
+              if (!remoteExists) {
+                // Remote was deleted - remove stale mapping and recreate
+                console.log(`🔄 Removing stale mapping and recreating ${localKey}`);
+                await removeMapping(localKey, remoteKey, orgWithToken.id);
+                
+                const fullIssue = await getFullIssue(localKey);
+                if (fullIssue) {
+                  const createResult = await createRemoteIssue(fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
+                  const newRemoteKey = createResult?.key || createResult;
+                  
+                  if (newRemoteKey) {
+                    console.log(`✅ Recreated ${localKey} → ${newRemoteKey}`);
+                    totalRecreated++;
+                  } else {
+                    console.error(`❌ Failed to recreate ${localKey}`);
+                    totalErrors++;
+                  }
+                }
+              } else {
+                // Remote exists - count as already synced
+                totalAlreadySynced++;
+                
+                // Update existing issues if updateExisting is enabled
+                if (updateExisting) {
+                  try {
                     const fullIssue = await getFullIssue(localKey);
                     if (fullIssue) {
-                      const createResult = await createRemoteIssue(fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
-                      const newRemoteKey = createResult?.key || createResult;
-                      
-                      if (newRemoteKey) {
-                        console.log(`✅ Recreated ${localKey} → ${newRemoteKey}`);
-                        totalRecreated++;
-                      } else {
-                        totalErrors++;
-                      }
+                      console.log(`🔄 Updating existing issue ${localKey} → ${remoteKey}`);
+                      await updateRemoteIssue(localKey, remoteKey, fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
+                      totalUpdated++;
                     }
-                  } else if (checkResponse.ok) {
-                    // Sync missing data
+                  } catch (updateError) {
+                    console.error(`❌ Error updating ${localKey}:`, updateError.message);
+                    totalErrors++;
+                  }
+                }
+                // Sync missing data if enabled
+                else if (syncMissingData) {
+                  try {
                     const fullIssue = await getFullIssue(localKey);
                     if (fullIssue) {
                       if (effectiveSyncOptions.syncAttachments !== false) {
@@ -308,9 +320,9 @@ export async function run(event, context) {
                         await syncAllComments(localKey, remoteKey, fullIssue, orgWithToken, null, orgWithToken.id);
                       }
                     }
+                  } catch (error) {
+                    console.error(`Error syncing missing data for ${localKey}:`, error.message);
                   }
-                } catch (error) {
-                  console.error(`Error verifying ${remoteKey}:`, error.message);
                 }
               }
             }

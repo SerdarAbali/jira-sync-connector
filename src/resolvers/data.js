@@ -605,4 +605,60 @@ export function defineDataResolvers(resolver) {
       return { success: false, error: error.message };
     }
   });
+
+  // Debug resolver to check issue mapping status
+  resolver.define('checkIssueMapping', async ({ payload }) => {
+    const { issueKey, orgId } = payload;
+    
+    try {
+      // Get mapping for org-namespaced key
+      const orgMapping = orgId ? await kvsStore.get(`${orgId}:local-to-remote:${issueKey}`) : null;
+      
+      // Get legacy mapping (non-namespaced)
+      const legacyMapping = await kvsStore.get(`local-to-remote:${issueKey}`);
+      
+      // Check if remote issue exists (if we have a mapping)
+      let remoteExists = null;
+      const remoteKey = orgMapping || legacyMapping;
+      
+      if (remoteKey && orgId) {
+        const orgs = await kvsStore.get('organizations') || [];
+        const org = orgs.find(o => o.id === orgId);
+        
+        if (org) {
+          const token = await kvsStore.getSecret(`secret:${org.id}:token`);
+          const auth = Buffer.from(`${org.remoteEmail}:${token || org.remoteApiToken}`).toString('base64');
+          
+          try {
+            const checkRes = await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=key,summary`, {
+              headers: { 'Authorization': `Basic ${auth}` }
+            });
+            remoteExists = checkRes.ok;
+            if (!checkRes.ok) {
+              console.log(`Remote issue ${remoteKey} check returned ${checkRes.status}`);
+            }
+          } catch (e) {
+            remoteExists = false;
+          }
+        }
+      }
+      
+      return {
+        issueKey,
+        orgMapping,
+        legacyMapping,
+        remoteKey,
+        remoteExists,
+        diagnosis: !remoteKey 
+          ? 'No mapping found - issue has never been synced'
+          : remoteExists === false 
+            ? 'STALE MAPPING - remote issue does not exist!' 
+            : remoteExists === true 
+              ? 'Mapping valid - remote issue exists'
+              : 'Could not verify remote issue'
+      };
+    } catch (error) {
+      return { error: error.message };
+    }
+  });
 }
