@@ -2,7 +2,7 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
-import { extractTextFromADF, textToADF, replaceMediaIdsInADF, extractSprintIds, prependCrossReferenceToADF } from '../../utils/adf.js';
+import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
 import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
@@ -324,11 +324,12 @@ export async function syncIssue(event) {
     }
 
     // Fetch org-specific mappings
-    const [userMappings, fieldMappings, statusMappings, issueTypeMappings, syncOptions] = await Promise.all([
+    const [userMappings, fieldMappings, statusMappings, issueTypeMappings, projectMappings, syncOptions] = await Promise.all([
       kvsStore.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
       kvsStore.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
       kvsStore.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`),
       kvsStore.get(org.id === 'legacy' ? 'issueTypeMappings' : `issueTypeMappings:${org.id}`),
+      kvsStore.get(org.id === 'legacy' ? 'projectMappings' : `projectMappings:${org.id}`),
       kvsStore.get(org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`)
     ]);
 
@@ -336,7 +337,8 @@ export async function syncIssue(event) {
       userMappings: userMappings || {},
       fieldMappings: fieldMappings || {},
       statusMappings: statusMappings || {},
-      issueTypeMappings: issueTypeMappings || {}
+      issueTypeMappings: issueTypeMappings || {},
+      projectMappings: projectMappings || {}
     };
 
     const existingRemoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);
@@ -466,9 +468,18 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
     }
   }
   
+  // Determine target project key - use project mapping if available, otherwise fall back to org default
+  const localProjectKey = issue.fields.project.key;
+  let targetProjectKey = org.remoteProjectKey; // Default fallback
+  
+  if (mappings.projectMappings && mappings.projectMappings[localProjectKey]) {
+    targetProjectKey = mappings.projectMappings[localProjectKey];
+    console.log(`🔄 Mapped project: ${localProjectKey} → ${targetProjectKey}`);
+  }
+  
   const remoteIssue = {
     fields: {
-      project: { key: org.remoteProjectKey },
+      project: { key: targetProjectKey },
       summary: issue.fields.summary,
       description: initialDescription,
       issuetype: { name: remoteIssueTypeName }
@@ -563,7 +574,6 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
     }
   }
 
-  const syncFieldOptions = syncOptions || { syncSprints: false };
   const reversedFieldMap = reverseMapping(mappings.fieldMappings);
   console.log(`🗺️ Field mappings to process:`, JSON.stringify(Object.keys(reversedFieldMap)));
   
@@ -607,19 +617,6 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       }
 
       console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
-
-      const sprintIds = extractSprintIds(fieldValue);
-      if (sprintIds !== null) {
-        if (!syncFieldOptions.syncSprints) {
-          console.log(`⏭️ Skipping sprint field ${localFieldId} - sprint sync disabled`);
-          continue;
-        }
-        fieldValue = sprintIds;
-        console.log(`🏃 Extracted sprint IDs for ${localFieldId} → ${remoteFieldId}: ${JSON.stringify(fieldValue)}`);
-      } else if (Array.isArray(fieldValue) && fieldValue.length > 0 && typeof fieldValue[0] === 'object') {
-        console.warn(`⚠️ Skipping ${localFieldId} - looks like sprint data but couldn't extract IDs. Original value:`, JSON.stringify(fieldValue[0]));
-        continue;
-      }
 
       if (Array.isArray(fieldValue) && fieldValue.length === 0) {
         console.log(`⚠️ Skipping empty array for ${localFieldId}`);
@@ -1007,7 +1004,6 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
     }
 
     const reversedFieldMap = reverseMapping(mappings.fieldMappings);
-    const syncFieldOptions = syncOptions || { syncSprints: false };
     
     // Fields that should never be synced (Jira internal fields)
     const blockedFields = [
@@ -1046,19 +1042,6 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
         }
 
         console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
-
-        const sprintIds = extractSprintIds(fieldValue);
-        if (sprintIds !== null) {
-          if (!syncFieldOptions.syncSprints) {
-            console.log(`⏭️ Skipping sprint field ${localFieldId} - sprint sync disabled`);
-            continue;
-          }
-          fieldValue = sprintIds;
-          console.log(`🏃 Extracted sprint IDs for ${localFieldId} → ${remoteFieldId}: ${JSON.stringify(fieldValue)}`);
-        } else if (Array.isArray(fieldValue) && fieldValue.length > 0 && typeof fieldValue[0] === 'object') {
-          console.warn(`⚠️ Skipping ${localFieldId} - looks like sprint data but couldn't extract IDs. Original value:`, JSON.stringify(fieldValue[0]));
-          continue;
-        }
 
         if (Array.isArray(fieldValue) && fieldValue.length === 0) {
           console.log(`⚠️ Skipping empty array for ${localFieldId}`);

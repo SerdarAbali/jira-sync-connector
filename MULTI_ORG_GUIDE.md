@@ -72,7 +72,6 @@ Select an organization from the dropdown, then configure:
   - ☑️ Sync Comments
   - ☑️ Sync Attachments
   - ☑️ Sync Issue Links
-  - ☑️ Sync Sprints
   
 - **Manual Sync**: Force sync a specific issue to ALL organizations
 

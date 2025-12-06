@@ -177,7 +177,6 @@ The system uses a **Defense-in-Depth** approach to prevent infinite sync loops.
 ### Next Steps
 1. **Inbound Attachments & Links** – Reuse the outbound attachment/link services in reverse, including lock keys and pending link queues.
 2. **Inbound Feature Toggles & Diagnostics** – Surface dedicated `incoming*` toggles in Sync Options plus webhook health indicators in the Diagnostics panel.
-3. **Sprint & Advanced Custom Fields** – Map agile boards, rank-safe values, and rich custom types symmetrically.
-4. **Conflict Messaging** – Extend stats/audit resolvers to highlight when Org A overrides Org B (and vice versa) for easier troubleshooting.
+3. **Conflict Messaging** – Extend stats/audit resolvers to highlight when Org A overrides Org B (and vice versa) for easier troubleshooting.
 
 Achieving these items brings Org A and Org B to near-parity while keeping the existing loop-prevention safeguards intact.

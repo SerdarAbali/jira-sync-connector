@@ -14,7 +14,6 @@ const DEFAULT_SYNC_OPTIONS = {
   syncComments: true,
   syncAttachments: true,
   syncLinks: true,
-  syncSprints: false,
   recreateDeletedIssues: false
 };
 const DEFAULT_USER_MAPPING_CONFIG = { autoMapUsers: true, fallbackUser: 'unassigned' };
@@ -332,6 +331,35 @@ export function defineConfigResolvers(resolver) {
     }
   });
 
+  // Get project mappings for specific org (source project key → target project key)
+  resolver.define('getProjectMappings', async ({ payload }) => {
+    const orgId = payload?.orgId;
+    const key = orgId ? `projectMappings:${orgId}` : 'projectMappings';
+    const mappings = await kvsStore.get(key);
+    return mappings || {};
+  });
+
+  // Save project mappings for specific org
+  resolver.define('saveProjectMappings', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      if (orgId) validateOrgId(orgId);
+      
+      // Validate mappings (source project key → target project key)
+      const mappings = validateMappings(payload.mappings || {}, 'mappings');
+      
+      const key = orgId ? `projectMappings:${orgId}` : 'projectMappings';
+      
+      await validateStorageSize(key, mappings);
+      await kvsStore.set(key, mappings);
+      
+      return { success: true, message: 'Project mappings saved' };
+    } catch (error) {
+      console.error('Error saving project mappings:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   resolver.define('getScheduledSyncConfig', async () => {
     const config = await kvsStore.get('scheduledSyncConfig');
     return config || { 
@@ -363,7 +391,6 @@ export function defineConfigResolvers(resolver) {
       syncComments: true,
       syncAttachments: true,
       syncLinks: true,
-      syncSprints: false,
       syncCrossReference: true,
       recreateDeletedIssues: false
     };

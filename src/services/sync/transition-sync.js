@@ -7,9 +7,30 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   const reversedStatusMap = reverseMapping(statusMappings);
 
-  console.log(`${LOG_EMOJI.STATUS} Attempting to transition ${remoteKey} to status: ${statusName}`);
+  console.log(`${LOG_EMOJI.STATUS} Checking status for ${remoteKey}, target: ${statusName}`);
   
   try {
+    // First, check current status to avoid unnecessary transitions
+    const issueResponse = await fetch(
+      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=status`,
+      {
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    if (issueResponse.ok) {
+      const issueData = await issueResponse.json();
+      const currentStatus = issueData.fields?.status?.name;
+      if (currentStatus && currentStatus.toLowerCase() === statusName.toLowerCase()) {
+        console.log(`${LOG_EMOJI.SKIP} ${remoteKey} already in status "${currentStatus}", skipping transition`);
+        return true; // Already in target status, consider it a success
+      }
+      console.log(`${LOG_EMOJI.STATUS} ${remoteKey} current status: "${currentStatus}" → target: "${statusName}"`);
+    }
+
     const transitionsResponse = await fetch(
       `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions`,
       {
@@ -91,9 +112,33 @@ export async function transitionLocalIssue(localKey, remoteStatus, statusMapping
     return false;
   }
 
-  console.log(`${LOG_EMOJI.STATUS} Attempting to transition ${localKey} to status: ${target.name || remoteStatus.name}`);
+  const targetStatusName = target.name || remoteStatus.name;
+  console.log(`${LOG_EMOJI.STATUS} Checking status for ${localKey}, target: ${targetStatusName}`);
 
   try {
+    // First, check current status to avoid unnecessary transitions
+    const issueResponse = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${localKey}?fields=status`,
+      { method: 'GET' }
+    );
+    
+    if (issueResponse.ok) {
+      const issueData = await issueResponse.json();
+      const currentStatus = issueData.fields?.status?.name;
+      const currentStatusId = issueData.fields?.status?.id;
+      
+      // Check if already in target status (by name or id)
+      const alreadyInTargetByName = currentStatus && targetStatusName && 
+        currentStatus.toLowerCase() === targetStatusName.toLowerCase();
+      const alreadyInTargetById = target.id && currentStatusId === target.id;
+      
+      if (alreadyInTargetByName || alreadyInTargetById) {
+        console.log(`${LOG_EMOJI.SKIP} ${localKey} already in status "${currentStatus}", skipping transition`);
+        return true; // Already in target status, consider it a success
+      }
+      console.log(`${LOG_EMOJI.STATUS} ${localKey} current status: "${currentStatus}" → target: "${targetStatusName}"`);
+    }
+
     const transitionsResponse = await api.asApp().requestJira(
       route`/rest/api/3/issue/${localKey}/transitions`,
       { method: 'GET' }

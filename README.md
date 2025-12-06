@@ -94,7 +94,6 @@ Each organization requires:
 - Sync Comments: Include comments with author attribution
 - Sync Attachments: Transfer file attachments
 - Sync Links: Sync issue relationships
-- Sync Sprints: Map sprint custom fields
 - Recreate Deleted Issues: Automatically recreate issues that were deleted in target org
 
 ### Mappings
