@@ -107,13 +107,24 @@ export function defineDiagnosticsResolvers(resolver) {
 
       // 2. Create Local Issue
       log('Creating test issue in Local Jira...');
+      
+      // Determine a valid local project key
+      // We'll try to use the first allowed project from the org config, or fallback to 'TEST'
+      let localProjectKey = 'TEST';
+      if (org.allowedProjects && org.allowedProjects.length > 0) {
+        localProjectKey = org.allowedProjects[0];
+      }
+      
+      log(`Using local project: ${localProjectKey}`);
+
+      const testSummary = `[System Test] Auto-generated ${Date.now()}`;
       const createRes = await api.asApp().requestJira(route`/rest/api/3/issue`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fields: {
-            project: { key: 'TEST' }, // TODO: Need to know which local project to use. For now, we might fail if TEST doesn't exist.
-            summary: `[System Test] Auto-generated ${Date.now()}`,
+            project: { key: localProjectKey },
+            summary: testSummary,
             issuetype: { name: 'Task' }
           }
         })
@@ -128,32 +139,84 @@ export function defineDiagnosticsResolvers(resolver) {
       const localKey = createdIssue.key;
       log(`✅ Created Local Issue: ${localKey}`);
 
-      // 3. Wait for Sync (Short wait due to 25s timeout limit)
-      log('Waiting 5s for sync...');
-      await new Promise(r => setTimeout(r, 5000));
+      // 3. Wait for Sync
+      log('Waiting 15s for sync...');
+      await new Promise(r => setTimeout(r, 15000));
 
-      // 4. Check Remote
-      log(`Checking Remote Jira (${org.remoteUrl})...`);
-      const searchRes = await fetch(`${org.remoteUrl}/rest/api/3/search?jql=summary ~ "${localKey}"`, { headers });
+      // 4. Verify Sync via Audit Log & Remote Check
+      log(`Checking sync status...`);
       
-      if (!searchRes.ok) throw new Error('Failed to search remote Jira');
+      const auditLog = await kvsStore.get('auditLog') || [];
+      const entry = auditLog.find(e => e.sourceIssue === localKey);
       
-      const searchData = await searchRes.json();
-      if (searchData.issues && searchData.issues.length > 0) {
-        const remoteKey = searchData.issues[0].key;
-        log(`✅ Sync Successful! Found Remote Issue: ${remoteKey}`);
-        
-        // 5. Cleanup (Delete Local)
-        log(`Cleaning up (Deleting ${localKey})...`);
-        await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, { method: 'DELETE' });
-        log(`✅ Deleted ${localKey}`);
-        
-        return { success: true, logs };
+      let remoteKey = null;
+      
+      if (entry) {
+        if (entry.success) {
+          remoteKey = entry.targetIssue;
+          log(`✅ Found successful sync record in audit log. Remote Key: ${remoteKey}`);
+        } else {
+          // Sync explicitly failed
+          await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, { method: 'DELETE' });
+          throw new Error(`Sync failed: ${entry.errors ? entry.errors.join(', ') : 'Unknown error'}`);
+        }
       } else {
-        // Cleanup even if failed
-        await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, { method: 'DELETE' });
-        throw new Error('Sync timed out or failed - Issue not found in Remote');
+        log(`⚠️ No audit log entry found for ${localKey}. Sync might be delayed or failed silently.`);
+        
+        // Fallback: Search by summary
+        log(`Attempting fallback search by summary...`);
+        const searchRes = await fetch(`${org.remoteUrl}/rest/api/3/search/jql`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            jql: `project = "${org.remoteProjectKey}" AND summary ~ "\\"${testSummary}\\""`,
+            fields: ['key', 'summary']
+          })
+        });
+        
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          if (searchData.issues && searchData.issues.length > 0) {
+            remoteKey = searchData.issues[0].key;
+            log(`✅ Found remote issue via summary search: ${remoteKey}`);
+          }
+        }
       }
+
+      if (remoteKey) {
+        // Verify the issue actually exists on remote
+        log(`Verifying remote issue ${remoteKey} exists...`);
+        const remoteIssueRes = await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, { headers });
+        
+        if (remoteIssueRes.ok) {
+          log(`✅ Verified remote issue ${remoteKey} is accessible.`);
+          
+          // Cleanup Remote
+          log(`Cleaning up Remote (Deleting ${remoteKey})...`);
+          const delRemote = await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, { 
+            method: 'DELETE',
+            headers
+          });
+          if (delRemote.ok) log(`✅ Deleted remote issue ${remoteKey}`);
+          else log(`⚠️ Failed to delete remote issue ${remoteKey}: ${delRemote.status}`);
+          
+        } else {
+          log(`❌ Remote issue ${remoteKey} not found (HTTP ${remoteIssueRes.status}). It might have been deleted.`);
+          // We still consider this a failure of the test verification
+          await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, { method: 'DELETE' });
+          throw new Error(`Sync reported success but remote issue ${remoteKey} could not be accessed.`);
+        }
+      } else {
+        await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, { method: 'DELETE' });
+        throw new Error('Sync timed out - No audit log entry and issue not found via search.');
+      }
+
+      // Cleanup Local
+      log(`Cleaning up Local (Deleting ${localKey})...`);
+      await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, { method: 'DELETE' });
+      log(`✅ Deleted local issue ${localKey}`);
+
+      return { success: true, logs };
 
     } catch (error) {
       log(`❌ Test Failed: ${error.message}`);

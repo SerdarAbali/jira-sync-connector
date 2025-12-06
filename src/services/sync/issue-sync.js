@@ -111,7 +111,18 @@ async function matchesJqlFilter(issueKey, jqlFilter) {
   try {
     // Search for the specific issue with the JQL filter appended
     const combinedJql = `key = ${issueKey} AND (${jqlFilter})`;
-    const response = await api.asApp().requestJira(route`/rest/api/3/search?jql=${combinedJql}&maxResults=1&fields=key`);
+    const response = await api.asApp().requestJira(route`/rest/api/3/search/jql`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        jql: combinedJql,
+        maxResults: 1,
+        fields: ['key']
+      })
+    });
     
     if (!response.ok) {
       // If JQL is invalid, log warning but allow sync (fail-open)
