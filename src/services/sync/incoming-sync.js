@@ -356,7 +356,7 @@ async function handleRemoteCommentCreated(payload, context) {
     return;
   }
 
-  if (isSyncAppComment(comment.body, context.org.name)) {
+  if (isSyncAppComment(comment.body)) {
     console.log(`${LOG_EMOJI.INFO} Skipping comment from SyncApp to avoid loops`);
     return;
   }
@@ -417,18 +417,18 @@ function shouldSyncIncomingComments(syncOptions) {
   return true;
 }
 
-function isSyncAppComment(body, orgName) {
+function isSyncAppComment(body) {
   if (!body) {
     return false;
   }
-  let text = '';
-  if (typeof body === 'object') {
-    text = extractTextFromADF(body);
-  } else if (typeof body === 'string') {
-    text = body;
-  }
 
-  return text.includes('[Comment from ') && text.includes(' - User: SyncApp') && text.includes(orgName);
+  const text = typeof body === 'object'
+    ? extractTextFromADF(body)
+    : String(body);
+
+  const normalized = text.trimStart();
+  const syncedCommentPattern = /^\[Comment from [^\]]+ - User: [^\]]+]:/; // Matches SyncApp-authored prefix
+  return syncedCommentPattern.test(normalized);
 }
 
 function buildIncomingCommentKey(orgId, commentId) {
