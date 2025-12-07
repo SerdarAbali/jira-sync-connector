@@ -534,7 +534,10 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       const parentIssue = await getFullIssue(issue.fields.parent.key);
       if (parentIssue) {
         // Recursively create the parent (without syncOptions to avoid infinite loops with attachments)
-        remoteParentKey = await createRemoteIssueForOrg(parentIssue, org, mappings, null, syncResult, orgId, depth + 1);
+        const parentSyncOptions = syncOptions?.dryRun ? { dryRun: true } : null;
+        const parentResult = await createRemoteIssueForOrg(parentIssue, org, mappings, parentSyncOptions, syncResult, orgId, depth + 1);
+        remoteParentKey = parentResult?.key || parentResult;
+        
         if (remoteParentKey) {
           console.log(`${LOG_EMOJI.LINK} Parent synced: ${issue.fields.parent.key} → ${remoteParentKey}`);
         }
@@ -673,6 +676,8 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       const attachmentEnabled = syncOptions?.syncAttachments !== false;
       const linksEnabled = syncOptions?.syncLinks !== false;
       const commentsEnabled = syncOptions?.syncComments !== false;
+      const forceAttachmentCheck = syncOptions?.forceCheckAttachments ?? true;
+      const forceLinkCheck = syncOptions?.forceCheckLinks ?? true;
 
       // Track sync details for event logging
       const syncDetails = {
@@ -685,14 +690,30 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
       let attachmentMapping = {};
       if (attachmentEnabled) {
-        attachmentMapping = await syncAttachments(issue.key, result.key, issue, org, syncResult, orgId);
+        attachmentMapping = await syncAttachments(
+          issue.key,
+          result.key,
+          issue,
+          org,
+          syncResult,
+          orgId,
+          forceAttachmentCheck
+        );
         syncDetails.attachments = Object.keys(attachmentMapping).length;
       } else {
         console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
       }
 
       if (linksEnabled) {
-        const linkResult = await syncIssueLinks(issue.key, result.key, issue, org, syncResult, orgId);
+        const linkResult = await syncIssueLinks(
+          issue.key,
+          result.key,
+          issue,
+          org,
+          syncResult,
+          orgId,
+          forceLinkCheck
+        );
         syncDetails.links = linkResult?.synced || 0;
       } else {
         console.log(`⏭️ Skipping links sync (disabled in sync options)`);
@@ -843,15 +864,18 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
     syncDetails.attachmentsTotal = issue.fields.attachment?.length || 0;
     syncDetails.linksTotal = issue.fields.issuelinks?.length || 0;
 
-    const attachmentEnabled = syncOptions?.syncAttachments !== false;
-    const linksEnabled = syncOptions?.syncLinks !== false;
-    const commentsEnabled = syncOptions?.syncComments !== false;
+    const attachmentEnabled = syncOptions?.syncAttachments !== false && !syncOptions?.dryRun;
+    const linksEnabled = syncOptions?.syncLinks !== false && !syncOptions?.dryRun;
+    const commentsEnabled = syncOptions?.syncComments !== false && !syncOptions?.dryRun;
 
     let attachmentMapping = {};
     if (attachmentEnabled) {
-      attachmentMapping = await syncAttachments(localKey, remoteKey, issue, org, syncResult, orgId);
+      const forceCheckAttachments = syncOptions?.forceCheckAttachments || false;
+      attachmentMapping = await syncAttachments(localKey, remoteKey, issue, org, syncResult, orgId, forceCheckAttachments);
       // Count newly synced attachments (those in the mapping)
       syncDetails.attachments = Object.keys(attachmentMapping).length;
+    } else if (syncOptions?.dryRun) {
+      console.log(`[DRY RUN] Skipping attachments sync`);
     } else {
       console.log(`⏭️ Skipping attachments sync (disabled in sync options)`);
     }
@@ -860,6 +884,8 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
       const forceCheckLinks = syncOptions?.forceCheckLinks || false;
       const linkResult = await syncIssueLinks(localKey, remoteKey, issue, org, syncResult, orgId, forceCheckLinks);
       syncDetails.links = linkResult?.synced || 0;
+    } else if (syncOptions?.dryRun) {
+      console.log(`[DRY RUN] Skipping links sync`);
     } else {
       console.log(`⏭️ Skipping links sync (disabled in sync options)`);
     }
@@ -868,6 +894,8 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
       const commentResult = await syncAllComments(localKey, remoteKey, issue, org, syncResult, orgId);
       syncDetails.comments = commentResult?.synced || 0;
       syncDetails.commentsTotal = commentResult?.synced + commentResult?.skipped || 0;
+    } else if (syncOptions?.dryRun) {
+      console.log(`[DRY RUN] Skipping comments sync`);
     } else {
       console.log(`⏭️ Skipping comments sync (disabled in sync options)`);
     }

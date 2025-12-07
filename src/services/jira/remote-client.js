@@ -100,12 +100,10 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
     }, `Upload attachment ${filename} to ${remoteKey}`);
 
     if (response.ok) {
-      const result = await response.json();
-      console.log(`${LOG_EMOJI.SUCCESS} Uploaded attachment: ${filename}`);
-      return result[0]?.id || null; // Return the remote attachment ID
+      return await response.json();
     } else {
       const errorText = await response.text();
-      console.error(`❌ Failed to upload attachment ${filename}:`, errorText);
+      console.error(`Failed to upload attachment: ${errorText}`);
       return null;
     }
   } catch (error) {

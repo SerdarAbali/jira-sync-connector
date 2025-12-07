@@ -1,0 +1,25 @@
+Warning: Forge CLI supports Node.js 20.x or 22.x.
+Unsupported Node.js versions are not guaranteed to work correctly.
+
+INFO    2025-12-07T15:34:30.579Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 
+✅ Completed sync for SCRUM-159 across 1 organization(s)
+INFO    2025-12-07T15:34:30.578Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 📊 ════════════════════════════════════════════════════
+INFO    2025-12-07T15:34:30.577Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 📊 🔗 Links: 0/1 synced, 0 failed, 1 skipped
+INFO    2025-12-07T15:34:30.576Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 📊 📎 Attachments: 0/1 synced, 0 failed, 1 skipped
+INFO    2025-12-07T15:34:30.575Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 📊 Status: SUCCESS
+INFO    2025-12-07T15:34:30.574Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 📊 SYNC SUMMARY: SCRUM-159 → SCRUM-216
+INFO    2025-12-07T15:34:30.573Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 📊 ════════════════════════════════════════════════════
+INFO    2025-12-07T15:34:30.390Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e ⏭️ SCRUM-216 already in status "To Do", skipping transition
+INFO    2025-12-07T15:34:30.312Z c8ed1a52-125f-4f17-b443-c9b9ee964afb 🔄 Loop detected: SCRUM-159 is already syncing. Skipping.
+INFO    2025-12-07T15:34:30.278Z c8ed1a52-125f-4f17-b443-c9b9ee964afb 🔄 Processing update for SCRUM-159 (from SCRUM-216)
+INFO    2025-12-07T15:34:30.243Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e 🚦 Checking status for SCRUM-216, target: To Do
+INFO    2025-12-07T15:34:30.242Z f41fa8c6-fd70-4c3d-a223-729cd75e1e0e ✅ Updated local issue SCRUM-159 description
+INFO    2025-12-07T15:34:30.167Z c8ed1a52-125f-4f17-b443-c9b9ee964afb ✅ Match found for org: org-1764963134126
+INFO    2025-12-07T15:34:30.133Z c8ed1a52-125f-4f17-b443-c9b9ee964afb 🔍 Checking 1 organizations for secret match. Received secret length: 22
+INFO    2025-12-07T15:34:30.104Z c8ed1a52-125f-4f17-b443-c9b9ee964afb 📨 Received webhook event: jira:issue_updated
+INFO    2025-12-07T15:34:30.103Z c8ed1a52-125f-4f17-b443-c9b9ee964afb 📨 Webtrigger invoked. Method: POST
+INFO    2025-12-07T15:34:30.091Z 2f323f89-cd83-4ca5-9389-5d4212b1414b 
+✅ Completed sync for SCRUM-157 across 1 organization(s)
+INFO    2025-12-07T15:34:30.090Z 2f323f89-cd83-4ca5-9389-5d4212b1414b 📊 ════════════════════════════════════════════════════
+INFO    2025-12-07T15:34:30.089Z 2f323f89-cd83-4ca5-9389-5d4212b1414b 📊 Status: SUCCESS
+INFO    2025-12-07T15:34:30.088Z 2f323f89-cd83-4ca5-9389-5d4212b1414b 📊 SYNC SUMMARY: SCRUM-157 → SCRUM-215

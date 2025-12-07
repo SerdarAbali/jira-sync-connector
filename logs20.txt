@@ -1,0 +1,24 @@
+Warning: Forge CLI supports Node.js 20.x or 22.x.
+Unsupported Node.js versions are not guaranteed to work correctly.
+
+INFO    2025-12-07T16:06:49.494Z d59929b5-43ac-4983-821b-e1df828dea8f 
+✅ Completed sync for SCRUM-160 across 1 organization(s)
+INFO    2025-12-07T16:06:49.493Z d59929b5-43ac-4983-821b-e1df828dea8f 📊 ════════════════════════════════════════════════════
+INFO    2025-12-07T16:06:49.492Z d59929b5-43ac-4983-821b-e1df828dea8f 📊 Status: SUCCESS
+INFO    2025-12-07T16:06:49.491Z d59929b5-43ac-4983-821b-e1df828dea8f 📊 SYNC SUMMARY: SCRUM-160 → SCRUM-322
+INFO    2025-12-07T16:06:49.490Z d59929b5-43ac-4983-821b-e1df828dea8f 📊 ════════════════════════════════════════════════════
+INFO    2025-12-07T16:06:49.305Z d59929b5-43ac-4983-821b-e1df828dea8f ⏭️ SCRUM-322 already in status "To Do", skipping transition
+INFO    2025-12-07T16:06:49.179Z d59929b5-43ac-4983-821b-e1df828dea8f 🚦 Checking status for SCRUM-322, target: To Do
+INFO    2025-12-07T16:06:49.178Z d59929b5-43ac-4983-821b-e1df828dea8f ✅ Updated local issue SCRUM-160 description
+INFO    2025-12-07T16:06:48.883Z d59929b5-43ac-4983-821b-e1df828dea8f ✅ Updated SCRUM-322 fields
+INFO    2025-12-07T16:06:48.492Z d59929b5-43ac-4983-821b-e1df828dea8f Updating remote issue: SCRUM-160 → SCRUM-322
+INFO    2025-12-07T16:06:48.491Z d59929b5-43ac-4983-821b-e1df828dea8f ⏭️ Skipping lexorank field customfield_10019 - value looks like rank data
+INFO    2025-12-07T16:06:48.490Z d59929b5-43ac-4983-821b-e1df828dea8f 👤 Unassigning issue
+INFO    2025-12-07T16:06:48.489Z d59929b5-43ac-4983-821b-e1df828dea8f 🔗 Mapped parent: SCRUM-159 → SCRUM-321
+INFO    2025-12-07T16:06:48.457Z d59929b5-43ac-4983-821b-e1df828dea8f 📌 Clearing affects versions
+INFO    2025-12-07T16:06:48.456Z d59929b5-43ac-4983-821b-e1df828dea8f 🔖 Clearing fix versions
+INFO    2025-12-07T16:06:48.455Z d59929b5-43ac-4983-821b-e1df828dea8f 🏷️ Clearing components
+INFO    2025-12-07T16:06:48.454Z d59929b5-43ac-4983-821b-e1df828dea8f 🔄 Mapped issue type: Task → Task
+INFO    2025-12-07T16:06:48.097Z d59929b5-43ac-4983-821b-e1df828dea8f No issue links to sync for SCRUM-160
+INFO    2025-12-07T16:06:48.096Z d59929b5-43ac-4983-821b-e1df828dea8f No attachments to sync for SCRUM-160
+INFO    2025-12-07T16:06:48.060Z d59929b5-43ac-4983-821b-e1df828dea8f 📝 UPDATE for JiraTwo: SCRUM-160 → SCRUM-322

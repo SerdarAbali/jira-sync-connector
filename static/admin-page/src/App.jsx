@@ -736,10 +736,12 @@ const App = () => {
               if (status.status === 'complete') {
                 const results = status.results || {};
                 const parts = [];
+                const createdCount = (results.created || 0) + (results.recreated || 0);
+                
                 if (results.dryRun) {
-                  parts.push(`[DRY RUN] Would create ${results.created}, would update ${results.updated}`);
+                  parts.push(`[DRY RUN] Would create ${createdCount}, would update ${results.updated}`);
                 } else {
-                  if (results.created) parts.push(`${results.created} created`);
+                  if (createdCount > 0) parts.push(`${createdCount} created`);
                   if (results.updated) parts.push(`${results.updated} updated`);
                 }
                 parts.push(`${results.alreadySynced || 0} already synced`);
@@ -2811,7 +2813,7 @@ const SyncActivityPanel = ({
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <Button 
                 appearance="subtle" 
-                onClick={() => handleScanForDeletedIssues(null, { updateExisting: false })} 
+                onClick={() => handleScanForDeletedIssues(null, { updateExisting: false, syncMissingData: true })} 
                 isLoading={scanningDeleted}
                 style={lozengeButtonStyle}
               >
