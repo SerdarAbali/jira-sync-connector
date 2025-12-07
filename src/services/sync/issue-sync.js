@@ -649,7 +649,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       await markSyncing(issue.key);
 
       const response = await retryWithBackoff(async () => {
-      return await fetch(`${org.remoteUrl}/rest/api/3/issue`, {
+      return await fetch(`${org.remoteUrl}/rest/api/3/issue?notifyUsers=false`, {
         method: 'POST',
         headers: {
           'Authorization': `Basic ${auth}`,
@@ -758,7 +758,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
         console.log(`🔗 Updating remote issue ${result.key} with cross-reference...`);
         const updateResponse = await retryWithBackoff(async () => {
-          return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}`, {
+          return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
             method: 'PUT',
             headers: {
               'Authorization': `Basic ${auth}`,
@@ -809,7 +809,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
           const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
           console.log(`🖼️ Updating description with corrected media references...`);
           await retryWithBackoff(async () => {
-            return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}`, {
+            return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
               method: 'PUT',
               headers: {
                 'Authorization': `Basic ${auth}`,
@@ -1107,7 +1107,7 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
       }
 
       const response = await retryWithBackoff(async () => {
-        return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
+        return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?notifyUsers=false`, {
           method: 'PUT',
           headers: {
             'Authorization': `Basic ${auth}`,
