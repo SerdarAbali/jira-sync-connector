@@ -84,12 +84,9 @@ export function defineConfigResolvers(resolver) {
         await kvsStore.setSecret(`secret:${orgId}:token`, validated.remoteApiToken);
       }
 
-      // Generate incoming secret if bidirectional
-      let incomingSecret = null;
-      if (payload.syncDirection === 'bidirectional') {
-        incomingSecret = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        await kvsStore.setSecret(`secret:${orgId}:incomingSecret`, incomingSecret);
-      }
+      // Generate incoming secret if bidirectional (or just generate it anyway for future use)
+      const incomingSecret = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      await kvsStore.setSecret(`secret:${orgId}:incomingSecret`, incomingSecret);
       
       const newOrg = {
         id: orgId,

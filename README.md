@@ -19,7 +19,7 @@ This application syncs issues from a source Jira organization to a target organi
 - Issue links (blocks, relates to, duplicates, etc.)
 - Components, Fix Versions, Affects Versions
 - Time tracking (original and remaining estimates)
-- Custom field mapping including sprints
+- Custom field mapping
 - User mapping for assignee and reporter
 
 **Inbound (Org B → Org A, current coverage)**
@@ -29,7 +29,7 @@ This application syncs issues from a source Jira organization to a target organi
 - Parent/Epic mapping so subtasks follow their hierarchy once the parent exists locally
 - Status transitions applied via reverse mappings to keep boards aligned
 - Comments recreated in Org A with the original author attribution, skip-if-duplicate protection, and loop prevention for SyncApp-authored confirmations
-- Upcoming: inbound attachments, links, and sprint/custom field expansion (see roadmap below)
+- Inbound attachments (Remote → Local)
 
 ### Reliability Features
 - Real-time webhook sync (1-3 seconds)
@@ -134,7 +134,7 @@ Issue Export/Import:
 
 Allowed Projects: Select which local projects can sync to this organization.
 
-Sync Options: Toggle features (comments, attachments, links, sprints, recreate deleted).
+Sync Options: Toggle features (comments, attachments, links, recreate deleted).
 
 Import/Export Settings: Backup or restore organization configuration.
 
@@ -247,7 +247,7 @@ Slow initial sync:
 - ✅ Comment ingestion with deduplication, SyncApp loop guards, and per-comment tracking
 - 🔄 Next: inbound attachments and links (reuse attachment/link services in reverse)
 - 🔄 Next: inbound feature toggles in sync options plus diagnostics surfacing for webhook health
-- 🔄 Next: Sprint/custom field transformations to close the parity gap
+- 🔄 Next: Inbound links to close the parity gap
 
 ## Roadmap
 

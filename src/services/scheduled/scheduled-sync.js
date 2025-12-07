@@ -2,7 +2,7 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
 import { sleep } from '../../utils/retry.js';
-import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex, getOrganizationsWithTokens } from '../storage/mappings.js';
+import { getRemoteKey, getLocalKey, storeLinkMapping, removeMapping, getAllMappings, addToMappingIndex, getOrganizationsWithTokens, getLastSyncedLocalUpdated } from '../storage/mappings.js';
 import { removePendingLink, getPendingLinks, removeIssueFromPendingLinksIndex } from '../storage/flags.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../sync/issue-sync.js';
@@ -393,6 +393,13 @@ async function checkIfIssueNeedsSync(issueKey, issue, config, mappings, syncOpti
 
   // Has mapping - add to index for future recreate-deleted checks
   await addToMappingIndex(issueKey, remoteKey, orgId);
+
+  // Check if we already synced this version
+  const lastSyncedUpdated = await getLastSyncedLocalUpdated(issueKey, orgId);
+  if (lastSyncedUpdated && issue.fields.updated === lastSyncedUpdated) {
+     // Skip if timestamps match exactly
+     return { needsSync: false, reason: 'already-synced' };
+  }
 
   // Has mapping - check if remote issue still exists (if recreateDeletedIssues is enabled)
   if (syncOptions.recreateDeletedIssues) {

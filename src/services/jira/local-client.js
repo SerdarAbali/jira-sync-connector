@@ -119,3 +119,47 @@ export async function updateLocalIssueDescription(issueKey, description) {
     return false;
   }
 }
+
+export async function uploadAttachment(issueKey, filename, fileBuffer) {
+  try {
+    // Create form data boundary
+    const boundary = `----ForgeFormBoundary${Date.now()}`;
+    
+    // Build multipart form data manually
+    const formDataParts = [];
+    formDataParts.push(`--${boundary}\r\n`);
+    formDataParts.push(`Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`);
+    formDataParts.push(`Content-Type: application/octet-stream\r\n\r\n`);
+    
+    // Convert string parts to buffers
+    const header = Buffer.from(formDataParts.join(''));
+    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+    
+    // Combine all parts
+    const body = Buffer.concat([header, fileBuffer, footer]);
+    
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}/attachments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'X-Atlassian-Token': 'no-check'
+        },
+        body: body
+      }
+    );
+    
+    if (!response.ok) {
+      console.error(`Failed to upload attachment to local issue ${issueKey}: ${response.status}`);
+      return null;
+    }
+    
+    const result = await response.json();
+    // Result is an array of uploaded attachments
+    return result[0];
+  } catch (error) {
+    console.error('Error uploading attachment to local issue:', error);
+    return null;
+  }
+}

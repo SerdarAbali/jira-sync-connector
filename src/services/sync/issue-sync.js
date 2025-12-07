@@ -4,7 +4,7 @@ import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.j
 import { retryWithBackoff } from '../../utils/retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
-import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens } from '../storage/mappings.js';
+import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
 import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
 import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../jira/local-client.js';
@@ -661,6 +661,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
       console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
 
       await storeMapping(issue.key, result.key, orgId);
+      await setLastSyncedLocalUpdated(issue.key, issue.fields.updated, orgId);
 
       // Process any pending links that were waiting for this issue to be synced
       await processPendingLinksForNewlySyncedIssue(issue.key, result.key, org, orgId);
@@ -1090,6 +1091,7 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
 
       if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
         console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
+        await setLastSyncedLocalUpdated(localKey, issue.fields.updated, orgId);
 
         // Also update local issue with cross-reference (if enabled)
         if (crossReferenceEnabled) {
