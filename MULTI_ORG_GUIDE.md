@@ -16,7 +16,7 @@ Each target organization now has independent:
 - ✅ Field mappings (custom fields)
 - ✅ Status mappings (workflow statuses)
 - ✅ Project filters (which projects sync to this org)
-- ✅ Sync options (comments, attachments, links, sprints)
+- ✅ Sync options (comments, attachments, links)
 
 ### 3. **Storage Schema**
 Mappings are now namespaced by organization ID:

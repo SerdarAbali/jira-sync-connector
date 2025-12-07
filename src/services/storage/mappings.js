@@ -184,3 +184,13 @@ export async function migrateMappingsIndex(orgId = null) {
   
   return { migrated, total: oldIndex.length, message: 'Migration complete' };
 }
+
+export async function getLastSyncedLocalUpdated(localKey, orgId = null) {
+  const key = orgId ? `${orgId}:last-synced-updated:${localKey}` : `last-synced-updated:${localKey}`;
+  return await kvsStore.get(key);
+}
+
+export async function setLastSyncedLocalUpdated(localKey, updatedStr, orgId = null) {
+  const key = orgId ? `${orgId}:last-synced-updated:${localKey}` : `last-synced-updated:${localKey}`;
+  await kvsStore.set(key, updatedStr);
+}
