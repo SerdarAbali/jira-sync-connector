@@ -112,3 +112,34 @@ export async function removePendingLink(issueKey, linkId) {
 export async function removeIssueFromPendingLinksIndex(issueKey) {
   await kvsStore.del(`pending-link-idx:${issueKey}`);
 }
+
+function buildPendingChildKey(parentKey, orgId) {
+  const prefix = orgId || 'legacy';
+  return `${prefix}:pending-child:${parentKey}`;
+}
+
+export async function enqueuePendingChildIssue(parentKey, childKey, orgId) {
+  if (!parentKey || !childKey) {
+    return;
+  }
+
+  const key = buildPendingChildKey(parentKey, orgId);
+  const existing = await kvsStore.get(key) || [];
+  if (!existing.includes(childKey)) {
+    existing.push(childKey);
+    await kvsStore.set(key, existing);
+  }
+}
+
+export async function consumePendingChildIssues(parentKey, orgId) {
+  if (!parentKey) {
+    return [];
+  }
+
+  const key = buildPendingChildKey(parentKey, orgId);
+  const pending = await kvsStore.get(key) || [];
+  if (pending.length > 0) {
+    await kvsStore.del(key);
+  }
+  return pending;
+}

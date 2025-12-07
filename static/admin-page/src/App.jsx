@@ -1433,8 +1433,8 @@ const App = () => {
                             {[
                               'Real-time Bidirectional Issue Sync',
                               'Zero Footprint on Target Org (No App Install Required)',
-                              'Comments & Attachments (10MB limit)',
-                              'Issue Links & Subtasks Support',
+                              'Bidirectional Comments & Attachments (10MB limit)',
+                              'Bidirectional Issue Links & Subtasks Support',
                               'Epic & Parent/Child Relationships',
                               'Status, Priority & User Mapping',
                               'Issue Type Mapping',
@@ -1456,8 +1456,7 @@ const App = () => {
                           <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Roadmap</h3>
                           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
                             {[
-                              'Inbound Attachments (Remote → Local)',
-                              'Inbound Issue Links (Remote → Local)',
+                              'Speed Setup Wizard',
                               'Advanced Field Transformation Rules',
                               'Bulk Migration Wizard',
                               'Sync History & Audit Log Export'

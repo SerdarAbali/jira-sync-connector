@@ -18,7 +18,8 @@ const BASE_REMOTE_FIELDS = [
   'parent',
   'status',
   'issuetype',
-  'attachment'
+  'attachment',
+  'issuelinks'
 ];
 
 const BLOCKED_FIELD_KEYS = new Set([
@@ -51,8 +52,8 @@ const BLOCKED_FIELD_KEYS = new Set([
 ]);
 import api, { route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
-import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping } from '../storage/mappings.js';
-import { markSyncing, isSyncing, clearSyncFlag } from '../storage/flags.js';
+import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping } from '../storage/mappings.js';
+import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { LOG_EMOJI, MAX_ATTACHMENT_SIZE } from '../../constants.js';
 import { textToADF, textToADFWithAuthor, extractTextFromADF } from '../../utils/adf.js';
 import { getRemoteIssue } from '../jira/remote-client.js';
@@ -63,6 +64,9 @@ import { uploadAttachment, getFullIssue } from '../jira/local-client.js';
 const ATTACHMENT_ISSUE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS = 6;
 const ATTACHMENT_ISSUE_CACHE_RETRY_DELAY_MS = 500; // 0.5s wait between cache polls
+const PARENT_MAPPING_RETRY_ATTEMPTS = 6;
+const PARENT_MAPPING_RETRY_DELAY_MS = 500;
+const PENDING_CHILD_MAX_ATTEMPTS = 3;
 
 export async function processIncomingWebhook(payload, secret) {
   const { webhookEvent } = payload;
@@ -142,8 +146,10 @@ export async function processIncomingWebhook(payload, secret) {
       await handleRemoteIssueDeleted(issue, context);
     } else if (webhookEvent === 'comment_created') {
       await handleRemoteCommentCreated(payload, context);
-    } else if (webhookEvent === 'jira:issue_link_created' || webhookEvent === 'jira:issue_link_deleted') {
-      console.log(`ℹ️ Inbound link sync coming soon: ${webhookEvent}`);
+    } else if (webhookEvent === 'jira:issue_link_created') {
+      await handleRemoteIssueLinkCreated(payload, context);
+    } else if (webhookEvent === 'jira:issue_link_deleted') {
+      console.log(`ℹ️ Inbound link deletion coming soon`);
     } else if (webhookEvent === 'attachment_created' || webhookEvent === 'jira:attachment_created') {
         console.log(`${LOG_EMOJI.ATTACHMENT} Routing attachment event for ${payload.issue?.key || 'unknown issue'}`);
       await handleRemoteAttachmentCreated(payload, context);
@@ -160,7 +166,7 @@ export async function processIncomingWebhook(payload, secret) {
   }
 }
 
-async function handleRemoteIssueCreated(remoteIssue, context) {
+async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   const { org, orgId } = context;
   console.log(`${LOG_EMOJI.SYNC} Received remote issue create: ${remoteIssue.key}`);
 
@@ -183,6 +189,12 @@ async function handleRemoteIssueCreated(remoteIssue, context) {
     throw new Error(`Unable to load remote issue ${remoteIssue.key} for creation`);
   }
 
+  const parentReady = await ensureParentReadyForCreate(resolvedRemoteIssue, context, options);
+  if (!parentReady) {
+    console.log(`${LOG_EMOJI.INFO} Deferring creation of ${remoteIssue.key} until parent mapping is available`);
+    return;
+  }
+
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
   const response = await api.asApp().requestJira(route`/rest/api/3/issue`, {
@@ -202,6 +214,7 @@ async function handleRemoteIssueCreated(remoteIssue, context) {
   console.log(`${LOG_EMOJI.SUCCESS} Created local issue ${localKey} from remote ${remoteIssue.key}`);
 
   await storeMapping(localKey, remoteIssue.key, orgId);
+  await processPendingChildIssues(remoteIssue.key, context);
 
   // Sync attachments if present
   if (resolvedRemoteIssue.fields.attachment && resolvedRemoteIssue.fields.attachment.length > 0) {
@@ -273,6 +286,8 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
       console.log(`${LOG_EMOJI.WARNING} Could not fetch remote issue ${remoteIssue.key}. Skipping update.`);
       return;
     }
+
+    await syncIncomingLinksForIssue(resolvedRemoteIssue, localKey, context);
 
     const payload = await buildUpdatePayload(resolvedRemoteIssue, context);
     if (Object.keys(payload.fields).length === 0) {
@@ -702,7 +717,8 @@ async function applyParentMapping(targetFields, remoteFields, context) {
     return;
   }
 
-  const localParentKey = await getLocalKey(parentKey, context.orgId);
+  const hintedLocalParent = remoteFields.localParentKey;
+  const localParentKey = hintedLocalParent || await getLocalKey(parentKey, context.orgId);
   if (localParentKey) {
     targetFields.parent = { key: localParentKey };
     console.log(`${LOG_EMOJI.LINK} Mapped parent ${parentKey} → ${localParentKey}`);
@@ -812,6 +828,153 @@ async function handleRemoteAttachmentCreated(payload, context) {
   }
 }
 
+async function handleRemoteIssueLinkCreated(payload, context) {
+  if (!shouldSyncIncomingLinks(context.syncOptions)) {
+    console.log(`⏭️ Incoming links disabled for ${context.org.name}`);
+    return;
+  }
+
+  const link = payload.issueLink;
+  if (!link) {
+    console.log(`${LOG_EMOJI.WARNING} Link event missing issueLink payload`);
+    return;
+  }
+
+  const linkTypeName = link?.type?.name || 'Relates';
+  if (!link?.type?.name) {
+    console.log(`${LOG_EMOJI.WARNING} Link event missing type name, defaulting to Relates`);
+  }
+  const remoteOutwardKey = link.outwardIssue?.key;
+  const remoteInwardKey = link.inwardIssue?.key;
+
+  if (!remoteOutwardKey || !remoteInwardKey) {
+    console.log(`${LOG_EMOJI.WARNING} Link event missing outward/inward issue keys`);
+    return;
+  }
+
+  const localOutwardKey = await getLocalKey(remoteOutwardKey, context.orgId);
+  const localInwardKey = await getLocalKey(remoteInwardKey, context.orgId);
+
+  if (!localOutwardKey || !localInwardKey) {
+    console.log(`${LOG_EMOJI.WARNING} Cannot sync link ${remoteOutwardKey} ⇄ ${remoteInwardKey} - missing local mapping(s)`);
+    return;
+  }
+
+  const existingLinks = await fetchLocalIssueLinks(localOutwardKey);
+  if (!existingLinks) {
+    console.log(`${LOG_EMOJI.WARNING} Could not load local issue ${localOutwardKey} links`);
+    return;
+  }
+
+  if (linkCollectionContains(existingLinks, localInwardKey, linkTypeName)) {
+    console.log(`${LOG_EMOJI.SKIP} Link ${localOutwardKey} ⇄ ${localInwardKey} (${linkTypeName}) already exists locally`);
+    return;
+  }
+
+  const created = await createLocalIssueLink(localOutwardKey, localInwardKey, linkTypeName);
+  if (!created) {
+    return;
+  }
+
+  await recordInboundLinkMapping(localOutwardKey, localInwardKey, linkTypeName, context.orgId);
+}
+
+async function syncIncomingLinksForIssue(remoteIssue, localIssueKey, context) {
+  if (!shouldSyncIncomingLinks(context.syncOptions)) {
+    return;
+  }
+
+  const remoteLinks = remoteIssue?.fields?.issuelinks;
+  if (!Array.isArray(remoteLinks) || remoteLinks.length === 0) {
+    return;
+  }
+
+  const localLinks = await fetchLocalIssueLinks(localIssueKey);
+  if (localLinks === null) {
+    return;
+  }
+
+  const workingLocalLinks = [...localLinks];
+
+  for (const remoteLink of remoteLinks) {
+    const linkTypeName = remoteLink?.type?.name || 'Relates';
+    const remoteLinkedIssueKey = remoteLink.outwardIssue?.key || remoteLink.inwardIssue?.key;
+    if (!remoteLinkedIssueKey) {
+      continue;
+    }
+
+    const localLinkedKey = await getLocalKey(remoteLinkedIssueKey, context.orgId);
+    if (!localLinkedKey) {
+      console.log(`${LOG_EMOJI.INFO} Skipping link ${remoteIssue.key} ⇄ ${remoteLinkedIssueKey} - linked issue not synced locally`);
+      continue;
+    }
+
+    if (linkCollectionContains(workingLocalLinks, localLinkedKey, linkTypeName)) {
+      continue;
+    }
+
+    const direction = remoteLink.outwardIssue ? 'outward' : 'inward';
+    const outwardKey = direction === 'outward' ? localIssueKey : localLinkedKey;
+    const inwardKey = direction === 'outward' ? localLinkedKey : localIssueKey;
+
+    const created = await createLocalIssueLink(outwardKey, inwardKey, linkTypeName);
+    if (created) {
+      console.log(`${LOG_EMOJI.SUCCESS} Synced incoming link ${localIssueKey} ⇄ ${localLinkedKey} (${linkTypeName})`);
+      workingLocalLinks.push({
+        type: { name: linkTypeName },
+        outwardIssue: direction === 'outward' ? { key: localLinkedKey } : null,
+        inwardIssue: direction === 'inward' ? { key: localLinkedKey } : null
+      });
+      await recordInboundLinkMapping(localIssueKey, localLinkedKey, linkTypeName, context.orgId);
+    }
+  }
+}
+
+async function processPendingChildIssues(remoteParentKey, context, pendingChildKeys = null, attempt = 1) {
+  const childKeys = pendingChildKeys || await consumePendingChildIssues(remoteParentKey, context.orgId);
+  if (!childKeys || childKeys.length === 0) {
+    return;
+  }
+
+  console.log(`${LOG_EMOJI.INFO} Processing ${childKeys.length} pending child issue(s) waiting for ${remoteParentKey} (attempt ${attempt}/${PENDING_CHILD_MAX_ATTEMPTS})`);
+  const failures = [];
+
+  for (const childKey of childKeys) {
+    try {
+      const childIssue = await getRemoteIssue(childKey, context.org, buildRemoteFieldList(context.mappings.fieldMappings));
+      if (!childIssue) {
+        console.log(`${LOG_EMOJI.WARNING} Could not refetch pending child issue ${childKey}, will retry`);
+        failures.push(childKey);
+        continue;
+      }
+
+      await handleRemoteIssueCreated(childIssue, context, {
+        allowQueueOnMissingParent: false,
+        retrySource: 'pending-child',
+        retryAttempt: attempt
+      });
+    } catch (error) {
+      console.error(`${LOG_EMOJI.ERROR} Error processing pending child issue ${childKey}:`, error);
+      failures.push(childKey);
+    }
+  }
+
+  if (failures.length === 0) {
+    return;
+  }
+
+  if (attempt >= PENDING_CHILD_MAX_ATTEMPTS) {
+    console.warn(`${LOG_EMOJI.WARNING} Pending child issues for ${remoteParentKey} still failing after ${attempt} attempts; re-queueing ${failures.length} item(s)`);
+    for (const failedKey of failures) {
+      await enqueuePendingChildIssue(remoteParentKey, failedKey, context.orgId);
+    }
+    return;
+  }
+
+  await sleep(PARENT_MAPPING_RETRY_DELAY_MS);
+  await processPendingChildIssues(remoteParentKey, context, failures, attempt + 1);
+}
+
 
 function buildAttachmentIssueCacheKey(attachmentId, orgId) {
   const prefix = orgId || 'legacy';
@@ -888,6 +1051,70 @@ async function deleteAttachmentIssueMapping(attachmentId, orgId) {
   await kvsStore.del(key);
 }
 
+async function ensureParentReadyForCreate(remoteIssue, context, options = {}) {
+  const allowQueue = options.allowQueueOnMissingParent !== false;
+  if (!isSubtaskIssue(remoteIssue)) {
+    return true;
+  }
+
+  const parentKey = remoteIssue.fields?.parent?.key;
+  if (!parentKey) {
+    console.log(`${LOG_EMOJI.WARNING} Subtask ${remoteIssue.key} is missing parent reference in payload`);
+    return true;
+  }
+
+  const localParentKey = await waitForLocalParentKey(parentKey, context.orgId);
+  if (localParentKey) {
+    remoteIssue.localParentKey = localParentKey;
+    return true;
+  }
+
+  if (!allowQueue) {
+    console.log(`${LOG_EMOJI.WARNING} Parent ${parentKey} still unavailable locally; cannot create ${remoteIssue.key} yet`);
+    return false;
+  }
+
+  await enqueuePendingChildIssue(parentKey, remoteIssue.key, context.orgId);
+  console.log(`${LOG_EMOJI.INFO} Queued subtask ${remoteIssue.key} until parent ${parentKey} syncs locally`);
+  return false;
+}
+
+async function waitForLocalParentKey(remoteParentKey, orgId) {
+  for (let attempt = 1; attempt <= PARENT_MAPPING_RETRY_ATTEMPTS; attempt++) {
+    const localKey = await getLocalKey(remoteParentKey, orgId);
+    if (localKey) {
+      if (attempt === 1) {
+        console.log(`${LOG_EMOJI.INFO} Parent ${remoteParentKey} already mapped to ${localKey}`);
+      } else {
+        const waited = (attempt - 1) * PARENT_MAPPING_RETRY_DELAY_MS;
+        console.log(`${LOG_EMOJI.INFO} Parent ${remoteParentKey} mapped to ${localKey} after waiting ${waited}ms`);
+      }
+      return localKey;
+    }
+
+    if (attempt < PARENT_MAPPING_RETRY_ATTEMPTS) {
+      console.log(`${LOG_EMOJI.INFO} Waiting for parent ${remoteParentKey} mapping (attempt ${attempt}/${PARENT_MAPPING_RETRY_ATTEMPTS})`);
+      await sleep(PARENT_MAPPING_RETRY_DELAY_MS);
+    }
+  }
+
+  return null;
+}
+
+function isSubtaskIssue(remoteIssue) {
+  const issueType = remoteIssue?.fields?.issuetype;
+  if (!issueType) {
+    return false;
+  }
+
+  if (issueType.subtask === true) {
+    return true;
+  }
+
+  const name = issueType.name || '';
+  return name.toLowerCase() === 'sub-task' || name.toLowerCase() === 'subtask';
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -901,6 +1128,19 @@ function shouldSyncIncomingAttachments(syncOptions) {
   }
   if (typeof syncOptions.syncAttachments === 'boolean') {
     return syncOptions.syncAttachments;
+  }
+  return true;
+}
+
+function shouldSyncIncomingLinks(syncOptions) {
+  if (!syncOptions) {
+    return true;
+  }
+  if (typeof syncOptions.incomingLinks === 'boolean') {
+    return syncOptions.incomingLinks;
+  }
+  if (typeof syncOptions.syncLinks === 'boolean') {
+    return syncOptions.syncLinks;
   }
   return true;
 }
@@ -920,4 +1160,83 @@ function shouldSkipUpdateForAttachmentOnly(payload) {
 function isAttachmentEvent(webhookEvent) {
   return webhookEvent === 'attachment_created' || webhookEvent === 'jira:attachment_created' ||
          webhookEvent === 'attachment_deleted' || webhookEvent === 'jira:attachment_deleted';
+}
+
+async function fetchLocalIssueLinks(issueKey) {
+  try {
+    const response = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=issuelinks`);
+    if (!response.ok) {
+      console.error(`${LOG_EMOJI.ERROR} Failed to fetch local issue ${issueKey} links: ${response.status}`);
+      return null;
+    }
+    const issue = await response.json();
+    return issue.fields?.issuelinks || [];
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error fetching local issue ${issueKey}:`, error);
+    return null;
+  }
+}
+
+function linkCollectionContains(links, targetKey, linkTypeName) {
+  return Boolean(findMatchingLink(links, targetKey, linkTypeName));
+}
+
+function findMatchingLink(links, targetKey, linkTypeName) {
+  if (!Array.isArray(links)) {
+    return null;
+  }
+  return links.find(link => matchesLink(link, targetKey, linkTypeName));
+}
+
+function matchesLink(link, targetKey, linkTypeName) {
+  if (!link || !link.type) {
+    return false;
+  }
+  if (linkTypeName && link.type.name !== linkTypeName) {
+    return false;
+  }
+  const otherKey = link.outwardIssue?.key || link.inwardIssue?.key;
+  return otherKey === targetKey;
+}
+
+async function createLocalIssueLink(outwardKey, inwardKey, linkTypeName) {
+  const payload = {
+    type: { name: linkTypeName },
+    inwardIssue: { key: inwardKey },
+    outwardIssue: { key: outwardKey }
+  };
+
+  try {
+    const response = await api.asApp().requestJira(route`/rest/api/3/issueLink`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (response.ok || response.status === 201) {
+      console.log(`${LOG_EMOJI.SUCCESS} Created local issue link ${outwardKey} ⇄ ${inwardKey} (${linkTypeName})`);
+      return true;
+    }
+
+    const errorText = await response.text();
+    console.error(`${LOG_EMOJI.ERROR} Failed to create local issue link: ${errorText}`);
+    return false;
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error creating local issue link:`, error);
+    return false;
+  }
+}
+
+async function recordInboundLinkMapping(sourceKey, targetKey, linkTypeName, orgId) {
+  const updatedLinks = await fetchLocalIssueLinks(sourceKey);
+  if (!updatedLinks) {
+    return;
+  }
+  const createdLink = findMatchingLink(updatedLinks, targetKey, linkTypeName);
+  if (createdLink?.id) {
+    await storeLinkMapping(createdLink.id, 'inbound', orgId);
+    console.log(`${LOG_EMOJI.INFO} Recorded inbound link mapping for ${sourceKey} ⇄ ${targetKey}`);
+  }
 }
