@@ -85,6 +85,21 @@ export async function run(event, context) {
       if (dryRun) {
         effectiveSyncOptions.dryRun = true;
       }
+
+      console.log(`⚙️ Sync options for ${org.name}:`, JSON.stringify({
+        syncAttachments: effectiveSyncOptions.syncAttachments !== false,
+        syncLinks: effectiveSyncOptions.syncLinks !== false,
+        syncComments: effectiveSyncOptions.syncComments !== false,
+        dryRun: !!effectiveSyncOptions.dryRun,
+        forceCheckAttachments: !!effectiveSyncOptions.forceCheckAttachments,
+        forceCheckLinks: !!effectiveSyncOptions.forceCheckLinks
+      }));
+
+      // If updating existing, force check attachments and links to ensure consistency
+      if (updateExisting) {
+        effectiveSyncOptions.forceCheckAttachments = true;
+        effectiveSyncOptions.forceCheckLinks = true;
+      }
       
       // Get LOCAL projects
       const allowedProjects = Array.isArray(orgWithToken.allowedProjects)
@@ -304,8 +319,12 @@ export async function run(event, context) {
               
               if (!remoteExists) {
                 // Remote was deleted - remove stale mapping and recreate
-                console.log(`🔄 Removing stale mapping and recreating ${localKey}`);
-                await removeMapping(localKey, remoteKey, orgWithToken.id);
+                if (!effectiveSyncOptions.dryRun) {
+                  console.log(`🔄 Removing stale mapping and recreating ${localKey}`);
+                  await removeMapping(localKey, remoteKey, orgWithToken.id);
+                } else {
+                  console.log(`[DRY RUN] Would remove stale mapping for ${localKey}`);
+                }
                 
                 const fullIssue = await getFullIssue(localKey);
                 if (fullIssue) {
