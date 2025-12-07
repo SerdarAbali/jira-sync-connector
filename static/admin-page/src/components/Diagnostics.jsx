@@ -20,6 +20,8 @@ const Diagnostics = ({ selectedOrgId }) => {
   const [issueLookupLoading, setIssueLookupLoading] = useState(false);
   const [issueMapping, setIssueMapping] = useState(null);
   const [forceSyncLoading, setForceSyncLoading] = useState(false);
+  const [verifySyncLoading, setVerifySyncLoading] = useState(false);
+  const [verificationResult, setVerificationResult] = useState(null);
 
   const runHealthCheck = async () => {
     if (!selectedOrgId) return;
@@ -62,6 +64,7 @@ const Diagnostics = ({ selectedOrgId }) => {
     if (!selectedOrgId || !issueKey.trim()) return;
     setIssueLookupLoading(true);
     setIssueMapping(null);
+    setVerificationResult(null);
     
     try {
       const res = await invoke('checkIssueMapping', { orgId: selectedOrgId, issueKey: issueKey.trim().toUpperCase() });
@@ -70,6 +73,21 @@ const Diagnostics = ({ selectedOrgId }) => {
       setIssueMapping({ error: error.message });
     } finally {
       setIssueLookupLoading(false);
+    }
+  };
+
+  const verifyIssueSync = async () => {
+    if (!selectedOrgId || !issueKey.trim()) return;
+    setVerifySyncLoading(true);
+    setVerificationResult(null);
+    
+    try {
+      const res = await invoke('verifyIssueSync', { orgId: selectedOrgId, issueKey: issueKey.trim().toUpperCase() });
+      setVerificationResult(res);
+    } catch (error) {
+      setVerificationResult({ error: error.message });
+    } finally {
+      setVerifySyncLoading(false);
     }
   };
 
@@ -174,6 +192,64 @@ const Diagnostics = ({ selectedOrgId }) => {
           )}
         </div>
       )}
+
+      <div style={{ marginTop: '40px', borderTop: `1px solid ${token('color.border', '#eee')}`, paddingTop: '20px' }}>
+        <h3>Issue Troubleshooting</h3>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end', marginBottom: '20px' }}>
+          <div style={{ flex: 1 }}>
+            <label htmlFor="issue-key">Issue Key</label>
+            <TextField 
+              id="issue-key" 
+              value={issueKey} 
+              onChange={(e) => setIssueKey(e.target.value)} 
+              placeholder="e.g. SCRUM-123" 
+            />
+          </div>
+          <LoadingButton isLoading={issueLookupLoading} onClick={checkIssueMapping}>Check Mapping</LoadingButton>
+          <LoadingButton isLoading={verifySyncLoading} onClick={verifyIssueSync}>Verify Sync</LoadingButton>
+          <LoadingButton appearance="warning" isLoading={forceSyncLoading} onClick={forceSyncIssue}>Force Sync</LoadingButton>
+        </div>
+
+        {issueMapping && (
+          <SectionMessage appearance={issueMapping.error ? 'error' : 'info'}>
+            {issueMapping.error ? issueMapping.error : (
+              <div>
+                <p><strong>Local Key:</strong> {issueMapping.localKey}</p>
+                <p><strong>Remote Key:</strong> {issueMapping.remoteKey || 'Not mapped'}</p>
+                {issueMapping.remoteKey && <p><strong>Remote URL:</strong> <a href={issueMapping.remoteUrl} target="_blank" rel="noreferrer">{issueMapping.remoteUrl}</a></p>}
+              </div>
+            )}
+          </SectionMessage>
+        )}
+
+        {verificationResult && (
+          <div style={{ marginTop: '20px', padding: '15px', border: `1px solid ${token('color.border', '#ccc')}`, borderRadius: '8px' }}>
+            <h4>Verification Results</h4>
+            {verificationResult.error ? (
+              <SectionMessage appearance="error">{verificationResult.error}</SectionMessage>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: '10px' }}>
+                  <div style={{ marginRight: '10px' }}>{getIcon(verificationResult.discrepancies.length === 0 ? 'success' : 'warning')}</div>
+                  <strong>{verificationResult.discrepancies.length === 0 ? 'Sync Verified - 100% Match' : 'Discrepancies Found'}</strong>
+                </div>
+                
+                {verificationResult.discrepancies.length > 0 && (
+                  <ul style={{ color: token('color.text.danger', '#DE350B') }}>
+                    {verificationResult.discrepancies.map((d, i) => <li key={i}>{d}</li>)}
+                  </ul>
+                )}
+
+                <div style={{ marginTop: '10px', fontSize: '12px', color: token('color.text.subtle', '#666') }}>
+                  <p>Attachments: Local ({verificationResult.details?.attachments?.local}) / Remote ({verificationResult.details?.attachments?.remote})</p>
+                  <p>Comments: Local ({verificationResult.details?.comments?.local}) / Remote ({verificationResult.details?.comments?.remote})</p>
+                  <p>Status: {verificationResult.details?.status?.local} → {verificationResult.details?.status?.remote}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

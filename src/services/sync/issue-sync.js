@@ -628,12 +628,24 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   }
 
   try {
-    console.log('Creating remote issue for:', issue.key);
-    console.log('📦 Payload fields:', JSON.stringify(Object.keys(remoteIssue.fields)));
+      console.log('Creating remote issue for:', issue.key);
+      console.log('📦 Payload fields:', JSON.stringify(Object.keys(remoteIssue.fields)));
 
-    await markSyncing(issue.key);
+      // DRY RUN CHECK
+      if (syncOptions?.dryRun) {
+        console.log(`[DRY RUN] Would create issue ${issue.key} in ${org.name} with payload:`, JSON.stringify(remoteIssue, null, 2));
+        return {
+          key: 'DRY-RUN-KEY',
+          id: 'DRY-RUN-ID',
+          self: 'http://dry-run',
+          dryRun: true,
+          payload: remoteIssue
+        };
+      }
 
-    const response = await retryWithBackoff(async () => {
+      await markSyncing(issue.key);
+
+      const response = await retryWithBackoff(async () => {
       return await fetch(`${org.remoteUrl}/rest/api/3/issue`, {
         method: 'POST',
         headers: {
@@ -1054,6 +1066,16 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
 
     try {
       console.log(`Updating remote issue: ${localKey} → ${remoteKey}`);
+
+      // DRY RUN CHECK
+      if (syncOptions?.dryRun) {
+        console.log(`[DRY RUN] Would update issue ${localKey} -> ${remoteKey} in ${org.name} with payload:`, JSON.stringify(updateData, null, 2));
+        return {
+          ...syncDetails,
+          dryRun: true,
+          payload: updateData
+        };
+      }
 
       const response = await retryWithBackoff(async () => {
         return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, {

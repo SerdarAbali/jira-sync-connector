@@ -85,6 +85,103 @@ export function defineDiagnosticsResolvers(resolver) {
     return results;
   });
 
+  // Deep Verification of a Single Issue
+  resolver.define('verifyIssueSync', async ({ payload }) => {
+    const { issueKey, orgId } = payload;
+    const results = {
+      localKey: issueKey,
+      remoteKey: null,
+      synced: false,
+      discrepancies: [],
+      details: {}
+    };
+
+    try {
+      // 1. Get Organization
+      const orgs = await getOrganizationsWithTokens();
+      const org = orgs.find(o => o.id === orgId);
+      if (!org) throw new Error('Organization not found');
+
+      // 2. Get Local Issue
+      const { getFullIssue } = await import('../services/jira/local-client.js');
+      const localIssue = await getFullIssue(issueKey);
+      if (!localIssue) throw new Error(`Local issue ${issueKey} not found`);
+
+      // 3. Get Mapping
+      const { getRemoteKey } = await import('../services/storage/mappings.js');
+      const remoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);
+      results.remoteKey = remoteKey;
+
+      if (!remoteKey) {
+        results.discrepancies.push('No remote mapping found');
+        return results;
+      }
+
+      // 4. Get Remote Issue
+      const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
+      const remoteRes = await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
+        headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' }
+      });
+
+      if (!remoteRes.ok) {
+        results.discrepancies.push(`Remote issue ${remoteKey} not found (Status: ${remoteRes.status})`);
+        return results;
+      }
+
+      const remoteIssue = await remoteRes.json();
+      results.synced = true;
+
+      // 5. Compare Fields
+      
+      // Summary
+      if (localIssue.fields.summary !== remoteIssue.fields.summary) {
+        results.discrepancies.push(`Summary mismatch: "${localIssue.fields.summary}" vs "${remoteIssue.fields.summary}"`);
+      }
+
+      // Status
+      // Note: Statuses might have different names/IDs, so we just report them
+      results.details.status = { local: localIssue.fields.status.name, remote: remoteIssue.fields.status.name };
+
+      // Attachments
+      const localAttachments = localIssue.fields.attachment || [];
+      const remoteAttachments = remoteIssue.fields.attachment || [];
+      
+      results.details.attachments = { local: localAttachments.length, remote: remoteAttachments.length };
+      
+      if (localAttachments.length !== remoteAttachments.length) {
+        results.discrepancies.push(`Attachment count mismatch: ${localAttachments.length} vs ${remoteAttachments.length}`);
+      }
+
+      // Check for missing attachments by filename/size
+      const missingAttachments = localAttachments.filter(localAtt => {
+        return !remoteAttachments.some(remoteAtt => 
+          remoteAtt.filename === localAtt.filename && remoteAtt.size === localAtt.size
+        );
+      });
+
+      if (missingAttachments.length > 0) {
+        missingAttachments.forEach(att => {
+          results.discrepancies.push(`Missing attachment on remote: ${att.filename} (${att.size} bytes)`);
+        });
+      }
+
+      // Comments
+      const localComments = localIssue.fields.comment?.comments || [];
+      const remoteComments = remoteIssue.fields.comment?.comments || [];
+      
+      // Note: Remote might have more comments (sync footer, etc), so we check if local count > remote count
+      if (localComments.length > remoteComments.length) {
+        results.discrepancies.push(`Comment count warning: Local (${localComments.length}) > Remote (${remoteComments.length})`);
+      }
+      results.details.comments = { local: localComments.length, remote: remoteComments.length };
+
+    } catch (error) {
+      results.error = error.message;
+    }
+
+    return results;
+  });
+
   // Full System Test (Write Operations)
   resolver.define('runSystemTest', async ({ payload }) => {
     const { orgId } = payload;

@@ -156,6 +156,26 @@ const App = () => {
   const [scanningDeleted, setScanningDeleted] = useState(false);
   const [scanProgress, setScanProgress] = useState(null); // Track scan progress across multiple runs
 
+  // Scheduled sync manual trigger
+  const [scheduledSyncLoading, setScheduledSyncLoading] = useState(false);
+
+  const handleTriggerScheduledSync = async () => {
+    setScheduledSyncLoading(true);
+    try {
+      const result = await invoke('triggerScheduledSync');
+      if (result.success) {
+        showMessage('Scheduled sync triggered successfully', 'success');
+        await loadStats();
+      } else {
+        showMessage(`Error: ${result.error}`, 'error');
+      }
+    } catch (error) {
+      showMessage('Error: ' + error.message, 'error');
+    } finally {
+      setScheduledSyncLoading(false);
+    }
+  };
+
   // Connection test
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(null);
@@ -682,7 +702,7 @@ const App = () => {
 
   const handleScanForDeletedIssues = async (existingProgress = null, options = {}) => {
     setScanningDeleted(true);
-    const { updateExisting = false } = options;
+    const { updateExisting = false, dryRun = false } = options;
     
     // Initialize or continue progress tracking
     const currentProgress = existingProgress || scanProgress || { 
@@ -693,8 +713,8 @@ const App = () => {
     };
     
     try {
-      showMessage(`⏳ Starting bulk sync${updateExisting ? ' (updating existing)' : ''}...`, 'info', true);
-      const result = await invoke('scanForDeletedIssues', { orgId: selectedOrgId, updateExisting });
+      showMessage(`⏳ Starting ${dryRun ? 'DRY RUN' : 'bulk sync'}${updateExisting ? ' (updating existing)' : ''}...`, 'info', true);
+      const result = await invoke('scanForDeletedIssues', { orgId: selectedOrgId, updateExisting, dryRun });
       
       if (result.success) {
         // New async queue approach - poll for status
@@ -716,8 +736,12 @@ const App = () => {
               if (status.status === 'complete') {
                 const results = status.results || {};
                 const parts = [];
-                if (results.created) parts.push(`${results.created} created`);
-                if (results.updated) parts.push(`${results.updated} updated`);
+                if (results.dryRun) {
+                  parts.push(`[DRY RUN] Would create ${results.created}, would update ${results.updated}`);
+                } else {
+                  if (results.created) parts.push(`${results.created} created`);
+                  if (results.updated) parts.push(`${results.updated} updated`);
+                }
                 parts.push(`${results.alreadySynced || 0} already synced`);
                 showMessage(
                   `✅ Sync complete! ${parts.join(', ')} (${results.elapsedSeconds || 0}s)`,
@@ -1204,6 +1228,8 @@ const App = () => {
                     scanProgress={scanProgress}
                     resetScanProgress={resetScanProgress}
                     handleCancelBulkSync={handleCancelBulkSync}
+                    handleTriggerScheduledSync={handleTriggerScheduledSync}
+                    scheduledSyncLoading={scheduledSyncLoading}
                   />
                 </div>
               </TabPanel>
@@ -2061,7 +2087,8 @@ const SyncActivityPanel = ({
   syncStats, loadStats, statsLoading, handleRetryPendingLinks, handleClearWebhookErrors,
   organizations, onExportIssues, issueExporting, onIssueImportClick, issueImporting,
   selectedOrg, syncOptions, handleScanForDeletedIssues, scanningDeleted,
-  scanProgress, resetScanProgress, handleCancelBulkSync
+  scanProgress, resetScanProgress, handleCancelBulkSync,
+  handleTriggerScheduledSync, scheduledSyncLoading
 }) => {
   console.log('[Debug] SyncActivityPanel rendered', { onExportIssues: !!onExportIssues, organizations: organizations?.length });
   const [eventsExpanded, setEventsExpanded] = useState(false);
@@ -2394,7 +2421,18 @@ const SyncActivityPanel = ({
           {/* Scheduled Sync Stats */}
           {syncStats.scheduled && (
             <div style={surfaceCard()}>
-              <h4 style={{ margin: '0 0 16px 0' }}>Scheduled Sync Statistics</h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h4 style={{ margin: 0 }}>Scheduled Sync Statistics</h4>
+                <Button 
+                  appearance="subtle" 
+                  onClick={handleTriggerScheduledSync} 
+                  isLoading={scheduledSyncLoading}
+                  style={lozengeButtonStyle}
+                  title="Manually trigger the hourly sync job"
+                >
+                  Run Now
+                </Button>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px'), marginBottom: token('space.200', '16px') }}>
                 <StatCard label="Issues Checked" value={syncStats.scheduled.issuesChecked || 0} color="#0052CC" />
                 <StatCard label="Issues Created" value={syncStats.scheduled.issuesCreated || 0} color="#00875A" />
@@ -2604,6 +2642,16 @@ const SyncActivityPanel = ({
                       The hourly Forge trigger has not reported a completion for {formatDuration(nextRunInfo.overdueMs)}.
                       The job should resume automatically, but you can trigger a manual sync if updates are urgent.
                     </p>
+                    <div style={{ marginTop: '8px' }}>
+                      <Button 
+                        appearance="warning" 
+                        onClick={handleTriggerScheduledSync} 
+                        isLoading={scheduledSyncLoading}
+                        style={lozengeButtonStyle}
+                      >
+                        Run Scheduled Sync Now
+                      </Button>
+                    </div>
                   </SectionMessage>
                 </div>
               )}
@@ -2778,6 +2826,15 @@ const SyncActivityPanel = ({
                 title="Re-sync all issues including already synced ones (applies current field mappings)"
               >
                 Update All
+              </Button>
+              <Button 
+                appearance="subtle" 
+                onClick={() => handleScanForDeletedIssues(null, { updateExisting: true, dryRun: true })} 
+                isLoading={scanningDeleted}
+                style={{ ...lozengeButtonStyle, background: '#EAE6FF', color: '#403294' }}
+                title="Simulate sync without making changes"
+              >
+                Dry Run
               </Button>
               {scanningDeleted && (
                 <Button 

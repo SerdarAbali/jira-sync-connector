@@ -52,7 +52,7 @@ async function checkRemoteIssueExists(remoteKey, config) {
  * Check all existing mappings to find and recreate deleted remote issues
  * This runs when "Recreate Deleted Issues" option is enabled
  */
-async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgId, orgName, stats) {
+async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgId, orgName, stats, startTime, timeoutThreshold) {
   console.log(`${LOG_EMOJI.INFO} Checking all mappings for deleted remote issues...`);
   
   // Get all mappings for this org
@@ -77,6 +77,13 @@ async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgI
   let deletedCount = 0;
   
   for (const mapping of mappingsToCheck) {
+    // Check for timeout
+    if (startTime && timeoutThreshold && (Date.now() - startTime > timeoutThreshold)) {
+      console.warn(`⚠️ Recreate deleted issues stopped early for ${orgName} due to timeout risk`);
+      stats.errors.push(`Recreate check stopped early for ${orgName} due to timeout risk`);
+      break;
+    }
+
     checkedCount++;
     const { localKey, remoteKey } = mapping;
     
@@ -161,8 +168,9 @@ async function checkAndRecreateDeletedIssues(config, mappings, syncOptions, orgI
  * Sync ALL missing issues from local to remote
  * This finds issues that were never synced and creates them on remote
  */
-async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgName, stats) {
-  console.log(`${LOG_EMOJI.INFO} Checking for issues that were NEVER synced to ${orgName}...`);
+async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgName, stats, scheduledConfig, startTime, timeoutThreshold) {
+  const scope = scheduledConfig?.syncScope || 'recent';
+  console.log(`${LOG_EMOJI.INFO} Checking for issues that were NEVER synced to ${orgName} (Scope: ${scope})...`);
   
   // Get all local projects
   const projectsResponse = await api.asApp().requestJira(
@@ -194,18 +202,38 @@ async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgNam
   let createdCount = 0;
 
   for (const project of projectsToScan) {
+    // Check for timeout at project level
+    if (startTime && timeoutThreshold && (Date.now() - startTime > timeoutThreshold)) {
+      console.warn(`⚠️ Missing issues check stopped early for ${orgName} due to timeout risk`);
+      stats.errors.push(`Missing issues check stopped early for ${orgName} due to timeout risk`);
+      break;
+    }
+
     const projectKey = project.key;
     
     // Build JQL with optional filter
-    let jql = `project = ${projectKey} ORDER BY key ASC`;
+    let baseJql = `project = ${projectKey}`;
     if (config.jqlFilter && config.jqlFilter.trim()) {
-      jql = `project = ${projectKey} AND (${config.jqlFilter}) ORDER BY key ASC`;
+      baseJql = `project = ${projectKey} AND (${config.jqlFilter})`;
     }
+
+    // Apply scope filter
+    if (scope === 'recent') {
+      baseJql += ` AND updated >= -24h`;
+    }
+
+    const jql = `${baseJql} ORDER BY key ASC`;
     
     let hasMore = true;
     let nextPageToken = null;
 
     while (hasMore) {
+      // Check for timeout inside pagination loop
+      if (startTime && timeoutThreshold && (Date.now() - startTime > timeoutThreshold)) {
+        hasMore = false;
+        break;
+      }
+
       const requestBody = {
         jql,
         maxResults: 50,
@@ -233,6 +261,13 @@ async function syncAllMissingIssues(config, mappings, syncOptions, orgId, orgNam
       const issues = data.issues || [];
       
       for (const issue of issues) {
+        // Check for timeout inside issue loop
+        if (startTime && timeoutThreshold && (Date.now() - startTime > timeoutThreshold)) {
+          console.warn(`⚠️ Missing issues check stopped early for ${orgName} due to timeout risk`);
+          hasMore = false;
+          break;
+        }
+
         const localKey = issue.key;
         
         // Check if mapping exists
@@ -561,6 +596,9 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 }
 
 export async function performScheduledSync() {
+  const startTime = Date.now();
+  const TIMEOUT_THRESHOLD_MS = 800 * 1000; // 13 minutes 20 seconds (leaving buffer before 900s limit)
+  
   console.log(`⏰ Scheduled sync starting...`);
 
   let scheduledConfig = await kvsStore.get('scheduledSyncConfig');
@@ -613,33 +651,41 @@ export async function performScheduledSync() {
     events: []
   };
 
-  // Process each organization
-  for (const org of configs) {
-    const orgId = org.id || 'legacy';
-    const orgName = org.name || 'Legacy';
-    console.log(`\n🏢 Processing organization: ${orgName}`);
-    
-    const allowedProjects = Array.isArray(org.allowedProjects)
-      ? org.allowedProjects.filter(Boolean)
-      : [];
+  try {
+    // Process each organization
+    for (const org of configs) {
+      // Check for timeout before starting org
+      if (Date.now() - startTime > TIMEOUT_THRESHOLD_MS) {
+        console.warn(`⚠️ Scheduled sync approaching timeout. Stopping early.`);
+        stats.errors.push('Sync stopped early due to timeout risk');
+        break;
+      }
 
-    if (allowedProjects.length === 0) {
-      console.log(`⛔ Skipping ${orgName} - no project filters selected`);
-      stats.issuesSkipped++;
-      recordEvent(stats, {
-        type: 'skip',
-        orgName,
-        message: 'No project filters selected'
-      });
-      continue;
-    }
+      const orgId = org.id || 'legacy';
+      const orgName = org.name || 'Legacy';
+      console.log(`\n🏢 Processing organization: ${orgName}`);
+      
+      const allowedProjects = Array.isArray(org.allowedProjects)
+        ? org.allowedProjects.filter(Boolean)
+        : [];
 
-    try {
-      // Build config object compatible with sync functions
-      const config = {
-        remoteUrl: org.remoteUrl,
-        remoteEmail: org.remoteEmail,
-        remoteApiToken: org.remoteApiToken,
+      if (allowedProjects.length === 0) {
+        console.log(`⛔ Skipping ${orgName} - no project filters selected`);
+        stats.issuesSkipped++;
+        recordEvent(stats, {
+          type: 'skip',
+          orgName,
+          message: 'No project filters selected'
+        });
+        continue;
+      }
+
+      try {
+        // Build config object compatible with sync functions
+        const config = {
+          remoteUrl: org.remoteUrl,
+          remoteEmail: org.remoteEmail,
+          remoteApiToken: org.remoteApiToken,
         remoteProjectKey: org.remoteProjectKey,
         allowedProjects,
         jqlFilter: org.jqlFilter || ''
@@ -687,13 +733,13 @@ export async function performScheduledSync() {
         console.log(`${LOG_EMOJI.INFO} Recreate deleted issues is ENABLED for ${orgName}`);
         
         // Check ALL existing mappings for deleted remote issues (not just recently updated)
-        await checkAndRecreateDeletedIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats);
+        await checkAndRecreateDeletedIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats, startTime, TIMEOUT_THRESHOLD_MS);
       }
       
       // ALWAYS sync issues that were never synced (no mapping exists)
       // This ensures NO issue is left behind
       console.log(`${LOG_EMOJI.INFO} Checking for never-synced issues for ${orgName}...`);
-      await syncAllMissingIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats);
+      await syncAllMissingIssues(config, mappings, effectiveSyncOptions, orgId, orgName, stats, scheduledConfig, startTime, TIMEOUT_THRESHOLD_MS);
       
       // Build project filter for JQL
       let projectFilter;
@@ -747,6 +793,13 @@ export async function performScheduledSync() {
       console.log(`📋 Found ${searchResults.issues.length} issues to check for ${orgName}`);
       
       for (const issueData of searchResults.issues) {
+        // Check for timeout inside the issue loop
+        if (Date.now() - startTime > TIMEOUT_THRESHOLD_MS) {
+          console.warn(`⚠️ Scheduled sync approaching timeout. Stopping issue loop for ${orgName}.`);
+          stats.errors.push(`Sync stopped early for ${orgName} due to timeout risk`);
+          break;
+        }
+
         stats.issuesChecked++;
         const issueKey = issueData.key;
         
@@ -867,4 +920,8 @@ export async function performScheduledSync() {
 
   console.log(`\n✅ Scheduled sync complete:`, stats);
   return stats;
+  } catch (error) {
+    console.error('Fatal error in scheduled sync:', error);
+    return stats;
+  }
 }
