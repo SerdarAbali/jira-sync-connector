@@ -120,7 +120,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
       try {
         const response = await retryWithBackoff(async () => {
           return await fetch(
-            `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment`,
+            `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
             {
               method: 'POST',
               headers: {
@@ -273,7 +273,7 @@ export async function syncComment(event) {
 
       const response = await retryWithBackoff(async () => {
         return await fetch(
-          `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment`,
+          `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
           {
             method: 'POST',
             headers: {

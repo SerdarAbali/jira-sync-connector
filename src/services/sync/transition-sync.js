@@ -70,7 +70,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
 
     const transitionResponse = await retryWithBackoff(async () => {
       return await fetch(
-        `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions`,
+        `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions?notifyUsers=false`,
         {
           method: 'POST',
           headers: {
