@@ -19,7 +19,7 @@ export async function getFullIssue(issueKey) {
 export async function getFullComment(issueKey, commentId) {
   try {
     const response = await api.asApp().requestJira(
-      route`/rest/api/3/issue/${issueKey}/comment/${commentId}`
+      route`/rest/api/3/issue/${issueKey}/comment/${commentId}?expand=renderedBody,properties`
     );
     if (!response.ok) {
       console.error(`Failed to fetch comment ${commentId} for issue ${issueKey}: ${response.status}`);
