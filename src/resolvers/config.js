@@ -30,7 +30,21 @@ async function validateStorageSize(key, data) {
 export function defineConfigResolvers(resolver) {
   // Get all organizations
   resolver.define('getOrganizations', async () => {
-    const orgs = await kvsStore.get('organizations') || [];
+    let orgs = await kvsStore.get('organizations') || [];
+    
+    // Legacy fallback: if no organizations, check for legacy syncConfig
+    if (orgs.length === 0) {
+      const legacyConfig = await kvsStore.get('syncConfig');
+      if (legacyConfig && legacyConfig.remoteUrl) {
+        console.log('📋 Found legacy syncConfig, returning as organization');
+        orgs = [{
+          id: 'legacy',
+          name: 'Legacy Organization',
+          ...legacyConfig
+        }];
+      }
+    }
+
     // Fetch API tokens from secret storage for each org
     const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
       const token = await kvsStore.getSecret(`secret:${org.id}:token`);

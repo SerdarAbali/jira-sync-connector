@@ -191,8 +191,8 @@ export function defineSyncResolvers(resolver) {
   // This handles: 1) Never synced issues, 2) Deleted remote issues, 3) Missing attachments/links/comments
   resolver.define('scanForDeletedIssues', async ({ payload }) => {
     try {
-      const { orgId, syncMissingData = false, updateExisting = false, force = false } = payload || {};
-      console.log(`🚀 Triggering bulk sync (org: ${orgId || 'all'}, syncMissingData: ${syncMissingData}, updateExisting: ${updateExisting}, force: ${force})...`);
+      const { orgId, syncMissingData = false, updateExisting = false, force = false, dryRun = false } = payload || {};
+      console.log(`🚀 Triggering bulk sync (org: ${orgId || 'all'}, syncMissingData: ${syncMissingData}, updateExisting: ${updateExisting}, force: ${force}, dryRun: ${dryRun})...`);
 
       // Check if sync is already in progress (skip if force=true)
       const currentStatus = await kvsStore.get('bulkSyncStatus');
@@ -216,7 +216,8 @@ export function defineSyncResolvers(resolver) {
         timestamp: new Date().toISOString(),
         orgId: orgId || 'all',
         syncMissingData,
-        updateExisting
+        updateExisting,
+        dryRun
       });
 
       // Push to async queue for background processing with 900s timeout
@@ -225,7 +226,8 @@ export function defineSyncResolvers(resolver) {
         body: {
           orgId,
           syncMissingData,
-          updateExisting
+          updateExisting,
+          dryRun
         }
       });
 
@@ -286,13 +288,15 @@ export function defineSyncResolvers(resolver) {
   // Resolver to manually trigger scheduled sync (for testing)
   resolver.define('triggerScheduledSync', async () => {
     try {
-      console.log('🔄 Manual trigger of scheduled sync requested');
-      const { performScheduledSync } = await import('../services/scheduled/scheduled-sync.js');
-      const stats = await performScheduledSync();
-      console.log('✅ Manual scheduled sync completed:', stats);
-      return { success: true, stats };
+      console.log('🔄 Manual trigger of scheduled sync requested via Async Queue');
+      
+      const queue = new Queue({ key: 'manual-sync-queue' });
+      await queue.push({ body: { trigger: 'manual', timestamp: Date.now() } });
+      
+      console.log('✅ Manual scheduled sync queued successfully');
+      return { success: true, message: 'Scheduled sync started in background. It may take a few minutes to complete.' };
     } catch (error) {
-      console.error('❌ Manual scheduled sync failed:', error);
+      console.error('❌ Manual scheduled sync queue failed:', error);
       return { success: false, error: error.message };
     }
   });

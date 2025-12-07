@@ -14,9 +14,9 @@ import { syncAllComments } from '../services/sync/comment-sync.js';
 export async function run(event, context) {
   const startTime = Date.now();
   // Queue events have payload in event.body (from queue.push({ body: {...} }))
-  const { orgId, syncMissingData = false, updateExisting = false } = event.body || event.payload || {};
+  const { orgId, syncMissingData = false, updateExisting = false, dryRun = false } = event.body || event.payload || {};
   
-  console.log(`🚀 Bulk sync started (org: ${orgId || 'all'}, syncMissingData: ${syncMissingData}, updateExisting: ${updateExisting})`);
+  console.log(`🚀 Bulk sync started (org: ${orgId || 'all'}, syncMissingData: ${syncMissingData}, updateExisting: ${updateExisting}, dryRun: ${dryRun})`);
 
   try {
     // Get organizations
@@ -80,6 +80,11 @@ export async function run(event, context) {
         syncAttachments: true,
         syncLinks: true
       };
+      
+      // Add dryRun to sync options
+      if (dryRun) {
+        effectiveSyncOptions.dryRun = true;
+      }
       
       // Get LOCAL projects
       const allowedProjects = Array.isArray(orgWithToken.allowedProjects)
@@ -151,30 +156,51 @@ export async function run(event, context) {
           const issues = data.issues || [];
           console.log(`📋 Processing batch of ${issues.length} issues from ${projectKey}`);
           
-          // Check for cancellation every batch
-          const currentStatus = await kvsStore.get('bulkSyncStatus');
-          if (currentStatus && currentStatus.status === 'cancelled') {
-            console.log('🛑 Bulk sync was cancelled by user - stopping');
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            await kvsStore.set('bulkSyncStatus', {
-              status: 'cancelled',
-              timestamp: new Date().toISOString(),
-              results: {
-                scanned: totalScanned,
-                created: totalCreated,
-                alreadySynced: totalAlreadySynced,
-                recreated: totalRecreated,
-                errors: totalErrors,
-                elapsedSeconds: elapsed,
-                stoppedEarly: true
-              }
-            });
-            return { success: false, message: 'Cancelled by user' };
-          }
-          
           for (const issue of issues) {
             const localKey = issue.key;
             totalScanned++;
+
+            // Update progress and check cancellation every 5 issues
+            if (totalScanned % 5 === 0) {
+              await kvsStore.set('bulkSyncStatus', {
+                status: 'running',
+                timestamp: new Date().toISOString(),
+                orgId: orgId || 'all',
+                syncMissingData,
+                updateExisting,
+                dryRun,
+                progress: {
+                  scanned: totalScanned,
+                  created: totalCreated,
+                  updated: totalUpdated,
+                  alreadySynced: totalAlreadySynced,
+                  recreated: totalRecreated,
+                  errors: totalErrors
+                }
+              });
+
+              const currentStatus = await kvsStore.get('bulkSyncStatus');
+              if (currentStatus && currentStatus.status === 'cancelled') {
+                console.log('🛑 Bulk sync was cancelled by user - stopping');
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                await kvsStore.set('bulkSyncStatus', {
+                  status: 'cancelled',
+                  timestamp: new Date().toISOString(),
+                  results: {
+                    scanned: totalScanned,
+                    created: totalCreated,
+                    updated: totalUpdated,
+                    alreadySynced: totalAlreadySynced,
+                    recreated: totalRecreated,
+                    errors: totalErrors,
+                    elapsedSeconds: elapsed,
+                    stoppedEarly: true,
+                    dryRun
+                  }
+                });
+                return { success: false, message: 'Cancelled by user' };
+              }
+            }
             
             // Check if this issue has a remote mapping
             let remoteKey = await getRemoteKey(localKey, orgWithToken.id);
@@ -228,14 +254,21 @@ export async function run(event, context) {
                   } else {
                     // Create the issue
                     const createResult = await createRemoteIssue(fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
-                    const newRemoteKey = createResult?.key || createResult;
                     
-                    if (newRemoteKey) {
-                      console.log(`✅ Created ${localKey} → ${newRemoteKey}`);
+                    // Handle Dry Run Result
+                    if (effectiveSyncOptions.dryRun && createResult?.dryRun) {
+                      console.log(`[DRY RUN] Would create ${localKey}`);
                       totalCreated++;
                     } else {
-                      console.error(`❌ Failed to create ${localKey}`);
-                      totalErrors++;
+                      const newRemoteKey = createResult?.key || createResult;
+                      
+                      if (newRemoteKey) {
+                        console.log(`✅ Created ${localKey} → ${newRemoteKey}`);
+                        totalCreated++;
+                      } else {
+                        console.error(`❌ Failed to create ${localKey}`);
+                        totalErrors++;
+                      }
                     }
                   }
                 }
@@ -277,14 +310,21 @@ export async function run(event, context) {
                 const fullIssue = await getFullIssue(localKey);
                 if (fullIssue) {
                   const createResult = await createRemoteIssue(fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
-                  const newRemoteKey = createResult?.key || createResult;
                   
-                  if (newRemoteKey) {
-                    console.log(`✅ Recreated ${localKey} → ${newRemoteKey}`);
+                  // Handle Dry Run Result
+                  if (effectiveSyncOptions.dryRun && createResult?.dryRun) {
+                    console.log(`[DRY RUN] Would recreate ${localKey}`);
                     totalRecreated++;
                   } else {
-                    console.error(`❌ Failed to recreate ${localKey}`);
-                    totalErrors++;
+                    const newRemoteKey = createResult?.key || createResult;
+                    
+                    if (newRemoteKey) {
+                      console.log(`✅ Recreated ${localKey} → ${newRemoteKey}`);
+                      totalRecreated++;
+                    } else {
+                      console.error(`❌ Failed to recreate ${localKey}`);
+                      totalErrors++;
+                    }
                   }
                 }
               } else {
@@ -297,8 +337,14 @@ export async function run(event, context) {
                     const fullIssue = await getFullIssue(localKey);
                     if (fullIssue) {
                       console.log(`🔄 Updating existing issue ${localKey} → ${remoteKey}`);
-                      await updateRemoteIssue(localKey, remoteKey, fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
-                      totalUpdated++;
+                      const updateResult = await updateRemoteIssue(localKey, remoteKey, fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
+                      
+                      if (effectiveSyncOptions.dryRun && updateResult?.dryRun) {
+                        console.log(`[DRY RUN] Would update ${localKey}`);
+                        totalUpdated++;
+                      } else {
+                        totalUpdated++;
+                      }
                     }
                   } catch (updateError) {
                     console.error(`❌ Error updating ${localKey}:`, updateError.message);
@@ -349,7 +395,8 @@ export async function run(event, context) {
         alreadySynced: totalAlreadySynced,
         recreated: totalRecreated,
         errors: totalErrors,
-        elapsedSeconds: elapsed
+        elapsedSeconds: elapsed,
+        dryRun
       }
     });
 

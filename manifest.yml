@@ -47,6 +47,10 @@ modules:
       queue: bulk-sync-queue
       function: bulk-sync-function
 
+    - key: manual-sync-consumer
+      queue: manual-sync-queue
+      function: manual-sync-func
+
   webtrigger:
     - key: incoming-webhook
       function: incoming-webhook-func
@@ -69,10 +73,14 @@ modules:
 
     - key: scheduled-sync-function
       handler: index.runScheduledSync
-      timeoutSeconds: 600
+      timeoutSeconds: 900
 
     - key: bulk-sync-function
       handler: index.runBulkSync
+      timeoutSeconds: 900
+
+    - key: manual-sync-func
+      handler: index.runManualScheduledSync
       timeoutSeconds: 900
 
     - key: incoming-webhook-func
