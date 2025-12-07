@@ -100,7 +100,13 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
     }, `Upload attachment ${filename} to ${remoteKey}`);
 
     if (response.ok) {
-      return await response.json();
+      const result = await response.json();
+      const uploaded = Array.isArray(result) ? result[0] : result;
+      if (uploaded?.id) {
+        return uploaded.id;
+      }
+      console.error('Attachment upload response missing id field');
+      return null;
     } else {
       const errorText = await response.text();
       console.error(`Failed to upload attachment: ${errorText}`);

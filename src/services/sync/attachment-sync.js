@@ -1,11 +1,39 @@
 import { LOG_EMOJI, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB } from '../../constants.js';
-import { getAttachmentMapping, storeAttachmentMapping } from '../storage/mappings.js';
+import { getAttachmentMapping, storeAttachmentMapping, removeAttachmentMapping } from '../storage/mappings.js';
 import { downloadAttachment } from '../jira/local-client.js';
 import { uploadAttachment, getRemoteIssueAttachments } from '../jira/remote-client.js';
 import * as kvsStore from '../storage/kvs.js';
 
 // Lock timeout for attachment sync (30 seconds)
 const ATTACHMENT_LOCK_TTL_MS = 30000;
+
+function normalizeAttachmentMappingValue(mapping) {
+  if (!mapping) {
+    return null;
+  }
+
+  if (typeof mapping === 'string') {
+    return mapping;
+  }
+
+  if (typeof mapping === 'number') {
+    return String(mapping);
+  }
+
+  if (typeof mapping === 'object') {
+    if (typeof mapping.remoteAttachmentId === 'string') {
+      return mapping.remoteAttachmentId;
+    }
+    if (typeof mapping.remoteId === 'string') {
+      return mapping.remoteId;
+    }
+    if (typeof mapping.id === 'string') {
+      return mapping.id;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Try to acquire a lock for syncing a specific attachment
@@ -57,28 +85,38 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
   for (const attachment of issue.fields.attachment) {
     try {
       // Check if already synced (org-specific mapping)
-      const existingMapping = await getAttachmentMapping(attachment.id, orgId);
+      const rawMapping = await getAttachmentMapping(attachment.id, orgId);
+      let existingMapping = normalizeAttachmentMappingValue(rawMapping);
+
+      if (rawMapping && !existingMapping) {
+        console.log(`${LOG_EMOJI.WARNING} Attachment ${attachment.filename} had invalid mapping data, removing to force re-sync`);
+        await removeAttachmentMapping(attachment.id, orgId);
+      } else if (rawMapping && existingMapping && rawMapping !== existingMapping) {
+        console.log(`${LOG_EMOJI.INFO} Attachment ${attachment.filename} mapping normalized to id ${existingMapping}`);
+        await storeAttachmentMapping(attachment.id, existingMapping, orgId);
+      }
       
-      // If forceCheck, verify the attachment actually exists on remote
-      if (existingMapping && forceCheck) {
+      if (existingMapping) {
         const existsOnRemote = remoteAttachments.some(
-          remote => remote.id === existingMapping || 
-                   (remote.filename === attachment.filename && remote.size === attachment.size)
+          remote => remote.id === existingMapping
         );
-        if (!existsOnRemote) {
-          console.log(`${LOG_EMOJI.WARNING} Attachment ${attachment.filename} mapping exists but not on remote - will re-upload`);
-          // Clear the invalid mapping and continue to upload
-        } else {
-          console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} verified on remote`);
+
+        if (existsOnRemote) {
+          if (forceCheck) {
+            console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} verified on remote`);
+            if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'verified on remote');
+          } else {
+            console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already synced (mapping exists: ${existingMapping})`);
+            if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'already synced');
+          }
+
           attachmentMapping[attachment.id] = existingMapping;
-          if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'verified on remote');
           continue;
         }
-      } else if (existingMapping) {
-        console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already synced (mapping exists: ${existingMapping})`);
-        attachmentMapping[attachment.id] = existingMapping;
-        if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'already synced');
-        continue;
+
+        console.log(`${LOG_EMOJI.WARNING} Attachment ${attachment.filename} mapping exists but not on remote - will re-upload`);
+        await removeAttachmentMapping(attachment.id, orgId);
+        existingMapping = null;
       }
 
       // Additional check: Does remote issue already have this file by name and size?

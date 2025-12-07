@@ -130,6 +130,11 @@ export async function getAttachmentMapping(localAttachmentId, orgId = null) {
   return await kvsStore.get(key);
 }
 
+export async function removeAttachmentMapping(localAttachmentId, orgId = null) {
+  const key = orgId ? `${orgId}:attachment-mapping:${localAttachmentId}` : `attachment-mapping:${localAttachmentId}`;
+  await kvsStore.del(key);
+}
+
 export async function storeLinkMapping(localLinkId, remoteLinkId, orgId = null) {
   const key = orgId ? `${orgId}:link-mapping:${localLinkId}` : `link-mapping:${localLinkId}`;
   await kvsStore.set(key, remoteLinkId);

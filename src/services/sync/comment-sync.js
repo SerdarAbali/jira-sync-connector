@@ -73,6 +73,12 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     let failed = 0;
     
     for (const comment of localComments) {
+      if (comment.author?.accountType === 'app') {
+        console.log(`${LOG_EMOJI.INFO} Skipping app-authored comment ${comment.id} on ${localKey}`);
+        skipped++;
+        continue;
+      }
+
       const userName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
       
       let commentText = '';
