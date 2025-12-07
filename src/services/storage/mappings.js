@@ -150,6 +150,103 @@ export async function removeLinkMapping(localLinkId, orgId = null) {
   await kvsStore.del(key);
 }
 
+function buildCommentLocalKey(localCommentId, orgId) {
+  return orgId ? `${orgId}:comment-local-to-remote:${localCommentId}` : `comment-local-to-remote:${localCommentId}`;
+}
+
+function buildCommentRemoteKey(remoteCommentId, orgId) {
+  return orgId ? `${orgId}:comment-remote-to-local:${remoteCommentId}` : `comment-remote-to-local:${remoteCommentId}`;
+}
+
+function buildCommentMetaKey(remoteCommentId, orgId) {
+  return orgId ? `comment-meta:${orgId}:${remoteCommentId}` : `comment-meta:legacy:${remoteCommentId}`;
+}
+
+function buildCommentMetaLocalKey(localCommentId, orgId) {
+  return orgId ? `comment-meta-local:${orgId}:${localCommentId}` : `comment-meta-local:legacy:${localCommentId}`;
+}
+
+export async function storeCommentMapping(localCommentId, remoteCommentId, orgId = null, metadata = {}) {
+  if (!localCommentId || !remoteCommentId) {
+    throw new Error('Both localCommentId and remoteCommentId are required to store comment mapping');
+  }
+
+  const localKey = buildCommentLocalKey(localCommentId, orgId);
+  const remoteKey = buildCommentRemoteKey(remoteCommentId, orgId);
+  const metaKeyRemote = buildCommentMetaKey(remoteCommentId, orgId);
+  const metaKeyLocal = buildCommentMetaLocalKey(localCommentId, orgId);
+
+  const payload = {
+    localCommentId,
+    remoteCommentId,
+    parentLocalId: metadata.parentLocalId || null,
+    parentRemoteId: metadata.parentRemoteId || null,
+    orgId: orgId || 'legacy',
+    createdAt: new Date().toISOString()
+  };
+
+  try {
+    await kvsStore.transaction()
+      .set(localKey, remoteCommentId)
+      .set(remoteKey, localCommentId)
+      .set(metaKeyRemote, payload)
+      .set(metaKeyLocal, payload)
+      .execute();
+  } catch (error) {
+    console.warn('Comment mapping transaction failed, falling back to individual writes:', error.message);
+    await Promise.all([
+      kvsStore.set(localKey, remoteCommentId),
+      kvsStore.set(remoteKey, localCommentId),
+      kvsStore.set(metaKeyRemote, payload),
+      kvsStore.set(metaKeyLocal, payload)
+    ]);
+  }
+}
+
+export async function getRemoteCommentId(localCommentId, orgId = null) {
+  if (!localCommentId) {
+    return null;
+  }
+  return await kvsStore.get(buildCommentLocalKey(localCommentId, orgId));
+}
+
+export async function getLocalCommentId(remoteCommentId, orgId = null) {
+  if (!remoteCommentId) {
+    return null;
+  }
+  return await kvsStore.get(buildCommentRemoteKey(remoteCommentId, orgId));
+}
+
+export async function getCommentMetadataByRemoteId(remoteCommentId, orgId = null) {
+  if (!remoteCommentId) {
+    return null;
+  }
+  return await kvsStore.get(buildCommentMetaKey(remoteCommentId, orgId));
+}
+
+export async function getCommentMetadataByLocalId(localCommentId, orgId = null) {
+  if (!localCommentId) {
+    return null;
+  }
+  return await kvsStore.get(buildCommentMetaLocalKey(localCommentId, orgId));
+}
+
+export async function removeCommentMapping(localCommentId, remoteCommentId, orgId = null) {
+  const tasks = [];
+  if (localCommentId) {
+    tasks.push(kvsStore.del(buildCommentLocalKey(localCommentId, orgId)));
+    tasks.push(kvsStore.del(buildCommentMetaLocalKey(localCommentId, orgId)));
+  }
+  if (remoteCommentId) {
+    tasks.push(kvsStore.del(buildCommentRemoteKey(remoteCommentId, orgId)));
+    tasks.push(kvsStore.del(buildCommentMetaKey(remoteCommentId, orgId)));
+  }
+
+  if (tasks.length > 0) {
+    await Promise.all(tasks);
+  }
+}
+
 // Get all remote keys for a local issue (across all orgs)
 export async function getAllRemoteKeys(localKey) {
   const orgs = await kvsStore.get('organizations') || [];
