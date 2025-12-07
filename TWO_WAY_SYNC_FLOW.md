@@ -130,8 +130,8 @@ sequenceDiagram
 | **Assignee / Reporter** | Synced when user mappings exist. | Falls back to logging a warning and leaves the field untouched if no mapping exists. |
 | **Hierarchy** | Parent/Epic relationships carried over. | If the parent already exists locally it is linked; otherwise the child remains standalone until the parent syncs. |
 | **Comments** | Synced with author attribution and deduplication. | Skips app-authored comments and replays using `[Comment from OrgName - User: ...]` headers. |
-| **Attachments** | **Not yet supported** | Planned next so that inbound files reuse the attachment service locks. |
-| **Links** | **Not yet supported** | Pending inbound link queueing and reconciliation. |
+| **Attachments** | Synced (Remote → Local) | Uses attachment service locks and deduplication. |
+| **Links** | Synced (Remote → Local) | Supports blocks, relates to, duplicates, etc. |
 | **Creation** | Supported | Creating an issue in Org B creates it in Org A (target project defined in org config). |
 | **Deletion** | Supported | Deleting an issue in Org B deletes it in Org A. |
 

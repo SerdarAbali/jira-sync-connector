@@ -30,6 +30,7 @@ This application syncs issues from a source Jira organization to a target organi
 - Status transitions applied via reverse mappings to keep boards aligned
 - Comments recreated in Org A with the original author attribution, skip-if-duplicate protection, and loop prevention for SyncApp-authored confirmations
 - Inbound attachments (Remote → Local)
+- Inbound issue links (Remote → Local)
 
 ### Reliability Features
 - Real-time webhook sync (1-3 seconds)

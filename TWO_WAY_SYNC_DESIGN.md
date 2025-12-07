@@ -82,20 +82,22 @@ Jira may send the same webhook multiple times.
 ## 5. Implementation Plan
 
 ### Phase 1: Configuration & UI
-- [ ] Update `addOrganization` / `updateOrganization` resolvers to support `syncDirection`.
-- [ ] Generate `incomingSecret` for new/existing orgs.
-- [ ] Add UI in Admin Panel to show "Incoming Webhook URL" (only if Two-Way is enabled).
+- [x] Update `addOrganization` / `updateOrganization` resolvers to support `syncDirection`.
+- [x] Generate `incomingSecret` for new/existing orgs.
+- [x] Add UI in Admin Panel to show "Incoming Webhook URL" (only if Two-Way is enabled).
 
 ### Phase 2: Incoming Webhook (Webtrigger)
-- [ ] Create `src/webtriggers/incoming-webhook.js`.
-- [ ] Implement Secret validation.
-- [ ] Implement Idempotency check (`webhookEventId`).
-- [ ] Implement Loop Prevention check (`isSyncing`).
+- [x] Create `src/webtriggers/incoming-webhook.js`.
+- [x] Implement Secret validation.
+- [x] Implement Idempotency check (`webhookEventId`).
+- [x] Implement Loop Prevention check (`isSyncing`).
 
 ### Phase 3: Reverse Sync Logic
-- [ ] Implement `handleRemoteEvent` in `src/services/sync/incoming-sync.js`.
-- [ ] Implement `createLocalIssue` and `updateLocalIssue` in `local-client.js`.
-- [ ] Implement `reverseMapping` (Remote Fields → Local Fields).
+- [x] Implement `handleRemoteEvent` in `src/services/sync/incoming-sync.js`.
+- [x] Implement `createLocalIssue` and `updateLocalIssue` in `local-client.js`.
+- [x] Implement `reverseMapping` (Remote Fields → Local Fields).
+- [x] Implement Two-Way Attachment Sync.
+- [x] Implement Two-Way Link Sync.
 - [ ] **Note**: Ensure `remoteToLocalMappings` are respected if strict reversal isn't possible.
 
 ### Phase 4: Testing
