@@ -2,13 +2,14 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { retryWithBackoff } from '../../utils/retry.js';
-import { extractTextFromADF, textToADFWithAuthor } from '../../utils/adf.js';
-import { getRemoteKey, getLocalKey, getOrganizationsWithTokens } from '../storage/mappings.js';
+import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
+import { getRemoteKey, getLocalKey, getOrganizationsWithTokens, getRemoteCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
 import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
 import { SyncResult } from './sync-result.js';
 import { isSyncing } from '../storage/flags.js';
+// Threading helpers were removed because Jira flattens replies; we now embed context inline.
 
 /**
  * Sync all comments from a local issue to a remote issue
@@ -21,7 +22,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
   // Get all comments from local issue
   try {
     const commentsResponse = await api.asApp().requestJira(
-      route`/rest/api/3/issue/${localKey}/comment?maxResults=100`,
+      route`/rest/api/3/issue/${localKey}/comment?maxResults=100&expand=renderedBody,properties`,
       { method: 'GET' }
     );
     
@@ -36,6 +37,8 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     if (localComments.length === 0) {
       return { synced: 0, skipped: 0, failed: 0 };
     }
+
+    const commentLookup = new Map(localComments.map(comment => [String(comment.id), comment]));
     
     console.log(`${LOG_EMOJI.COMMENT} Found ${localComments.length} comments on ${localKey}`);
     
@@ -79,6 +82,13 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
         continue;
       }
 
+      const existingRemoteCommentId = await getRemoteCommentId(comment.id, orgId);
+      if (existingRemoteCommentId) {
+        console.log(`${LOG_EMOJI.SKIP} Comment ${comment.id} already mapped to remote comment ${existingRemoteCommentId}, skipping resend`);
+        skipped++;
+        continue;
+      }
+
       const userName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
       
       let commentText = '';
@@ -87,9 +97,16 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
       } else {
         commentText = comment.body || '';
       }
+      commentText = sanitizeCommentText(stripSyncPrefix(commentText)) || '';
       
-      // Create the comment body with author attribution
-      const commentBody = textToADFWithAuthor(commentText, orgName, userName);
+      const parentContext = await resolveLocalParentDetails(comment, localKey, commentLookup);
+      const commentBody = buildSyncedCommentADF({
+        orgName,
+        userName,
+        parentAuthor: parentContext?.parentAuthor || null,
+        parentSnippet: parentContext?.parentSnippet || null,
+        responseText: commentText
+      });
       const signature = `[Comment from ${orgName} - User: ${userName}]`;
       
       // Check if this comment likely already exists (by checking for similar content)
@@ -133,6 +150,12 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
         }, `Sync comment to ${remoteKey}`);
         
         if (response.ok) {
+          const remoteComment = await parseJsonSafely(response);
+          const remoteCommentId = remoteComment?.id;
+          if (remoteCommentId) {
+            await storeCommentMapping(comment.id, remoteCommentId, orgId);
+          }
+          existingSignatures.add(checkText);
           synced++;
           if (syncResult) syncResult.details.comments.success++;
         } else {
@@ -237,12 +260,26 @@ export async function syncComment(event) {
   } else {
     commentText = fullComment.body || '';
   }
+  commentText = sanitizeCommentText(stripSyncPrefix(commentText)) || '';
 
-  const commentBody = textToADFWithAuthor(commentText, orgName, userName);
+  const parentContext = await resolveLocalParentDetails(fullComment, issueKey, null, event.comment);
+  const parentLocalId = parentContext?.parentId || null;
+  const commentBody = buildSyncedCommentADF({
+    orgName,
+    userName,
+    parentAuthor: parentContext?.parentAuthor || null,
+    parentSnippet: parentContext?.parentSnippet || null,
+    responseText: commentText
+  });
 
   // Sync comment to all organizations
   for (const org of organizations) {
     const orgId = org.id === 'legacy' ? null : org.id;
+    const existingRemoteCommentId = await getRemoteCommentId(commentId, orgId);
+    if (existingRemoteCommentId) {
+      console.log(`${LOG_EMOJI.SKIP} Comment ${commentId} already synced to ${org.name} as ${existingRemoteCommentId}`);
+      continue;
+    }
 
     // Check if comment sync is enabled for this org
     const syncOptionsKey = org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`;
@@ -267,7 +304,6 @@ export async function syncComment(event) {
 
     const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
     const syncResult = new SyncResult('comment');
-
     try {
       console.log(`${LOG_EMOJI.COMMENT} Syncing comment to ${org.name}: ${issueKey} → ${remoteKey} (from ${orgName} - ${userName})`);
 
@@ -286,13 +322,22 @@ export async function syncComment(event) {
       }, `Sync comment to ${remoteKey}`);
 
       if (response.ok) {
-        console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.name} (${remoteKey})`);
+        const remoteComment = await parseJsonSafely(response);
+        const remoteCommentId = remoteComment?.id;
+        if (remoteCommentId) {
+          await storeCommentMapping(commentId, remoteCommentId, orgId);
+        }
+
+        console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.name} (${remoteKey})${remoteCommentId ? ` → remote comment ${remoteCommentId}` : ''}`);
         syncResult.details.comments.success++;
         await trackWebhookSync('comment', true, null, org.id, issueKey, {
           remoteKey,
           projectKey,
           commentId,
-          author: userName
+          author: userName,
+          remoteCommentId,
+          parentLocalId,
+          parentRemoteId: null
         });
       } else {
         const errorText = await response.text();
@@ -327,4 +372,97 @@ export async function syncComment(event) {
   }
 
   console.log(`\n✅ Completed comment sync for ${issueKey} across ${organizations.length} organization(s)`);
+}
+
+async function resolveLocalParentDetails(primaryComment, issueKey, commentLookup = null, fallbackComment = null) {
+  const parentId = extractLocalParentId(primaryComment, fallbackComment);
+  if (!parentId) {
+    return null;
+  }
+
+  let parentComment = null;
+  if (commentLookup && commentLookup.has(String(parentId))) {
+    parentComment = commentLookup.get(String(parentId));
+  }
+
+  if (!parentComment && issueKey) {
+    try {
+      parentComment = await getFullComment(issueKey, parentId);
+    } catch (error) {
+      console.log(`${LOG_EMOJI.INFO} Could not load parent comment ${parentId} on ${issueKey}: ${error.message}`);
+    }
+  }
+
+  if (!parentComment) {
+    return { parentId };
+  }
+
+  return {
+    parentId,
+    parentAuthor: parentComment.author?.displayName || parentComment.author?.emailAddress || null,
+    parentSnippet: extractPlainTextFromComment(parentComment)
+  };
+}
+
+function extractLocalParentId(primaryComment, fallbackComment = null) {
+  const candidates = [primaryComment, fallbackComment];
+  for (const comment of candidates) {
+    if (!comment) {
+      continue;
+    }
+
+    const directParent =
+      comment.parentId ||
+      comment.parentCommentId ||
+      comment.parent?.id ||
+      comment.parent?.commentId ||
+      comment.jsdParentId ||
+      comment.jsdParentID;
+
+    if (directParent) {
+      return String(directParent);
+    }
+  }
+
+  return null;
+}
+
+function extractPlainTextFromComment(comment) {
+  if (!comment) {
+    return '';
+  }
+
+  if (comment.body && typeof comment.body === 'object') {
+    return summarizeText(extractTextFromADF(comment.body));
+  }
+
+  if (typeof comment.body === 'string') {
+    return summarizeText(comment.body);
+  }
+
+  return '';
+}
+
+function summarizeText(text, maxLength = 140) {
+  if (!text) {
+    return '';
+  }
+
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.substring(0, maxLength - 3)}...`;
+}
+
+async function parseJsonSafely(response) {
+  if (!response) {
+    return null;
+  }
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
 }

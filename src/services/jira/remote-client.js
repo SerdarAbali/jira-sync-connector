@@ -117,3 +117,35 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
     return null;
   }
 }
+
+export async function getRemoteComment(issueKey, commentId, config) {
+  if (!issueKey || !commentId || !config) {
+    return null;
+  }
+
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  const url = `${config.remoteUrl}/rest/api/3/issue/${issueKey}/comment/${commentId}?expand=properties`;
+
+  try {
+    const response = await retryWithBackoff(async () => {
+      return await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': 'application/json'
+        }
+      });
+    }, `Get remote comment ${commentId}`);
+
+    if (response.ok) {
+      return await response.json();
+    }
+
+    const errorText = await response.text();
+    console.error(`${LOG_EMOJI.ERROR} Failed to get remote comment ${commentId}: ${errorText}`);
+    return null;
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Error getting remote comment ${commentId}:`, error);
+    return null;
+  }
+}

@@ -52,11 +52,11 @@ const BLOCKED_FIELD_KEYS = new Set([
 ]);
 import api, { route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
-import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping } from '../storage/mappings.js';
+import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { LOG_EMOJI, MAX_ATTACHMENT_SIZE } from '../../constants.js';
-import { textToADF, textToADFWithAuthor, extractTextFromADF } from '../../utils/adf.js';
-import { getRemoteIssue } from '../jira/remote-client.js';
+import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
+import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { transitionLocalIssue } from './transition-sync.js';
 import { mapUserToLocal } from '../../utils/mapping.js';
 import { uploadAttachment, getFullIssue } from '../jira/local-client.js';
@@ -381,27 +381,245 @@ async function handleRemoteCommentCreated(payload, context) {
   } else {
     commentText = comment.body || '';
   }
+  commentText = sanitizeCommentText(stripSyncPrefix(commentText));
 
-  const body = textToADFWithAuthor(commentText, context.org.name, authorName);
+  const parentContext = await resolveLocalParentForIncomingComment(comment, remoteIssueKey, context);
+  const body = buildSyncedCommentADF({
+    orgName: context.org.name,
+    userName: authorName,
+    parentAuthor: parentContext?.parentAuthor || null,
+    parentSnippet: parentContext?.parentSnippet || null,
+    responseText: commentText
+  });
 
   await markSyncing(localKey);
   try {
-    const response = await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}/comment`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body })
+    let response = await createLocalComment(localKey, body, parentContext.localParentId);
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to sync incoming comment: ${err}`);
+    }
+
+    const createdComment = await response.json();
+    const localCommentId = createdComment?.id;
+    const parentMarkers = {
+      parentId: createdComment?.parentId || null,
+      jsdParentId: createdComment?.jsdParentId || null,
+      propertiesCount: Array.isArray(createdComment?.properties) ? createdComment.properties.length : 0
+    };
+    console.log(`${LOG_EMOJI.INFO} Created local comment ${localCommentId} with parent markers ${JSON.stringify(parentMarkers)}`);
+    const replyLabel = parentContext.parentAuthor
+      ? ` (reply to ${parentContext.parentAuthor})`
+      : parentContext.localParentId
+        ? ` (reply to local comment ${parentContext.localParentId})`
+        : parentContext.remoteParentId
+          ? ` (reply to remote comment ${parentContext.remoteParentId})`
+          : '';
+    console.log(`${LOG_EMOJI.COMMENT} Synced comment ${comment.id} from ${remoteIssueKey} to ${localKey}${replyLabel}`);
+
+    await kvsStore.set(dedupKey, {
+      processedAt: new Date().toISOString(),
+      localCommentId,
+      remoteCommentId: comment.id,
+      parentLocalId: parentContext.localParentId || null,
+      parentRemoteId: parentContext.remoteParentId || null
     });
 
-    if (response.ok) {
-      console.log(`${LOG_EMOJI.COMMENT} Synced comment from ${remoteIssueKey} to ${localKey}`);
-      await kvsStore.set(dedupKey, { processedAt: new Date().toISOString() });
-    } else {
-      const err = await response.text();
-      console.error(`${LOG_EMOJI.ERROR} Failed to sync incoming comment: ${err}`);
+    if (localCommentId) {
+      await storeCommentMapping(localCommentId, comment.id, context.orgId);
     }
   } finally {
     await clearSyncFlag(localKey);
   }
+}
+
+async function createLocalComment(localIssueKey, body, parentLocalId = null) {
+  if (!parentLocalId) {
+    return await postLocalComment(localIssueKey, { body });
+  }
+
+  const initialResponse = await postLocalComment(localIssueKey, { body, parent: { id: parentLocalId } });
+  if (initialResponse.ok) {
+    return initialResponse;
+  }
+
+  const errorText = await initialResponse.text();
+  console.log(`${LOG_EMOJI.WARNING} Failed to create threaded reply on ${localIssueKey}: ${errorText}. Retrying as top-level comment.`);
+  return await postLocalComment(localIssueKey, { body });
+}
+
+async function postLocalComment(localIssueKey, payload) {
+  return await api.asApp().requestJira(route`/rest/api/3/issue/${localIssueKey}/comment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+}
+
+async function resolveLocalParentForIncomingComment(comment, remoteIssueKey, context) {
+  console.log(`${LOG_EMOJI.INFO} Resolving parent for remote comment ${comment.id} on ${remoteIssueKey}`);
+  const hydratedComment = await hydrateRemoteCommentIfNeeded(comment, remoteIssueKey, context.org);
+  let remoteParentId = extractParentIdFromRemoteComment(hydratedComment);
+  let remoteParentComment = null;
+
+  if (remoteParentId) {
+    remoteParentComment = await getRemoteComment(remoteIssueKey, remoteParentId, context.org);
+  }
+
+  if (!remoteParentId || !remoteParentComment) {
+    if (!remoteParentId) {
+      console.log(`${LOG_EMOJI.INFO} No parent reference found for remote comment ${comment.id}`);
+    } else {
+      console.log(`${LOG_EMOJI.WARNING} Remote parent ${remoteParentId} could not be loaded`);
+    }
+
+    return {
+      remoteParentId: remoteParentId || null,
+      localParentId: null,
+      parentAuthor: null,
+      parentSnippet: null
+    };
+  }
+
+  const localParentId = await getLocalCommentId(remoteParentId, context.orgId);
+  if (localParentId) {
+    console.log(`${LOG_EMOJI.INFO} Resolved remote parent ${remoteParentId} to local comment ${localParentId}`);
+  } else {
+    console.log(`${LOG_EMOJI.WARNING} Remote parent ${remoteParentId} has no local mapping yet`);
+  }
+
+  return {
+    remoteParentId,
+    localParentId: localParentId ? String(localParentId) : null,
+    parentAuthor: remoteParentComment.author?.displayName || remoteParentComment.author?.emailAddress || null,
+    parentSnippet: extractPlainTextFromRemoteComment(remoteParentComment)
+  };
+}
+
+async function hydrateRemoteCommentIfNeeded(comment, remoteIssueKey, org) {
+  if (Array.isArray(comment?.properties)) {
+    return comment;
+  }
+
+  const hydrated = await getRemoteComment(remoteIssueKey, comment.id, org);
+  if (hydrated) {
+    console.log(`${LOG_EMOJI.INFO} Hydrated remote comment ${comment.id}; properties length: ${hydrated.properties?.length || 0}`);
+    return { ...comment, ...hydrated };
+  }
+
+  return comment;
+}
+
+function extractParentIdFromRemoteComment(comment) {
+  if (!comment) {
+    return null;
+  }
+
+  const directParent =
+    comment.parentId ||
+    comment.parentCommentId ||
+    comment.parent?.id ||
+    comment.parent?.commentId ||
+    comment.jsdParentId ||
+    comment.jsdParentID;
+
+  if (directParent) {
+    return String(directParent);
+  }
+
+  if (Array.isArray(comment.properties)) {
+    for (const property of comment.properties) {
+      const candidate = extractParentIdFromProperty(property);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractPlainTextFromRemoteComment(comment) {
+  if (!comment) {
+    return '';
+  }
+
+  if (comment.body && typeof comment.body === 'object') {
+    const raw = extractTextFromADF(comment.body);
+    return summarizeText(sanitizeCommentText(stripSyncPrefix(raw)));
+  }
+
+  if (typeof comment.body === 'string') {
+    return summarizeText(sanitizeCommentText(stripSyncPrefix(comment.body)));
+  }
+
+  return '';
+}
+
+function extractParentIdFromProperty(property) {
+  if (!property) {
+    return null;
+  }
+
+  const key = String(property.key || '').toLowerCase();
+  if (!key.includes('parent') && !key.includes('thread')) {
+    return null;
+  }
+
+  return findParentIdInValue(property.value);
+}
+
+function findParentIdInValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    const trimmed = String(value).trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const nested = findParentIdInValue(entry);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    const prioritizedKeys = ['parentId', 'parentCommentId', 'parentCommentID', 'commentId', 'id'];
+    for (const key of prioritizedKeys) {
+      if (value[key] !== undefined && value[key] !== null) {
+        return String(value[key]);
+      }
+    }
+
+    for (const nestedValue of Object.values(value)) {
+      const nested = findParentIdInValue(nestedValue);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  return null;
+}
+
+function summarizeText(text, maxLength = 140) {
+  if (!text) {
+    return '';
+  }
+
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.substring(0, maxLength - 3)}...`;
 }
 
 function shouldSyncIncomingComments(syncOptions) {

@@ -77,14 +77,52 @@ export function textToADFWithAuthor(text, orgName, userName) {
     type: 'doc',
     version: 1,
     content: [
+      buildParagraph(fullText)
+    ]
+  };
+}
+
+export function buildSyncedCommentADF({
+  orgName,
+  userName,
+  parentAuthor,
+  parentSnippet,
+  responseText
+}) {
+  const header = `[Comment from ${orgName} - User: ${userName}]:`;
+  const snippetText = parentSnippet ? `: "${parentSnippet}"` : '';
+  const replyLine = parentAuthor
+    ? `Replying to ${parentAuthor}${snippetText}`.trim()
+    : parentSnippet
+      ? `Replying to earlier comment${snippetText}`
+      : '';
+
+  const content = [buildParagraph(header)];
+
+  if (replyLine) {
+    content.push(buildParagraph(replyLine));
+    content.push({ type: 'rule' });
+  }
+
+  content.push(buildParagraph(responseText || ''));
+
+  return {
+    type: 'doc',
+    version: 1,
+    content
+  };
+}
+
+function buildParagraph(text) {
+  if (!text) {
+    return { type: 'paragraph', content: [] };
+  }
+  return {
+    type: 'paragraph',
+    content: [
       {
-        type: 'paragraph',
-        content: [
-          {
-            type: 'text',
-            text: fullText
-          }
-        ]
+        type: 'text',
+        text
       }
     ]
   };
@@ -167,6 +205,29 @@ export function prependCrossReferenceToADF(adf, localKey, remoteKey, localOrgNam
     ...adf,
     content: [crossRefLine, ...adf.content]
   };
+}
+
+const SYNC_PREFIX_REGEX = /^\[Comment from [^\]]+\]:\s*/i;
+const ACCOUNT_MENTION_REGEX = /\[~accountid:[^\]]+\]/gi;
+
+export function stripSyncPrefix(text) {
+  if (!text) {
+    return '';
+  }
+  return text.replace(SYNC_PREFIX_REGEX, '').trimStart();
+}
+
+export function sanitizeCommentText(text) {
+  if (!text) {
+    return '';
+  }
+
+  let result = text.replace(ACCOUNT_MENTION_REGEX, '');
+  result = result.replace(/[ \t]+\n/g, '\n');
+  result = result.replace(/\n{3,}/g, '\n\n');
+  result = result.replace(/[ \t]{2,}/g, ' ');
+  result = result.replace(/\n +/g, '\n');
+  return result.trim();
 }
 
 
