@@ -2,8 +2,36 @@
 
 > **Forge Reference**: For Forge platform APIs, up to date information, manifest options, and storage limits, see https://developer.atlassian.com/platform/forge/
 
+## Working Conventions (follow these)
+
+### Branches & Releases
+- **`develop`** is the working branch — agents and contributors commit here. **Never push directly to `main`.**
+- **`main`** is release-only.
+- **Releases are manual**: merge `develop` → `main`, then run **GitHub Actions → Release → Run workflow** (select `main`). semantic-release analyzes commits since the last tag and bumps automatically:
+  - `fix:` → patch
+  - `feat:` → minor
+  - `BREAKING CHANGE:` (or `feat!:`) → major
+- Use Conventional Commits for all commit messages (`fix:`, `feat:`, `chore:`, `docs:`, `test:`, etc.).
+- Never auto-release on push; never delete or move git tags.
+
+### Tooling
+- Forge CLI requires **Node 22 or 24** (default Homebrew node is 26). Prefix all `forge` commands:
+  ```bash
+  PATH="/opt/homebrew/opt/node@22/bin:$PATH" forge ...
+  ```
+- Forge CLI version: 14.x.
+
+### Current stack (v2)
+- `@forge/api@8.1.0`, `@forge/resolver@2.0.0`, `@forge/kvs@2.0.6`, `@forge/events@3.0.6`; runtime `nodejs22.x`.
+- `@forge/bridge` intentionally stays at `3.x` (UI modernization deferred).
+
+### Deploy flow
+1. Test: `forge deploy -e development` (updates the `(DEVELOPMENT)` install on the site).
+2. Verify with `forge logs --tail`.
+3. Promote to `staging`/`production` only after the development install passes.
+
 ## Project Overview
-Atlassian Forge app for one-way issue sync between two Jira Cloud orgs. Real-time webhooks (1-3s) + hourly scheduled backup sync. Multi-org support with per-org mappings stored in Forge Storage.
+Atlassian Forge app for org-to-org issue sync between two Jira Cloud orgs (primarily one-way, with partial two-way inbound via webhook). Real-time webhooks (1-3s) + hourly scheduled backup sync. Multi-org support with per-org mappings stored in Forge Storage. Runs on Forge runtime `nodejs22.x` with `@forge/*` 8.x packages.
 
 ## Forge Platform Limits (Verified)
 | Limit | Value |
@@ -89,11 +117,15 @@ await retryWithBackoff(async () => fetch(...), 'operation name', MAX_RETRY_ATTEM
 ## Development Commands
 
 ```bash
-npm install --legacy-peer-deps  # Required due to @forge/api peer deps
-forge deploy                     # Deploy to Forge
-forge logs                       # View recent logs
-forge logs -s 5m                 # View logs from last 5 minutes
-cd static/admin-page && npm run build  # Rebuild React admin UI
+npm install --legacy-peer-deps                # Required due to @forge/api peer deps
+npm test                                      # Jest suite (17 tests)
+npm run lint                                  # ESLint over src/
+npm --prefix static/admin-page run build      # Rebuild React admin UI (use Node 22)
+
+# Forge commands (Node 22/24 only — default node is 26)
+PATH="/opt/homebrew/opt/node@22/bin:$PATH" forge deploy -e development   # Deploy to dev
+PATH="/opt/homebrew/opt/node@22/bin:$PATH" forge logs --tail             # Tail logs
+PATH="/opt/homebrew/opt/node@22/bin:$PATH" forge install --site https://<site>.atlassian.net --product jira --environment development --non-interactive
 ```
 
 ## Legacy Migration Support
