@@ -82,7 +82,15 @@ export function defineDataResolvers(resolver) {
       const statusesResponse = await api.asApp().requestJira(
         route`/rest/api/3/project/${projectKey}/statuses`
       );
+      if (!statusesResponse.ok) {
+        const errText = await statusesResponse.text();
+        throw new Error(`Could not fetch local statuses for project '${projectKey}': HTTP ${statusesResponse.status} - ${errText}`);
+      }
       const statusData = await statusesResponse.json();
+
+      if (!Array.isArray(statusData)) {
+        throw new Error(`Unexpected statuses response for local project '${projectKey}'`);
+      }
 
       const statusMap = new Map();
       const issueTypeMap = new Map();
@@ -199,7 +207,15 @@ export function defineDataResolvers(resolver) {
         `${config.remoteUrl}/rest/api/3/project/${config.remoteProjectKey}/statuses`,
         { headers }
       );
+      if (!statusesResponse.ok) {
+        const errText = await statusesResponse.text();
+        throw new Error(`Could not fetch remote statuses for project '${config.remoteProjectKey}': HTTP ${statusesResponse.status} - ${errText}`);
+      }
       const statusData = await statusesResponse.json();
+
+      if (!Array.isArray(statusData)) {
+        throw new Error(`Unexpected statuses response for remote project '${config.remoteProjectKey}'`);
+      }
 
       const statusMap = new Map();
       const issueTypeMap = new Map();
