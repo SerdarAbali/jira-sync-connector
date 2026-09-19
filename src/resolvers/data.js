@@ -30,36 +30,34 @@ export function defineDataResolvers(resolver) {
 
   resolver.define('fetchLocalData', async (req) => {
     try {
-      // Log everything for debugging
-      console.log('fetchLocalData FULL REQUEST:', JSON.stringify(req));
-      console.log('fetchLocalData payload:', req.payload);
-
       // Get organization config
-      const orgId = req?.payload?.orgId;
+      const payload = req?.payload || {};
+      const orgId = payload.orgId;
+      const requestedLocalProjectKey = payload.localProjectKey;
       let projectKey;
-
-      console.log('fetchLocalData extracted orgId:', orgId);
 
       if (orgId) {
         // Use new organization format
         const orgs = await kvsStore.get('organizations') || [];
-        console.log('Found organizations:', orgs);
         const org = orgs.find(o => o.id === orgId);
         if (!org) {
           throw new Error(`Organization with ID ${orgId} not found`);
         }
-        if (!org.remoteProjectKey) {
-          throw new Error('Organization missing remoteProjectKey');
+        const allowedProjects = Array.isArray(org.allowedProjects)
+          ? org.allowedProjects.filter(Boolean)
+          : [];
+        projectKey = requestedLocalProjectKey || allowedProjects[0] || org.remoteProjectKey;
+        if (!projectKey) {
+          throw new Error('No local project selected. Select allowed projects in Configuration first.');
         }
-        projectKey = org.remoteProjectKey;
       } else {
         // Fallback to legacy format
-        console.log('No orgId provided, falling back to legacy config');
         const config = await kvsStore.get('syncConfig');
-        if (!config || !config.remoteProjectKey) {
+        const allowed = (config && Array.isArray(config.allowedProjects)) ? config.allowedProjects.filter(Boolean) : [];
+        projectKey = requestedLocalProjectKey || allowed[0] || (config && config.remoteProjectKey);
+        if (!projectKey) {
           throw new Error('Project key not configured');
         }
-        projectKey = config.remoteProjectKey;
       }
 
       const usersResponse = await api.asApp().requestJira(

@@ -254,7 +254,7 @@ const App = () => {
     }
   };
 
-  const loadMappingData = async () => {
+  const loadMappingData = async (localProjectKey) => {
     if (!selectedOrgId) return;
     const selectedOrg = organizations.find(o => o.id === selectedOrgId);
     if (!selectedOrg?.remoteUrl) {
@@ -267,7 +267,7 @@ const App = () => {
     try {
       const [remoteData, localData] = await Promise.all([
         invoke('fetchRemoteData', { orgId: selectedOrgId }),
-        invoke('fetchLocalData', { orgId: selectedOrgId })
+        invoke('fetchLocalData', { orgId: selectedOrgId, localProjectKey: localProjectKey || undefined })
       ]);
 
       if (remoteData.users) setRemoteUsers(remoteData.users);
@@ -1807,6 +1807,13 @@ const MappingsPanel = ({
   addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving,
   handleAutoMatch
 }) => {
+  const [selectedLocalProject, setSelectedLocalProject] = useState('');
+
+  useEffect(() => {
+    const allowed = Array.isArray(selectedOrg?.allowedProjects) ? selectedOrg.allowedProjects.filter(Boolean) : [];
+    setSelectedLocalProject((prev) => (allowed.includes(prev) ? prev : (allowed[0] || '')));
+  }, [selectedOrg?.id, selectedOrg?.allowedProjects]);
+
   const [newUserRemote, setNewUserRemote] = useState('');
   const [newUserLocal, setNewUserLocal] = useState('');
   const [newFieldRemote, setNewFieldRemote] = useState('');
@@ -1912,20 +1919,37 @@ const MappingsPanel = ({
     <div style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.250', '20px') }}>
         <h3>Mappings</h3>
-        <Button
-          appearance="subtle"
-          onClick={loadMappingData}
-          isLoading={isLoading}
-          style={lozengeButtonStyle}
-        >
-          {hasData ? 'Reload Data' : 'Load Mapping Data'}
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px') }}>
+          <label style={{ fontSize: '13px', color: '#6B778C', display: 'flex', alignItems: 'center' }}>
+            Local project
+            <select
+              value={selectedLocalProject}
+              onChange={(e) => setSelectedLocalProject(e.target.value)}
+              style={{ marginLeft: token('space.100', '8px'), padding: '6px 8px', borderRadius: token('border.radius', '4px'), border: '1px solid #DFE1E6', background: '#FFFFFF', color: '#172B4D', fontSize: '13px' }}
+            >
+              {(selectedOrg?.allowedProjects || []).map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+              {(!selectedOrg?.allowedProjects || selectedOrg.allowedProjects.length === 0) && (
+                <option value="">Select allowed projects in Configuration</option>
+              )}
+            </select>
+          </label>
+          <Button
+            appearance="subtle"
+            onClick={() => loadMappingData(selectedLocalProject)}
+            isLoading={isLoading}
+            style={lozengeButtonStyle}
+          >
+            {hasData ? 'Reload Data' : 'Load Mapping Data'}
+          </Button>
+        </div>
       </div>
 
       {!hasData && !isLoading && (
         <div style={surfaceCard()}>
           <SectionMessage appearance="info" title="Load mapping data first">
-            <p>Click "Load Mapping Data" to fetch users, fields, and statuses from both organizations.</p>
+            <p>Select a local project above, then click "Load Mapping Data" to fetch users, fields, and statuses from both organizations.</p>
           </SectionMessage>
         </div>
       )}
