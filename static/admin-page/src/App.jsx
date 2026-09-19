@@ -1076,7 +1076,7 @@ const App = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: token('space.200', '16px'), flex: 1, minWidth: '320px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h3 style={{ margin: 0, fontSize: '18px' }}>Jira Sync Connector</h3>
-            <Lozenge appearance="new" isBold>v1.0.0-beta.1</Lozenge>
+            <Lozenge appearance="new" isBold>v2.0.0</Lozenge>
           </div>
           <div style={{ width: '250px' }}>
             <Select
