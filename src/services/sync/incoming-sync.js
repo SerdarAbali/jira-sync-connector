@@ -54,6 +54,7 @@ import api, { route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
+import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { LOG_EMOJI, MAX_ATTACHMENT_SIZE } from '../../constants.js';
 import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
@@ -166,6 +167,71 @@ export async function processIncomingWebhook(payload, secret) {
   }
 }
 
+const MAX_ISSUE_WRITE_ATTEMPTS = 4;
+
+/**
+ * Extract the field keys Jira rejected from an error response body.
+ * Jira returns e.g. { "errorMessages": [], "errors": { "customfield_10021": "..." } }.
+ */
+function extractRejectedFields(bodyText) {
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (parsed && parsed.errors && typeof parsed.errors === 'object') {
+      return Object.keys(parsed.errors);
+    }
+  } catch {
+    // Non-JSON error body; cannot extract individual field names.
+  }
+  return [];
+}
+
+/**
+ * Writes an issue via the Jira REST API, stripping any fields Jira rejects
+ * (read-only, unknown, or not-on-screen fields) and retrying.
+ * This prevents a single unmappable field from blocking an entire sync.
+ *
+ * @returns {{ ok: boolean, response?: any, status?: number, skippedFields: string[], errorBody?: string }}
+ */
+async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
+  const skippedFields = [];
+  let fields = { ...(payload.fields || {}) };
+
+  for (let attempt = 0; attempt < MAX_ISSUE_WRITE_ATTEMPTS; attempt++) {
+    const url = issueKey
+      ? route`/rest/api/3/issue/${issueKey}`
+      : route`/rest/api/3/issue`;
+
+    const response = await api.asApp().requestJira(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, fields })
+    });
+
+    if (response.ok) {
+      return { ok: true, response, status: response.status, skippedFields };
+    }
+
+    const bodyText = await response.text();
+    const rejected = extractRejectedFields(bodyText);
+    const removable = rejected.filter((fieldId) => fieldId in fields);
+
+    if (attempt < MAX_ISSUE_WRITE_ATTEMPTS - 1 && removable.length > 0) {
+      removable.forEach((fieldId) => {
+        delete fields[fieldId];
+        skippedFields.push(fieldId);
+      });
+      console.log(
+        `${LOG_EMOJI.WARNING} Jira rejected field(s) [${removable.join(', ')}] — stripped and retrying (attempt ${attempt + 1}).`
+      );
+      continue;
+    }
+
+    return { ok: false, status: response.status, skippedFields, errorBody: bodyText };
+  }
+
+  return { ok: false, skippedFields, errorBody: 'Exhausted issue write attempts' };
+}
+
 async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   const { org, orgId } = context;
   console.log(`${LOG_EMOJI.SYNC} Received remote issue create: ${remoteIssue.key}`);
@@ -197,18 +263,16 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
 
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
-  const response = await api.asApp().requestJira(route`/rest/api/3/issue`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Failed to create local issue: ${err}`);
+  const result = await writeJiraIssueWithRecovery({ method: 'POST', payload });
+  if (!result.ok) {
+    throw new Error(`Failed to create local issue: ${result.errorBody || 'unknown error'}`);
+  }
+  if (result.skippedFields.length > 0) {
+    console.log(`${LOG_EMOJI.WARNING} Created local issue without unmappable field(s): ${result.skippedFields.join(', ')}`);
+    await recordRejectedFields(orgId, result.skippedFields);
   }
 
-  const data = await response.json();
+  const data = await result.response.json();
   const localKey = data.key;
 
   console.log(`${LOG_EMOJI.SUCCESS} Created local issue ${localKey} from remote ${remoteIssue.key}`);
@@ -295,14 +359,13 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
        return;
     }
 
-    const response = await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-       throw new Error(`Failed to update local issue: ${await response.text()}`);
+    const result = await writeJiraIssueWithRecovery({ method: 'PUT', issueKey: localKey, payload });
+    if (!result.ok) {
+      throw new Error(`Failed to update local issue: ${result.errorBody || 'unknown error'}`);
+    }
+    if (result.skippedFields.length > 0) {
+      console.log(`${LOG_EMOJI.WARNING} Updated local issue without unmappable field(s): ${result.skippedFields.join(', ')}`);
+      await recordRejectedFields(orgId, result.skippedFields);
     }
     console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${localKey}`);
 

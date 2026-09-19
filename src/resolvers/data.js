@@ -2,6 +2,7 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
 import { getOrgName, getFullIssue } from '../services/jira/local-client.js';
 import { getAllRemoteKeys, getRemoteKey, removeMapping } from '../services/storage/mappings.js';
+import { getRejectedFields, clearRejectedField } from '../services/storage/rejected-fields.js';
 import { createIssueForOrg, updateIssueForOrg } from '../services/sync/issue-sync.js';
 
 const MAX_ISSUE_EXPORT = 250;
@@ -26,6 +27,19 @@ export function defineDataResolvers(resolver) {
       console.error('Error fetching local projects:', error);
       throw error;
     }
+  });
+
+  resolver.define('getRejectedFields', async ({ payload }) => {
+    const orgId = payload?.orgId;
+    const fields = await getRejectedFields(orgId);
+    return { fields };
+  });
+
+  resolver.define('clearRejectedField', async ({ payload }) => {
+    const orgId = payload?.orgId;
+    const fieldId = payload?.fieldId;
+    await clearRejectedField(orgId, fieldId);
+    return { success: true, fields: await getRejectedFields(orgId) };
   });
 
   resolver.define('fetchLocalData', async (req) => {

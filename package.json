@@ -1,7 +1,7 @@
 {
   "name": "jira-sync-connector",
   "version": "2.0.0",
-  "description": "Production-ready Atlassian Forge app for real-time one-way synchronization between two Jira Cloud organizations",
+  "description": "Production-ready Atlassian Forge app for real-time two-way (bidirectional) synchronization between two Jira Cloud organizations",
   "main": "src/index.js",
   "license": "MIT",
   "private": true,

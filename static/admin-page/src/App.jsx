@@ -135,6 +135,7 @@ const App = () => {
   const [statusMappings, setStatusMappings] = useState({});
   const [issueTypeMappings, setIssueTypeMappings] = useState({});
   const [projectMappings, setProjectMappings] = useState({});
+  const [rejectedFieldIds, setRejectedFieldIds] = useState([]);
 
   // Sync options
   const [syncOptions, setSyncOptions] = useState({
@@ -219,14 +220,15 @@ const App = () => {
   const loadOrgData = async (orgId) => {
     try {
       // Load mappings and last sync time
-      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, projectMappingData, syncOptionsData, lastSyncData] = await Promise.all([
+      const [userMappingData, fieldMappingData, statusMappingData, issueTypeMappingData, projectMappingData, syncOptionsData, lastSyncData, rejectedFieldData] = await Promise.all([
         invoke('getUserMappings', { orgId }),
         invoke('getFieldMappings', { orgId }),
         invoke('getStatusMappings', { orgId }),
         invoke('getIssueTypeMappings', { orgId }),
         invoke('getProjectMappings', { orgId }),
         invoke('getSyncOptions', { orgId }),
-        invoke('getLastSyncTime', { orgId })
+        invoke('getLastSyncTime', { orgId }),
+        invoke('getRejectedFields', { orgId })
       ]);
 
       if (userMappingData?.mappings) setUserMappings(userMappingData.mappings);
@@ -236,6 +238,7 @@ const App = () => {
       if (projectMappingData) setProjectMappings(projectMappingData);
       if (syncOptionsData) setSyncOptions(syncOptionsData);
       if (lastSyncData?.lastSync) setLastSyncTime(lastSyncData.lastSync);
+      if (rejectedFieldData?.fields) setRejectedFieldIds(rejectedFieldData.fields);
     } catch (error) {
       console.error('Error loading org data:', error);
     }
@@ -1281,6 +1284,7 @@ const App = () => {
                     setIssueTypeMappings={setIssueTypeMappings}
                     projectMappings={projectMappings}
                     setProjectMappings={setProjectMappings}
+                    rejectedFieldIds={rejectedFieldIds}
                     addMapping={addMapping}
                     deleteMapping={deleteMapping}
                     handleSaveMappings={handleSaveMappings}
@@ -1803,7 +1807,7 @@ const MappingsPanel = ({
   remoteStatuses, localStatuses, remoteIssueTypes, localIssueTypes,
   userMappings, setUserMappings, fieldMappings, setFieldMappings,
   statusMappings, setStatusMappings, issueTypeMappings, setIssueTypeMappings,
-  projectMappings, setProjectMappings,
+  projectMappings, setProjectMappings, rejectedFieldIds,
   addMapping, deleteMapping, handleSaveMappings, loadMappingData, dataLoading, saving,
   handleAutoMatch
 }) => {
@@ -1828,9 +1832,14 @@ const MappingsPanel = ({
   const hasData = remoteUsers.length > 0 || localUsers.length > 0;
   const isLoading = dataLoading.users || dataLoading.fields || dataLoading.statuses || dataLoading.issueTypes;
 
-  const MappingSection = ({ title, type, remotePlaceholder, localPlaceholder, remoteItems, localItems, mappings, setMappings, newRemote, setNewRemote, newLocal, setNewLocal }) => {
+  const MappingSection = ({ title, type, remotePlaceholder, localPlaceholder, remoteItems, localItems, mappings, setMappings, newRemote, setNewRemote, newLocal, setNewLocal, warningIds = [] }) => {
     const itemKey = type === 'user' ? 'accountId' : 'id';
-    const itemLabel = type === 'user' ? (item) => `${item.displayName}${item.emailAddress ? ` (${item.emailAddress})` : ''}` : (item) => `${item.name}`;
+    const warningSet = new Set(warningIds || []);
+    const itemLabel = type === 'user'
+      ? (item) => `${item.displayName}${item.emailAddress ? ` (${item.emailAddress})` : ''}`
+      : (item) => type === 'field' ? `${item.name} (${item.id})` : `${item.name}`;
+
+    const optionLabel = (item) => warningSet.has(item[itemKey]) ? `⚠️ ${itemLabel(item)}` : itemLabel(item);
 
     // Sort items alphabetically
     const sortedRemoteItems = [...remoteItems].sort((a, b) => itemLabel(a).localeCompare(itemLabel(b)));
@@ -1851,18 +1860,24 @@ const MappingsPanel = ({
           )}
         </div>
 
+        {type === 'field' && warningSet.size > 0 && (
+          <div style={{ color: '#B65C00', fontSize: '12px', marginBottom: token('space.200', '16px') }}>
+            ⚠️ = field was rejected by Jira in a previous sync (read-only or unmappable). Remove its mapping to stop the warnings.
+          </div>
+        )}
+
         {hasData && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: token('space.150', '12px'), marginBottom: token('space.200', '16px') }}>
               <Select
-                options={sortedRemoteItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
+                options={sortedRemoteItems.map(item => ({ label: optionLabel(item), value: item[itemKey] }))}
                 value={sortedRemoteItems.find(i => i[itemKey] === newRemote) ? { label: itemLabel(sortedRemoteItems.find(i => i[itemKey] === newRemote)), value: newRemote } : null}
                 onChange={(option) => setNewRemote(option?.value || '')}
                 placeholder={remotePlaceholder}
                 isClearable
               />
               <Select
-                options={sortedLocalItems.map(item => ({ label: itemLabel(item), value: item[itemKey] }))}
+                options={sortedLocalItems.map(item => ({ label: optionLabel(item), value: item[itemKey] }))}
                 value={sortedLocalItems.find(i => i[itemKey] === newLocal) ? { label: itemLabel(sortedLocalItems.find(i => i[itemKey] === newLocal)), value: newLocal } : null}
                 onChange={(option) => setNewLocal(option?.value || '')}
                 placeholder={localPlaceholder}
@@ -1898,7 +1913,7 @@ const MappingsPanel = ({
                       alignItems: 'center',
                       fontSize: '13px'
                     }}>
-                      <span><strong>{remoteName}</strong> → {localName}</span>
+                      <span><strong>{remoteName}</strong>{remoteId && remoteId !== remoteName ? ` (${remoteId})` : ''} → {localName}{localId && localId !== localName ? ` (${localId})` : ''}{warningSet.has(localId) ? ' ⚠️' : ''}</span>
                       <Button appearance="subtle" onClick={() => deleteMapping(type, remoteId)} style={lozengeButtonStyle}>Delete</Button>
                     </div>
                   );
@@ -1988,6 +2003,7 @@ const MappingsPanel = ({
             setNewRemote={setNewFieldRemote}
             newLocal={newFieldLocal}
             setNewLocal={setNewFieldLocal}
+            warningIds={rejectedFieldIds}
           />
 
           <MappingSection

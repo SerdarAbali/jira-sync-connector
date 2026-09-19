@@ -31,7 +31,7 @@
 3. Promote to `staging`/`production` only after the development install passes.
 
 ## Project Overview
-Atlassian Forge app for org-to-org issue sync between two Jira Cloud orgs (primarily one-way, with partial two-way inbound via webhook). Real-time webhooks (1-3s) + hourly scheduled backup sync. Multi-org support with per-org mappings stored in Forge Storage. Runs on Forge runtime `nodejs22.x` with `@forge/*` 8.x packages.
+Atlassian Forge app for org-to-org issue sync between two Jira Cloud orgs (one-way push and two-way bidirectional via webhook). Real-time webhooks (1-3s) + hourly scheduled backup sync. Multi-org support with per-org mappings stored in Forge Storage. Runs on Forge runtime `nodejs22.x` with `@forge/*` 8.x packages.
 
 ## Forge Platform Limits (Verified)
 | Limit | Value |

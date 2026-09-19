@@ -9,6 +9,9 @@
 * Fixed an undefined `remoteIssue` reference in inbound attachment handling (would throw at runtime).
 * Hardened the project-statuses fetch in mapping data loaders (clear error instead of `statusData.forEach is not a function`).
 * Fixed "Load Mapping Data" to use the local project key and added a local-project selector in the Mappings tab (different local/remote project keys now supported).
+* Fixed inbound (Org B → Org A) updates failing when a mapped custom field is read-only or not on the local screen (e.g. "Flagged" = `customfield_10021`); the app now strips Jira-rejected fields and retries instead of aborting the entire sync.
+* Added a "learned rejection" guard: fields Jira rejects are recorded per organization and flagged with ⚠️ in the Field Mappings UI, so unmappable fields can be cleaned up proactively.
+* Field mapping dropdowns and rows now show the Jira field API ID (e.g. `customfield_10021`) alongside the display name.
 
 ### Tooling & Process
 
