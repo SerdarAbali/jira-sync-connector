@@ -1,4 +1,4 @@
-# Copilot Instructions for Jira Sync Connector
+# Development Instructions for Jira Sync Connector
 
 > **Forge Reference**: For Forge platform APIs, up to date information, manifest options, and storage limits, see https://developer.atlassian.com/platform/forge/
 
