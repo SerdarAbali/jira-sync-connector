@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/SerdarAbali/jira-sync-connector/compare/v2.0.1...v2.1.0) (2026-09-19)
+
+
+### Features
+
+* support mapping when local and remote project keys differ ([ff05daa](https://github.com/SerdarAbali/jira-sync-connector/commit/ff05daab5720a7d9d779bca6bd925f00ddcf87a4))
+
 ## [2.0.1](https://github.com/SerdarAbali/jira-sync-connector/compare/v2.0.0...v2.0.1) (2026-09-19)
 
 
