@@ -1,5 +1,4 @@
 import Resolver from '@forge/resolver';
-import { authorize } from '@forge/api';
 import { defineConfigResolvers } from './config.js';
 import { defineSyncResolvers } from './sync.js';
 import { defineDataResolvers } from './data.js';

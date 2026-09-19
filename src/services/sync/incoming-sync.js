@@ -962,7 +962,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
   }
 
   if (!remoteIssueKey && payload?.changelog?.items) {
-    await recordAttachmentIssueMappingFromChangelog(payload.changelog.items, remoteIssue?.key || null, context.orgId);
+    await recordAttachmentIssueMappingFromChangelog(payload.changelog.items, null, context.orgId);
   }
 
   if (!remoteIssueKey) {

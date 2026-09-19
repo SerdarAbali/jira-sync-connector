@@ -54,8 +54,8 @@ This application syncs issues from a source Jira organization to a target organi
 ## Installation
 
 ### Prerequisites
-- Node.js 20.x or 22.x
-- Forge CLI: npm install -g @forge/cli
+- Node.js 22.x
+- Forge CLI: npm install -g @forge/cli@latest
 - Two Jira Cloud instances with admin access
 
 ### Setup
@@ -173,7 +173,7 @@ SyncApp/
 - avi:jira-issue-link:created: Link created webhook
 - avi:jira-issue-link:deleted: Link deleted webhook
 - avi:jira:deleted:issue: Issue deleted webhook
-- scheduledTrigger: Hourly sync (600s timeout)
+- scheduledTrigger: Hourly sync (900s timeout)
 
 ### Storage (@forge/kvs)
 Uses `@forge/kvs` with transactions for atomic operations.
@@ -246,9 +246,9 @@ Slow initial sync:
 - ✅ Incoming webhook/webtrigger pipeline with secret validation
 - ✅ Reverse field/user/status mapping, parent mirroring, and local transitions
 - ✅ Comment ingestion with deduplication, SyncApp loop guards, and per-comment tracking
-- 🔄 Next: inbound attachments and links (reuse attachment/link services in reverse)
+- ✅ Inbound attachments (Remote → Local) with duplicate prevention
+- ✅ Inbound issue links (Remote → Local)
 - 🔄 Next: inbound feature toggles in sync options plus diagnostics surfacing for webhook health
-- 🔄 Next: Inbound links to close the parity gap
 
 ## Roadmap
 

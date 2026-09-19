@@ -8,7 +8,7 @@
  * 
  * @see https://developer.atlassian.com/platform/forge/storage-reference/kvs-migration-from-legacy/
  */
-import { kvs, WhereConditions } from '@forge/kvs';
+import kvs, { WhereConditions } from '@forge/kvs';
 
 // Re-export for use in other modules
 export { kvs, WhereConditions };
