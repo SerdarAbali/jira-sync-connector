@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/SerdarAbali/jira-sync-connector/compare/v2.0.0...v2.0.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* harden project statuses fetch in mapping data loaders ([8d1fd80](https://github.com/SerdarAbali/jira-sync-connector/commit/8d1fd80b20ba0323636e9cebf7bf722a14cc22a0))
+
 # [2.0.0](https://github.com/SerdarAbali/jira-sync-connector/compare/v1.0.0...v2.0.0) (2026-09-19)
 
 
