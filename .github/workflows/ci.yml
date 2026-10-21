@@ -2,18 +2,51 @@ name: CI
 
 on:
   push:
-    branches: ['main', 'develop']
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --legacy-peer-deps
-      - run: npm run lint
-      - run: npm test
+          cache-dependency-path: |
+            package-lock.json
+            static/admin-page/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run tests
+        run: npm test -- --runInBand
+
+      - name: Lint source
+        run: npm run lint
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Secret and repository hygiene scan
+        run: npm run check:secrets
+
+      - name: Forge lint
+        run: npm run check:forge
+
+      - name: Install admin UI dependencies
+        working-directory: static/admin-page
+        run: npm ci --legacy-peer-deps
+
+      - name: Audit admin production dependencies
+        working-directory: static/admin-page
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build admin UI
+        working-directory: static/admin-page
+        run: npm run build

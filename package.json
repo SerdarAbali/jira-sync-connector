@@ -15,13 +15,16 @@
     "tunnel": "forge tunnel",
     "logs": "forge logs --tail",
     "lint": "eslint src/",
-    "test": "jest"
+    "test": "jest",
+    "check:secrets": "node scripts/check-secrets.js",
+    "check:forge": "forge lint"
   },
   "engines": {
     "node": ">=22.0.0"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.28.5",
+    "@forge/cli": "14.2.0",
     "@semantic-release/changelog": "^7.0.0",
     "@semantic-release/git": "^11.0.1",
     "babel-jest": "^30.2.0",
