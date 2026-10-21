@@ -267,19 +267,9 @@ export async function performScheduledSync() {
   
   // Get organizations with their API tokens from secure storage
   const organizations = await getOrganizationsWithTokens();
-  
-  // Fallback to legacy syncConfig if no organizations defined
-  let configs = [];
-  if (organizations.length > 0) {
-    configs = organizations.filter(org => org.remoteUrl && org.remoteProjectKey);
+  const configs = organizations.filter(org => org.remoteUrl && org.remoteProjectKey);
+  if (configs.length > 0) {
     console.log(`📋 Found ${configs.length} configured organization(s)`);
-  } else {
-    // Legacy support
-    const legacyConfig = await kvsStore.get('syncConfig');
-    if (legacyConfig && legacyConfig.remoteUrl && legacyConfig.remoteProjectKey) {
-      configs = [legacyConfig];
-      console.log(`📋 Using legacy syncConfig`);
-    }
   }
 
   if (configs.length === 0) {

@@ -1,0 +1,63 @@
+import fs from 'fs';
+import path from 'path';
+
+const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
+const source = fs.readFileSync(APP_PATH, 'utf8');
+
+function componentScope(name) {
+  const start = source.indexOf(`const ${name} = (`);
+  if (start < 0) throw new Error(`${name} not found`);
+  const end = source.indexOf('\nconst ', start + 1);
+  return source.slice(start, end > start ? end : source.length);
+}
+
+describe('Batch 3 frontend webhook-rotation scope', () => {
+  const configuration = componentScope('ConfigurationPanel');
+  const syncActivity = componentScope('SyncActivityPanel');
+
+  test('rotation state and handler are defined in ConfigurationPanel', () => {
+    for (const identifier of [
+      'rotatingWebhookSecret',
+      'rotatedWebhookCallbackUrl',
+      'handleRotateWebhookSecret',
+      'selectedOrg',
+      'onRefreshOrganizations',
+      'notify'
+    ]) {
+      expect(configuration).toContain(identifier);
+    }
+  });
+
+  test('rotation state and handler are not left in SyncActivityPanel', () => {
+    expect(syncActivity).not.toContain('rotatingWebhookSecret');
+    expect(syncActivity).not.toContain('rotatedWebhookCallbackUrl');
+    expect(syncActivity).not.toContain('handleRotateWebhookSecret');
+  });
+
+  test('ConfigurationPanel receives organization refresh and notification callbacks', () => {
+    const start = source.indexOf('<ConfigurationPanel');
+    const end = source.indexOf('/>', start);
+    const usage = source.slice(start, end);
+
+    expect(usage).toContain('onRefreshOrganizations={loadOrganizations}');
+    expect(usage).toContain('notify={showMessage}');
+  });
+
+  test('callback URL is one-time, cleared on org change/dismiss, and not logged or persisted', () => {
+    expect(configuration).toContain('setRotatedWebhookCallbackUrl(result.callbackUrl)');
+    expect(configuration).toContain('setRotatedWebhookCallbackUrl(null)');
+    expect(configuration).toContain('[selectedOrg?.id]');
+    expect(configuration).not.toMatch(/console\.(log|warn|error)\([^)]*rotatedWebhookCallbackUrl/);
+    expect(configuration).not.toContain('localStorage');
+    expect(configuration).not.toContain('sessionStorage');
+  });
+
+  test('missing callback URL shows a safe error instead of success or the secret', () => {
+    expect(configuration).toContain('callback URL could not be generated');
+    expect(configuration).not.toContain('result.secret');
+  });
+
+  test('no unsupported custom-header instructions remain in the UI', () => {
+    expect(source).not.toContain('X-Jira-Sync');
+  });
+});

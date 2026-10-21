@@ -429,9 +429,22 @@ const App = () => {
   const handleSaveOrg = async (data) => {
     setSaving(true);
     try {
+      const { replacementRemoteApiToken, ...orgData } = data;
+
+      if (editingOrg && replacementRemoteApiToken?.trim()) {
+        const replaceResult = await invoke('replaceOrganizationToken', {
+          orgId: editingOrg.id,
+          remoteApiToken: replacementRemoteApiToken.trim()
+        });
+        if (!replaceResult.success) {
+          showMessage(`Error replacing API token: ${replaceResult.error}`, 'error');
+          return;
+        }
+      }
+
       const result = editingOrg
-        ? await invoke('updateOrganization', { id: editingOrg.id, ...data })
-        : await invoke('addOrganization', { ...data, allowedProjects: [] });
+        ? await invoke('updateOrganization', { id: editingOrg.id, ...orgData })
+        : await invoke('addOrganization', { ...orgData, allowedProjects: [] });
 
       if (result.success) {
         showMessage(`Organization ${editingOrg ? 'updated' : 'added'} successfully`, 'success');
@@ -558,7 +571,6 @@ const App = () => {
         name: selectedOrg.name,
         remoteUrl: selectedOrg.remoteUrl,
         remoteEmail: selectedOrg.remoteEmail,
-        remoteApiToken: selectedOrg.remoteApiToken,
         remoteProjectKey: selectedOrg.remoteProjectKey,
         allowedProjects: selectedOrg.allowedProjects || []
       });
@@ -1256,6 +1268,8 @@ const App = () => {
                     handleImportSettings={handleImportButtonClick}
                     exportingSettings={exportingSettings}
                     importingSettings={importingSettings}
+                    onRefreshOrganizations={loadOrganizations}
+                    notify={showMessage}
                   />
                 </div>
               </TabPanel>
@@ -1568,10 +1582,53 @@ const ConfigurationPanel = ({
   selectedOrg, localProjects, loadProjects, dataLoading,
   toggleProjectSelection, handleSaveProjectFilter, syncOptions,
   setSyncOptions, handleSaveSyncOptions, saving,
-  handleExportSettings, handleImportSettings, exportingSettings, importingSettings
+  handleExportSettings, handleImportSettings, exportingSettings, importingSettings,
+  onRefreshOrganizations, notify
 }) => {
   const [projectsExpanded, setProjectsExpanded] = useState(false);
+  const [rotatedWebhookCallbackUrl, setRotatedWebhookCallbackUrl] = useState(null);
+  const [rotatingWebhookSecret, setRotatingWebhookSecret] = useState(false);
   const gridGap = token('space.300', '24px');
+
+  useEffect(() => {
+    setRotatedWebhookCallbackUrl(null);
+  }, [selectedOrg?.id]);
+
+  const handleRotateWebhookSecret = async () => {
+    if (!selectedOrg?.id) {
+      notify?.('Select an organization before rotating the webhook secret.', 'error');
+      return;
+    }
+    if (selectedOrg.syncDirection !== 'bidirectional') {
+      notify?.('Webhook rotation requires a bidirectional organization.', 'error');
+      return;
+    }
+    if (!window.confirm('Rotate the incoming webhook secret? The current secret will stop working immediately.')) {
+      return;
+    }
+
+    setRotatedWebhookCallbackUrl(null);
+    setRotatingWebhookSecret(true);
+    try {
+      const result = await invoke('rotateWebhookSecret', { orgId: selectedOrg.id });
+      if (!result.success) {
+        notify?.(`Error rotating webhook secret: ${result.error}`, 'error');
+        return;
+      }
+      if (!result.callbackUrl) {
+        notify?.('Webhook secret rotation succeeded, but the callback URL could not be generated. Please rotate again or contact support.', 'error');
+        onRefreshOrganizations?.();
+        return;
+      }
+      setRotatedWebhookCallbackUrl(result.callbackUrl);
+      notify?.('Webhook secret rotated. Copy the one-time callback URL into Jira now.', 'success');
+      onRefreshOrganizations?.();
+    } catch {
+      notify?.('Error rotating webhook secret. Please try again.', 'error');
+    } finally {
+      setRotatingWebhookSecret(false);
+    }
+  };
 
   const toggleProjects = () => {
     const next = !projectsExpanded;
@@ -1645,6 +1702,10 @@ const ConfigurationPanel = ({
             <dd style={{ margin: 0, wordBreak: 'break-all' }}>{selectedOrg.remoteEmail || '—'}</dd>
             <dt style={{ fontWeight: 600 }}>Project</dt>
             <dd style={{ margin: 0 }}>{selectedOrg.remoteProjectKey || '—'}</dd>
+            <dt style={{ fontWeight: 600 }}>API Token</dt>
+            <dd style={{ margin: 0 }}>
+              {selectedOrg.hasRemoteApiToken ? 'Configured' : 'Not configured'}
+            </dd>
             <dt style={{ fontWeight: 600 }}>Direction</dt>
             <dd style={{ margin: 0 }}>
               <Lozenge appearance={selectedOrg.syncDirection === 'bidirectional' ? 'success' : 'default'}>
@@ -1672,21 +1733,45 @@ const ConfigurationPanel = ({
                     <span style={{ fontStyle: 'italic', color: '#DE350B' }}>Not generated (Save Org first)</span>
                   )}
                 </dd>
-                <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Secret</dt>
+                <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Webhook Secret</dt>
                 <dd style={{ margin: 0 }}>
-                  {selectedOrg.incomingSecret ? (
-                    <code style={{ 
-                      display: 'block', 
-                      padding: '4px 8px', 
-                      background: '#F4F5F7', 
-                      borderRadius: '4px', 
-                      fontSize: '11px', 
-                      wordBreak: 'break-all',
-                      border: '1px solid #DFE1E6'
-                    }}>
-                      {selectedOrg.incomingSecret}
-                    </code>
-                  ) : '—'}
+                  <div style={{ marginBottom: '6px' }}>
+                    {selectedOrg.webhookConfigured ? 'Configured' : 'Not configured'}
+                    {selectedOrg.webhookSecretLastRotatedAt ? (
+                      <span style={{ color: '#6B778C', marginLeft: '6px' }}>
+                        (rotated {new Date(selectedOrg.webhookSecretLastRotatedAt).toLocaleString()})
+                      </span>
+                    ) : null}
+                  </div>
+                  <Button
+                    appearance="subtle"
+                    type="button"
+                    isLoading={rotatingWebhookSecret}
+                    onClick={handleRotateWebhookSecret}
+                  >
+                    Rotate Webhook Secret
+                  </Button>
+                  {rotatedWebhookCallbackUrl ? (
+                    <SectionMessage appearance="warning">
+                      <p style={{ margin: '0 0 6px 0' }}>
+                        One-time display: copy this complete callback URL into the Jira System Webhook now. It cannot be retrieved again.
+                      </p>
+                      <code style={{
+                        display: 'block',
+                        padding: '6px 8px',
+                        background: '#FFFFFF',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        wordBreak: 'break-all',
+                        border: '1px solid #FFAB00'
+                      }}>
+                        {rotatedWebhookCallbackUrl}
+                      </code>
+                      <Button appearance="subtle" type="button" onClick={() => setRotatedWebhookCallbackUrl(null)}>
+                        Dismiss
+                      </Button>
+                    </SectionMessage>
+                  ) : null}
                 </dd>
               </>
             )}
@@ -3253,16 +3338,37 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                   )}
                 </Field>
 
-                <Field
-                  name="remoteApiToken"
-                  defaultValue={editingOrg?.remoteApiToken || ''}
-                  isRequired
-                  label="API Token"
-                >
-                  {({ fieldProps }) => (
-                    <TextField {...fieldProps} type="password" placeholder="••••••••••••" />
-                  )}
-                </Field>
+                {editingOrg ? (
+                  <>
+                    <div>
+                      <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>API Token</div>
+                      <div style={{ fontSize: '13px', color: editingOrg.hasRemoteApiToken ? '#006644' : '#DE350B' }}>
+                        {editingOrg.hasRemoteApiToken ? 'Configured' : 'Not configured'}
+                      </div>
+                      <p style={{ fontSize: '11px', color: token('color.text.subtlest', '#6B778C'), margin: '4px 0 0 0' }}>
+                        Existing tokens are never displayed. Leave the replacement field empty to keep the current token.
+                      </p>
+                    </div>
+                    <Field
+                      name="replacementRemoteApiToken"
+                      label="Replace API Token (optional)"
+                    >
+                      {({ fieldProps }) => (
+                        <TextField {...fieldProps} type="password" placeholder="Enter a new token only to replace it" />
+                      )}
+                    </Field>
+                  </>
+                ) : (
+                  <Field
+                    name="remoteApiToken"
+                    isRequired
+                    label="API Token"
+                  >
+                    {({ fieldProps }) => (
+                      <TextField {...fieldProps} type="password" placeholder="••••••••••••" />
+                    )}
+                  </Field>
+                )}
               </div>
             </div>
 
@@ -3369,7 +3475,7 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                           Configure a System Webhook in the <strong>Remote Jira</strong> with these details:
                         </p>
                         <div style={{ marginBottom: '8px' }}>
-                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#006644' }}>URL:</div>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#006644' }}>Base URL:</div>
                           <code style={{ 
                             display: 'block', 
                             padding: '8px', 
@@ -3379,8 +3485,13 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                             wordBreak: 'break-all',
                             border: '1px solid #A1BDD9'
                           }}>
-                            {editingOrg.incomingWebhookUrl}?secret={editingOrg.incomingSecret}
+                            {editingOrg.incomingWebhookUrl}
                           </code>
+                        </div>
+                        <div style={{ marginBottom: '8px' }}>
+                          <p style={{ fontSize: '11px', color: '#172B4D', margin: 0 }}>
+                            Use <strong>Rotate Webhook Secret</strong> to generate the complete one-time callback URL, then paste that full URL into the Jira System Webhook. Native Jira webhooks do not need custom headers.
+                          </p>
                         </div>
                         <div style={{ marginBottom: '8px' }}>
                           <div style={{ fontSize: '11px', fontWeight: 600, color: '#006644' }}>JQL Filter (CRITICAL):</div>

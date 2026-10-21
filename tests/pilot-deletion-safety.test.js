@@ -30,6 +30,8 @@ jest.mock('../src/services/storage/kvs.js', () => ({
   get: jest.fn(),
   getSecret: jest.fn(),
   set: jest.fn(),
+  setIfNotExists: jest.fn(),
+  setWithTtl: jest.fn(),
   del: jest.fn()
 }));
 
@@ -104,6 +106,8 @@ describe('Pilot safety: deletion propagation is disabled', () => {
 
   test('remote issue deletion performs zero local DELETE calls and keeps the mapping', async () => {
     const kvsStore = await import('../src/services/storage/kvs.js');
+    kvsStore.setIfNotExists.mockResolvedValue(undefined);
+    kvsStore.setWithTtl.mockResolvedValue(undefined);
     kvsStore.get.mockImplementation(async (key) => {
       if (key === 'organizations') {
         return [{ id: 'org-1', name: 'Remote Org', syncDirection: 'bidirectional' }];
@@ -111,14 +115,14 @@ describe('Pilot safety: deletion propagation is disabled', () => {
       return null;
     });
     kvsStore.getSecret.mockImplementation(async (key) => {
-      if (key === 'secret:org-1:incomingSecret') return 'shared-secret';
+      if (key === 'secret:org-1:incomingSecret') return 'shared-secret-0123456789abcdef';
       if (key === 'secret:org-1:token') return 'remote-token';
       return null;
     });
 
     const result = await processIncomingWebhook(
       { webhookEvent: 'jira:issue_deleted', issue: { key: 'REMOTE-1' } },
-      'shared-secret'
+      { orgId: 'org-1', credential: 'shared-secret-0123456789abcdef' }
     );
 
     expect(result.status).toBe(200);

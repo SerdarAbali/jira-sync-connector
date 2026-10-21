@@ -1,4 +1,5 @@
 import * as kvsStore from './kvs.js';
+import { redactSecrets } from '../../utils/redaction.js';
 
 // Cache for organizations to reduce KVS calls
 let orgsCache = {
@@ -7,7 +8,8 @@ let orgsCache = {
 };
 const ORG_CACHE_TTL = 5000; // 5 seconds
 
-// Helper to get organizations with their API tokens from secret storage
+// Helper to get organizations with their API tokens from secret storage.
+// Plaintext tokens in organization records are deliberately ignored.
 export async function getOrganizationsWithTokens() {
   const now = Date.now();
   if (orgsCache.data && (now - orgsCache.timestamp < ORG_CACHE_TTL)) {
@@ -18,10 +20,20 @@ export async function getOrganizationsWithTokens() {
   const orgsWithTokens = await Promise.all(orgs.map(async (org) => {
     const token = await kvsStore.getSecret(`secret:${org.id}:token`);
     return {
-      ...org,
-      remoteApiToken: token || org.remoteApiToken || '' // Fallback for migration
+      ...redactSecrets(org),
+      remoteApiToken: token || ''
     };
   }));
+
+  // Legacy fallback uses only secret storage. If a legacy configuration exists
+  // without a migrated secret, it is not usable until migration completes.
+  if (orgs.length === 0) {
+    const legacyOrg = await getLegacyOrganizationWithToken();
+    if (legacyOrg) {
+      orgsCache = { data: [legacyOrg], timestamp: now };
+      return [legacyOrg];
+    }
+  }
 
   orgsCache = {
     data: orgsWithTokens,
@@ -29,6 +41,26 @@ export async function getOrganizationsWithTokens() {
   };
   
   return orgsWithTokens;
+}
+
+async function getLegacyOrganizationWithToken() {
+  const legacyConfig = await kvsStore.get('syncConfig');
+  if (!legacyConfig || !legacyConfig.remoteUrl) {
+    return null;
+  }
+
+  const token = await kvsStore.getSecret('secret:legacy:token');
+  return {
+    id: 'legacy',
+    name: 'Legacy Organization',
+    remoteUrl: legacyConfig.remoteUrl,
+    remoteEmail: legacyConfig.remoteEmail,
+    remoteProjectKey: legacyConfig.remoteProjectKey,
+    allowedProjects: legacyConfig.allowedProjects || [],
+    jqlFilter: legacyConfig.jqlFilter || '',
+    syncDirection: legacyConfig.syncDirection || 'push',
+    remoteApiToken: token || ''
+  };
 }
 
 // Multi-org support: namespace mappings by orgId

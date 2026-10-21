@@ -63,7 +63,7 @@ async function runLegacyBulkSync(event, context) {
       const token = await kvsStore.getSecret(`secret:${org.id}:token`);
       const orgWithToken = {
         ...org,
-        remoteApiToken: token || org.remoteApiToken || ''
+        remoteApiToken: token || ''
       };
       
       if (!orgWithToken.remoteApiToken) {

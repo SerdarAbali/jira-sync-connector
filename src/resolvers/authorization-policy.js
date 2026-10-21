@@ -18,6 +18,8 @@ export const RESOLVER_POLICIES = Object.freeze({
   getOrganizations: 'ADMIN_READ',
   addOrganization: 'ADMIN_WRITE',
   updateOrganization: 'ADMIN_WRITE',
+  replaceOrganizationToken: 'ADMIN_WRITE',
+  rotateWebhookSecret: 'ADMIN_WRITE',
   deleteOrganization: 'DESTRUCTIVE',
   getConfig: 'ADMIN_READ',
   saveConfig: 'ADMIN_WRITE',

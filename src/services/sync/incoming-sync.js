@@ -62,6 +62,8 @@ import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { transitionLocalIssue } from './transition-sync.js';
 import { mapUserToLocal } from '../../utils/mapping.js';
 import { uploadAttachment, getFullIssue } from '../jira/local-client.js';
+import { secureCompare } from '../../utils/secure-compare.js';
+import { claimWebhookEvent, markWebhookCompleted, releaseWebhookEvent } from './webhook-replay.js';
 
 const ATTACHMENT_ISSUE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS = 6;
@@ -70,40 +72,63 @@ const PARENT_MAPPING_RETRY_ATTEMPTS = 6;
 const PARENT_MAPPING_RETRY_DELAY_MS = 500;
 const PENDING_CHILD_MAX_ATTEMPTS = 3;
 
-export async function processIncomingWebhook(payload, secret) {
-  const { webhookEvent } = payload;
-  console.log(`📨 Received webhook event: ${webhookEvent}`);
+export const WEBHOOK_ORG_ID_PATTERN = /^org-\d{1,32}$/;
+export const WEBHOOK_CREDENTIAL_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+export const WEBHOOK_EVENT_NAME_PATTERN = /^[A-Za-z0-9:_-]{1,100}$/;
+const WEBHOOK_UNAUTHORIZED_BODY = { error: 'Unauthorized' };
 
-  // 1. Find Organization
-  const orgs = await kvsStore.get('organizations') || [];
-  console.log(`🔍 Checking ${orgs.length} organizations for secret match. Received secret length: ${secret?.length}`);
-  
-  // Find org by checking secrets (secrets are not stored in the main org object)
-  let org = null;
-  for (const o of orgs) {
-    const storedSecret = await kvsStore.getSecret(`secret:${o.id}:incomingSecret`);
-    // console.log(`Checking org ${o.id}, stored secret length: ${storedSecret?.length}`);
-    if (storedSecret === secret) {
-      org = o;
-      console.log(`✅ Match found for org: ${o.id}`);
-      break;
-    }
+function webhookUnauthorized() {
+  return { status: 401, body: WEBHOOK_UNAUTHORIZED_BODY };
+}
+
+function isValidWebhookAuth(auth) {
+  return !!auth
+    && typeof auth.orgId === 'string'
+    && WEBHOOK_ORG_ID_PATTERN.test(auth.orgId)
+    && typeof auth.credential === 'string'
+    && WEBHOOK_CREDENTIAL_PATTERN.test(auth.credential);
+}
+
+export async function processIncomingWebhook(payload, auth) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { status: 400, body: { error: 'Invalid webhook payload' } };
   }
 
+  const { webhookEvent } = payload;
+  if (typeof webhookEvent !== 'string' || !WEBHOOK_EVENT_NAME_PATTERN.test(webhookEvent)) {
+    return { status: 400, body: { error: 'Invalid webhook payload' } };
+  }
+
+  if (!isValidWebhookAuth(auth)) {
+    return webhookUnauthorized();
+  }
+
+  const { orgId, credential } = auth;
+  console.log(`📨 Received webhook event: ${webhookEvent}`);
+
+  // Select exactly one organization. Never scan and compare every stored secret.
+  const orgs = await kvsStore.get('organizations') || [];
+  const org = orgs.find(candidate => candidate.id === orgId);
   if (!org) {
-    console.warn(`${LOG_EMOJI.WARNING} Incoming webhook with invalid secret. Received: ${secret?.substring(0, 3)}...`);
-    return { status: 401, body: { error: 'Invalid secret' } };
+    console.warn('Incoming webhook authentication failed');
+    return webhookUnauthorized();
+  }
+
+  const storedSecret = await kvsStore.getSecret(`secret:${orgId}:incomingSecret`);
+  if (!storedSecret || !secureCompare(credential, storedSecret)) {
+    console.warn('Incoming webhook authentication failed');
+    return webhookUnauthorized();
   }
 
   if (org.syncDirection !== 'bidirectional') {
-    console.warn(`${LOG_EMOJI.WARNING} Incoming webhook for non-bidirectional org: ${org.name}`);
-    return { status: 403, body: { error: 'Bidirectional sync not enabled' } };
+    console.warn('Incoming webhook rejected: bidirectional sync not enabled');
+    return { status: 403, body: { error: 'Incoming sync is not enabled' } };
   }
 
-  const remoteApiToken = await kvsStore.getSecret(`secret:${org.id}:token`);
+  const remoteApiToken = await kvsStore.getSecret(`secret:${orgId}:token`);
   if (!remoteApiToken) {
-    console.error(`${LOG_EMOJI.ERROR} Incoming webhook missing remote API token for org ${org.name}`);
-    return { status: 500, body: { error: 'Remote credentials not configured' } };
+    console.error('Incoming webhook missing remote credentials');
+    return { status: 500, body: { error: 'Webhook processing unavailable' } };
   }
 
   const storageOrgId = org.id === 'legacy' ? null : org.id;
@@ -138,6 +163,21 @@ export async function processIncomingWebhook(payload, secret) {
       }
   }
 
+  // Duplicate suppression uses a deterministic payload fingerprint. A fresh
+  // marker is claimed atomically; completed markers suppress duplicates and
+  // processing markers prevent concurrent duplicate execution.
+  const claim = await claimWebhookEvent(payload, orgId);
+  if (claim.status === 'completed') {
+    return { status: 200, body: { message: 'Duplicate event ignored' } };
+  }
+  if (claim.status === 'processing') {
+    return { status: 409, body: { error: 'Request is already being processed' } };
+  }
+  if (claim.status === 'storage_error') {
+    return { status: 503, body: { error: 'Webhook processing temporarily unavailable' } };
+  }
+  const markerKey = claim.status === 'claimed' ? claim.key : null;
+
   // 2. Route Event
   try {
     if (webhookEvent === 'jira:issue_created') {
@@ -160,11 +200,22 @@ export async function processIncomingWebhook(payload, secret) {
     } else {
       console.log(`ℹ️ Ignoring event: ${webhookEvent}`);
     }
-    
+
+    if (markerKey) {
+      try {
+        await markWebhookCompleted(markerKey);
+      } catch {
+        console.warn('Webhook completion marker could not be stored');
+      }
+    }
+
     return { status: 200, body: { message: 'Processed' } };
   } catch (error) {
+    if (markerKey) {
+      await releaseWebhookEvent(markerKey);
+    }
     console.error(`${LOG_EMOJI.ERROR} Error processing incoming webhook:`, error);
-    return { status: 500, body: { error: error.message } };
+    return { status: 500, body: { error: 'Webhook processing unavailable' } };
   }
 }
 

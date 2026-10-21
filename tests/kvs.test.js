@@ -52,6 +52,26 @@ describe('KVS wrapper', () => {
     );
   });
 
+  test('setIfNotExists uses native TTL and FAIL_IF_EXISTS', async () => {
+    kvs.set.mockResolvedValue(undefined);
+    await kvsStore.setIfNotExists('replay:org-1:event-1', { eventId: 'event-1' }, 300);
+    expect(kvs.set).toHaveBeenCalledWith(
+      'replay:org-1:event-1',
+      { eventId: 'event-1' },
+      { ttl: { value: 300, unit: 'SECONDS' }, keyPolicy: 'FAIL_IF_EXISTS' }
+    );
+  });
+
+  test('setWithTtl uses native TTL without a key policy', async () => {
+    kvs.set.mockResolvedValue(undefined);
+    await kvsStore.setWithTtl('replay:org-1:event-1', { state: 'completed' }, 300);
+    expect(kvs.set).toHaveBeenCalledWith(
+      'replay:org-1:event-1',
+      { state: 'completed' },
+      { ttl: { value: 300, unit: 'SECONDS' } }
+    );
+  });
+
   test('del calls delete and swallows KEY_NOT_FOUND', async () => {
     kvs.delete.mockResolvedValue(undefined);
     await kvsStore.del('k');

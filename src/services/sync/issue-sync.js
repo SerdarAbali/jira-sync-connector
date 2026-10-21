@@ -268,19 +268,8 @@ export async function syncIssue(event) {
   }
 
   // Get all organizations with their API tokens from secure storage
-  let organizations = await getOrganizationsWithTokens();
+  const organizations = await getOrganizationsWithTokens();
   
-  // Legacy support: check for old single-org config
-  const legacyConfig = await kvsStore.get('syncConfig');
-  if (legacyConfig && legacyConfig.remoteUrl && organizations.length === 0) {
-    console.log('⚠️ Using legacy single-org config - consider migrating to multi-org');
-    organizations.push({
-      id: 'legacy',
-      name: 'Legacy Organization',
-      ...legacyConfig
-    });
-  }
-
   if (organizations.length === 0) {
     console.log('Sync skipped: no organizations configured');
     await trackWebhookSync('skip', false, 'No organizations configured', null, issueKey, {

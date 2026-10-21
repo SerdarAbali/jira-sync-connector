@@ -41,6 +41,28 @@ export async function set(key, value, options = {}) {
 }
 
 /**
+ * Atomically create a key only if it does not already exist, with a native KVS
+ * TTL. Returns normally on creation; rejects when the key already exists.
+ * Used for webhook replay markers.
+ */
+export async function setIfNotExists(key, value, ttlSeconds = 300) {
+  return await kvs.set(key, value, {
+    ttl: { value: ttlSeconds, unit: 'SECONDS' },
+    keyPolicy: 'FAIL_IF_EXISTS'
+  });
+}
+
+/**
+ * Set a value with a native KVS TTL. Used to update replay markers from
+ * processing to completed without leaving them in storage indefinitely.
+ */
+export async function setWithTtl(key, value, ttlSeconds = 300) {
+  return await kvs.set(key, value, {
+    ttl: { value: ttlSeconds, unit: 'SECONDS' }
+  });
+}
+
+/**
  * Delete a value from storage
  */
 export async function del(key) {

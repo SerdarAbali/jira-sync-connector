@@ -11,47 +11,37 @@ export function defineSyncResolvers(resolver) {
   resolver.define('forceSyncIssue', async ({ payload }) => {
     try {
       const { issueKey, orgId } = payload;
-      
+
       if (!issueKey) {
         throw new Error('Issue key is required');
       }
-      
+
       console.log(`🔄 Manual sync requested for: ${issueKey}`);
-      
+
       // Get organizations with tokens
       const organizations = await getOrganizationsWithTokens();
-      
-      // Legacy support
-      const legacyConfig = await kvsStore.get('syncConfig');
-      if (legacyConfig && legacyConfig.remoteUrl && organizations.length === 0) {
-        organizations.push({
-          id: 'legacy',
-          name: 'Legacy Organization',
-          ...legacyConfig
-        });
-      }
-      
+
       if (organizations.length === 0) {
         throw new Error('No organizations configured');
       }
-      
+
       // If orgId specified, sync to that org only; otherwise sync to all
-      const orgsToSync = orgId 
+      const orgsToSync = orgId
         ? organizations.filter(o => o.id === orgId)
         : organizations;
-      
+
       if (orgsToSync.length === 0) {
         throw new Error('Organization not found');
       }
-      
+
       const issue = await getFullIssue(issueKey);
       if (!issue) {
         throw new Error('Could not fetch issue data');
       }
-      
+
       const results = [];
       const issueProjectKey = issue.fields.project.key;
-      
+
       for (const org of orgsToSync) {
         const allowedProjects = Array.isArray(org.allowedProjects)
           ? org.allowedProjects.filter(Boolean)
@@ -79,16 +69,16 @@ export function defineSyncResolvers(resolver) {
           kvsStore.get(org.id === 'legacy' ? 'issueTypeMappings' : `issueTypeMappings:${org.id}`),
           kvsStore.get(org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`)
         ]);
-        
+
         const mappings = {
           userMappings: userMappings || {},
           fieldMappings: fieldMappings || {},
           statusMappings: statusMappings || {},
           issueTypeMappings: issueTypeMappings || {}
         };
-        
+
         const existingRemoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);
-        
+
         try {
           if (existingRemoteKey) {
             console.log(`🔄 Force UPDATE for ${org.name}: ${issueKey} → ${existingRemoteKey}`);
@@ -109,14 +99,14 @@ export function defineSyncResolvers(resolver) {
           results.push({ org: org.name, success: false, error: orgError.message });
         }
       }
-      
+
       const successCount = results.filter(r => r.success).length;
       const messages = results.map(r => r.success ? r.message : `${r.org}: ${r.error}`);
-      
-      return { 
-        success: successCount > 0, 
+
+      return {
+        success: successCount > 0,
         message: messages.join('; '),
-        results 
+        results
       };
     } catch (error) {
       console.error('Force sync error:', error);
@@ -128,19 +118,9 @@ export function defineSyncResolvers(resolver) {
   resolver.define('retryPendingLinks', async () => {
     try {
       console.log('🔄 Manual retry of pending links requested');
-      
+
       // Get all organizations with their API tokens from secure storage
-      let organizations = await getOrganizationsWithTokens();
-      
-      // Legacy support
-      const legacyConfig = await kvsStore.get('syncConfig');
-      if (legacyConfig && legacyConfig.remoteUrl && organizations.length === 0) {
-        organizations.push({
-          id: 'legacy',
-          name: 'Legacy Organization',
-          ...legacyConfig
-        });
-      }
+      const organizations = await getOrganizationsWithTokens();
 
       if (organizations.length === 0) {
         return { success: false, error: 'No organizations configured' };
@@ -168,15 +148,15 @@ export function defineSyncResolvers(resolver) {
         };
 
         const results = await retryAllPendingLinks(org, mappings, null);
-        
+
         totalResults.retried += results.retried;
         totalResults.success += results.success;
         totalResults.failed += results.failed;
         totalResults.stillPending += results.stillPending;
       }
 
-      return { 
-        success: true, 
+      return {
+        success: true,
         message: `Retried ${totalResults.retried} pending links: ${totalResults.success} synced, ${totalResults.stillPending} still pending, ${totalResults.failed} failed`,
         results: totalResults
       };
@@ -212,18 +192,18 @@ export function defineSyncResolvers(resolver) {
   resolver.define('cancelBulkSync', async () => {
     try {
       const currentStatus = await kvsStore.get('bulkSyncStatus');
-      
+
       // Mark as cancelled
       await kvsStore.set('bulkSyncStatus', {
         status: 'cancelled',
         timestamp: new Date().toISOString(),
         previousStatus: currentStatus
       });
-      
+
       console.log('🛑 Bulk sync cancelled by user');
-      
-      return { 
-        success: true, 
+
+      return {
+        success: true,
         message: 'Bulk sync cancelled. Note: Any currently processing issue will complete, but no new issues will be started.',
         previousStatus: currentStatus
       };
@@ -236,10 +216,10 @@ export function defineSyncResolvers(resolver) {
   resolver.define('triggerScheduledSync', async () => {
     try {
       console.log('🔄 Manual trigger of scheduled sync requested via Async Queue');
-      
+
       const queue = new Queue({ key: 'manual-sync-queue' });
       await queue.push({ body: { trigger: 'manual', timestamp: Date.now() } });
-      
+
       console.log('✅ Manual scheduled sync queued successfully');
       return { success: true, message: 'Scheduled sync started in background. It may take a few minutes to complete.' };
     } catch (error) {

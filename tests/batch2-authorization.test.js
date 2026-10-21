@@ -303,8 +303,10 @@ describe('Batch 2 resolver inventory and actual handler', () => {
     const registered = Object.keys(handler).sort();
     const classified = Object.keys(RESOLVER_POLICIES).sort();
 
-    expect(registered).toHaveLength(52);
+    expect(registered).toHaveLength(54);
     expect(registered).toEqual(classified);
+    expect(RESOLVER_POLICIES.replaceOrganizationToken).toBe('ADMIN_WRITE');
+    expect(RESOLVER_POLICIES.rotateWebhookSecret).toBe('ADMIN_WRITE');
     expect(RESOLVER_POLICIES.importOrgSettings).toBe('ADMIN_WRITE');
     expect(RESOLVER_POLICIES).not.toHaveProperty('importSettings');
     for (const resolverName of registered) {

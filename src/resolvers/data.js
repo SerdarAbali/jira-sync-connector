@@ -156,15 +156,14 @@ export function defineDataResolvers(resolver) {
       if (orgId) {
         // Use new organization format
         const orgs = await kvsStore.get('organizations') || [];
-        console.log('Found organizations:', orgs);
         const org = orgs.find(o => o.id === orgId);
         if (!org) {
           throw new Error(`Organization with ID ${orgId} not found`);
         }
         
-        // Get API token from secret storage
+        // Get API token from secret storage only
         const token = await kvsStore.getSecret(`secret:${orgId}:token`);
-        const remoteApiToken = token || org.remoteApiToken;
+        const remoteApiToken = token;
         
         if (!org.remoteUrl || !org.remoteEmail || !remoteApiToken || !org.remoteProjectKey) {
           console.error('Organization missing fields:', { 
@@ -182,9 +181,16 @@ export function defineDataResolvers(resolver) {
           remoteProjectKey: org.remoteProjectKey
         };
       } else {
-        // Fallback to legacy format
+        // Fallback to legacy format; the credential is read from secret storage.
         console.log('No orgId provided, falling back to legacy config');
-        config = await kvsStore.get('syncConfig');
+        const legacyConfig = await kvsStore.get('syncConfig');
+        const legacyToken = await kvsStore.getSecret('secret:legacy:token');
+        config = legacyConfig ? {
+          remoteUrl: legacyConfig.remoteUrl,
+          remoteEmail: legacyConfig.remoteEmail,
+          remoteApiToken: legacyToken,
+          remoteProjectKey: legacyConfig.remoteProjectKey
+        } : null;
         if (!config || !config.remoteUrl || !config.remoteEmail || !config.remoteApiToken) {
           throw new Error('Remote configuration not complete');
         }
@@ -655,7 +661,10 @@ export function defineDataResolvers(resolver) {
         
         if (org) {
           const token = await kvsStore.getSecret(`secret:${org.id}:token`);
-          const auth = Buffer.from(`${org.remoteEmail}:${token || org.remoteApiToken}`).toString('base64');
+          if (!token) {
+            remoteExists = null;
+          } else {
+          const auth = Buffer.from(`${org.remoteEmail}:${token}`).toString('base64');
           
           try {
             const checkRes = await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=key,summary`, {
@@ -667,6 +676,7 @@ export function defineDataResolvers(resolver) {
             }
           } catch (e) {
             remoteExists = false;
+          }
           }
         }
       }
