@@ -9,9 +9,22 @@ import { syncAllComments } from '../services/sync/comment-sync.js';
 
 /**
  * Async event consumer for bulk sync operations.
- * This runs with 900 second timeout, allowing full sync of all issues.
+ *
+ * Disabled for corporate pilot safety. The production handler returns before
+ * reading storage, constructing queues, or calling Jira. The legacy
+ * implementation below is intentionally unreachable from the queue handler.
  */
-export async function run(event, context) {
+export async function run() {
+  return {
+    success: false,
+    code: 'BULK_SYNC_CONSUMER_DISABLED',
+    error: 'Bulk sync consumer is disabled pending the safe bulk-sync redesign.',
+    message: 'No Jira operations were performed.'
+  };
+}
+
+// eslint-disable-next-line no-unused-vars
+async function runLegacyBulkSync(event, context) {
   const startTime = Date.now();
   // Queue events have payload in event.body (from queue.push({ body: {...} }))
   const { orgId, syncMissingData = false, updateExisting = false, dryRun = false } = event.body || event.payload || {};

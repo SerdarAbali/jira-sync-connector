@@ -187,69 +187,16 @@ export function defineSyncResolvers(resolver) {
   });
 
 
-  // Resolver to trigger bulk sync via async queue (900 second timeout)
-  // This handles: 1) Never synced issues, 2) Deleted remote issues, 3) Missing attachments/links/comments
-  resolver.define('scanForDeletedIssues', async ({ payload }) => {
-    try {
-      const { orgId, syncMissingData = false, updateExisting = false, force = false, dryRun = false } = payload || {};
-      console.log(`🚀 Triggering bulk sync (org: ${orgId || 'all'}, syncMissingData: ${syncMissingData}, updateExisting: ${updateExisting}, force: ${force}, dryRun: ${dryRun})...`);
-
-      // Check if sync is already in progress (skip if force=true)
-      const currentStatus = await kvsStore.get('bulkSyncStatus');
-      if (!force && currentStatus && currentStatus.status === 'running') {
-        const startedAt = new Date(currentStatus.timestamp);
-        const elapsed = Date.now() - startedAt.getTime();
-        // If it's been running for less than 15 minutes, consider it still active
-        if (elapsed < 15 * 60 * 1000) {
-          return {
-            success: false,
-            error: 'Bulk sync is already in progress. Please wait for it to complete, or use the Cancel button to stop it.',
-            status: currentStatus,
-            elapsedMs: elapsed
-          };
-        }
-      }
-
-      // Mark sync as starting
-      await kvsStore.set('bulkSyncStatus', {
-        status: 'running',
-        timestamp: new Date().toISOString(),
-        orgId: orgId || 'all',
-        syncMissingData,
-        updateExisting,
-        dryRun
-      });
-
-      // Push to async queue for background processing with 900s timeout
-      const queue = new Queue({ key: 'bulk-sync-queue' });
-      const { jobId } = await queue.push({
-        body: {
-          orgId,
-          syncMissingData,
-          updateExisting,
-          dryRun
-        }
-      });
-
-      console.log(`✅ Bulk sync job queued: ${jobId}`);
-
-      return {
-        success: true,
-        message: 'Bulk sync started in background. This may take several minutes for large projects. Check back for status.',
-        jobId,
-        status: 'running'
-      };
-
-    } catch (error) {
-      console.error('Error starting bulk sync:', error);
-      await kvsStore.set('bulkSyncStatus', {
-        status: 'error',
-        timestamp: new Date().toISOString(),
-        error: error.message
-      });
-      return { success: false, error: error.message };
-    }
-  });
+  // Bulk scan/recreate is intentionally disabled for corporate pilot safety.
+  // This resolver queues no work and performs zero Jira writes. The name is
+  // retained for compatibility so existing callers receive a clear, structured
+  // error instead of silently doing nothing.
+  resolver.define('scanForDeletedIssues', async () => ({
+    success: false,
+    code: 'BULK_SCAN_RECREATE_DISABLED',
+    error: 'Bulk scan/recreate is disabled pending the safe bulk-sync redesign.',
+    message: 'No issues were scanned, queued, created, updated, transitioned, or deleted.'
+  }));
 
   // New resolver to check bulk sync status
   resolver.define('getBulkSyncStatus', async () => {

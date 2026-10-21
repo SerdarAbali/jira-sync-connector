@@ -1,63 +1,53 @@
 import { getRemoteKey, getOrganizationsWithTokens } from '../services/storage/mappings.js';
-import { cleanupIssueData } from '../services/storage/cleanup.js';
-import { fetch } from '@forge/api';
+import { logAuditEntry } from '../services/storage/stats.js';
 
-export async function run(event, context) {
+// Deletion propagation is intentionally disabled for corporate pilot safety.
+// Local and remote deletions must never hard-delete the counterpart issue.
+// Mappings are deliberately preserved so a future reconciliation workflow can
+// decide what to do without data loss.
+const DELETION_DISABLED_REASON = 'Deletion propagation disabled for corporate pilot safety';
+
+export async function run(event) {
   console.log(`🗑️ Issue deleted trigger fired`);
-  console.log(`🗑️ Delete event:`, JSON.stringify(event, null, 2));
 
   try {
     const issueId = event.issue?.id;
     const issueKey = event.issue?.key;
-    
-    if (!issueKey && !issueId) {
-      console.log(`⚠️ Could not determine issue from delete event`);
+
+    if (!issueKey) {
+      // Do not substitute a numeric issue ID into a key-based mapping lookup.
+      console.warn(`⚠️ Deletion event has no issue key (id=${issueId || 'unknown'}); mapping lookup skipped. No remote delete will be performed.`);
       return;
     }
 
-    console.log(`🗑️ Processing deletion for issue: ${issueKey || issueId}`);
+    console.log(`🗑️ Deletion observed for issue: ${issueKey}. No remote delete will be performed.`);
 
-    // Get all organizations
     const organizations = await getOrganizationsWithTokens();
-    
+
     if (organizations.length === 0) {
       console.log(`⚠️ No organizations configured`);
       return;
     }
 
-    // Delete from each org where it was synced
     for (const org of organizations) {
       const orgId = org.id === 'legacy' ? null : org.id;
       const remoteKey = await getRemoteKey(issueKey, orgId);
 
       if (!remoteKey) {
-        console.log(`⏭️ Issue ${issueKey} not synced to ${org.name}, skipping`);
         continue;
       }
 
-      console.log(`🗑️ Found remote issue ${remoteKey} in ${org.name}, deleting...`);
-
-      const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
-
-      try {
-        const response = await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `Basic ${auth}`,
-            'Content-Type': 'application/json'
-          }
-        });
-
-        if (response.ok || response.status === 204) {
-          console.log(`✅ Deleted remote issue ${remoteKey}`);
-          // Use centralized cleanup
-          await cleanupIssueData(issueKey, remoteKey, orgId);
-        } else {
-          console.error(`❌ Failed to delete remote issue ${remoteKey}: ${response.status}`);
-        }
-      } catch (error) {
-        console.error(`Error deleting remote issue ${remoteKey}:`, error);
-      }
+      console.warn(`${DELETION_DISABLED_REASON}: org=${orgId || 'legacy'} local=${issueKey} remote=${remoteKey}`);
+      await logAuditEntry({
+        action: 'delete-blocked',
+        sourceIssue: issueKey,
+        targetIssue: remoteKey,
+        orgId,
+        orgName: org.name,
+        success: false,
+        errors: [DELETION_DISABLED_REASON]
+      });
+      // Keep the mapping: no cleanup on deletion in this batch.
     }
   } catch (error) {
     console.error(`Error processing issue deletion:`, error);

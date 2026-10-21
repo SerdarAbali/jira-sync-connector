@@ -29,7 +29,15 @@ jest.mock('../src/resolvers/sync.js', () => ({ defineSyncResolvers: jest.fn() })
 jest.mock('../src/resolvers/data.js', () => ({ defineDataResolvers: jest.fn() }));
 jest.mock('../src/resolvers/stats.js', () => ({ defineStatsResolvers: jest.fn() }));
 jest.mock('../src/resolvers/audit.js', () => ({ defineAuditResolvers: jest.fn() }));
-jest.mock('../src/resolvers/diagnostics.js', () => ({ defineDiagnosticsResolvers: jest.fn() }));
+jest.mock('../src/resolvers/diagnostics.js', () => ({
+  defineDiagnosticsResolvers: (resolver) => {
+    resolver.define('runSystemTest', jest.fn().mockResolvedValue({
+      success: false,
+      disabled: true,
+      code: 'SYSTEM_TEST_DISABLED'
+    }));
+  }
+}));
 
 describe('Resolver index', () => {
   test('registers resolvers from all groups', () => {
@@ -53,5 +61,20 @@ describe('Resolver index', () => {
 
   test('unprotected resolver is not wrapped', async () => {
     await expect(handler.getOrganizations({ context: {} })).resolves.toEqual([{ id: 'org1' }]);
+  });
+
+  test('runSystemTest is protected and requires admin accountId', async () => {
+    await expect(handler.runSystemTest({ context: {} })).resolves.toEqual({
+      success: false,
+      error: 'Unauthorized: Admin permissions required',
+    });
+  });
+
+  test('runSystemTest passes through with accountId and returns disabled response', async () => {
+    await expect(handler.runSystemTest({ context: { accountId: 'u1' } })).resolves.toEqual({
+      success: false,
+      disabled: true,
+      code: 'SYSTEM_TEST_DISABLED'
+    });
   });
 });

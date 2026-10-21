@@ -1,6 +1,6 @@
 import { fetch } from '@forge/api';
 import { LOG_EMOJI } from '../../constants.js';
-import { retryWithBackoff } from '../../utils/retry.js';
+import { executeWriteOnce } from '../../utils/retry.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 
@@ -25,7 +25,7 @@ export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKe
   }
 
   try {
-    const response = await retryWithBackoff(async () => {
+    const response = await executeWriteOnce(async () => {
       return await fetch(
         `${config.remoteUrl}/rest/api/3/issueLink`,
         {

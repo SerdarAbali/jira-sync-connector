@@ -11,10 +11,9 @@ import WarningIcon from '@atlaskit/icon/glyph/warning';
 
 const Diagnostics = ({ selectedOrgId }) => {
   const [loading, setLoading] = useState(false);
-  const [testType, setTestType] = useState(null); // 'health' or 'system'
+  const [testType, setTestType] = useState(null); // 'health' (system test disabled)
   const [results, setResults] = useState(null);
-  const [logs, setLogs] = useState([]);
-  
+
   // Issue lookup state
   const [issueKey, setIssueKey] = useState('');
   const [issueLookupLoading, setIssueLookupLoading] = useState(false);
@@ -28,33 +27,12 @@ const Diagnostics = ({ selectedOrgId }) => {
     setLoading(true);
     setTestType('health');
     setResults(null);
-    setLogs([]);
 
     try {
       const res = await invoke('runHealthCheck', { orgId: selectedOrgId });
       setResults(res);
     } catch (error) {
       setResults({ success: false, steps: [{ name: 'Invocation Error', status: 'error', message: error.message }] });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const runSystemTest = async () => {
-    if (!selectedOrgId) return;
-    if (!confirm('WARNING: This will create and delete a real issue in your Jira project. Do you want to proceed?')) return;
-
-    setLoading(true);
-    setTestType('system');
-    setResults(null);
-    setLogs([]);
-
-    try {
-      const res = await invoke('runSystemTest', { orgId: selectedOrgId });
-      setResults(res);
-      if (res.logs) setLogs(res.logs);
-    } catch (error) {
-      setResults({ success: false, error: error.message });
     } finally {
       setLoading(false);
     }
@@ -133,14 +111,6 @@ const Diagnostics = ({ selectedOrgId }) => {
         >
           Run Health Check (Safe)
         </LoadingButton>
-        
-        <LoadingButton 
-          appearance="danger" 
-          isLoading={loading && testType === 'system'} 
-          onClick={runSystemTest}
-        >
-          Run Full System Test (Creates Data)
-        </LoadingButton>
       </div>
 
       {loading && (
@@ -167,29 +137,6 @@ const Diagnostics = ({ selectedOrgId }) => {
               </div>
             </div>
           ))}
-        </div>
-      )}
-
-      {testType === 'system' && (
-        <div>
-          {results && (
-            <SectionMessage appearance={results.success ? 'success' : 'error'}>
-              {results.success ? 'System Test Passed! Issue created, synced, and deleted.' : `System Test Failed: ${results.error}`}
-            </SectionMessage>
-          )}
-          
-          {logs.length > 0 && (
-            <div style={{ 
-              marginTop: '20px', 
-              background: '#f4f5f7', 
-              padding: '15px', 
-              borderRadius: '4px', 
-              fontFamily: 'monospace', 
-              fontSize: '12px' 
-            }}>
-              {logs.map((log, i) => <div key={i}>{log}</div>)}
-            </div>
-          )}
         </div>
       )}
 

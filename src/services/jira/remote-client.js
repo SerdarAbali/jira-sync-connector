@@ -1,5 +1,5 @@
 import { fetch } from '@forge/api';
-import { retryWithBackoff } from '../../utils/retry.js';
+import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { LOG_EMOJI } from '../../constants.js';
 
 export async function getRemoteIssue(remoteKey, config, fields = []) {
@@ -84,7 +84,7 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
     // Combine all parts
     const body = Buffer.concat([header, fileBuffer, footer]);
     
-    const response = await retryWithBackoff(async () => {
+    const response = await executeWriteOnce(async () => {
       return await fetch(
         `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/attachments`,
         {

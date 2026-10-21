@@ -1119,7 +1119,6 @@ const App = () => {
             {message.persistent && (
               <div style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
                 <Button appearance="subtle" onClick={dismissMessage}>Dismiss</Button>
-                {scanProgress && <Button appearance="subtle" onClick={resetScanProgress}>Reset Progress</Button>}
               </div>
             )}
           </div>
@@ -2823,81 +2822,6 @@ const SyncActivityPanel = ({
             Retry All Pending Links
           </Button>
         </div>
-
-        {/* Scan for Deleted Issues */}
-        {syncOptions.recreateDeletedIssues && (
-          <div style={surfaceCard({
-            background: token('color.background.accent.orange.subtlest', '#FFF7E6'),
-            border: `1px solid ${token('color.border.accent.orange', '#FF8B00')}`
-          })}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.100', '8px') }}>
-              <h4 style={{ margin: 0, color: '#974F0C' }}>Sync All Issues</h4>
-              <Lozenge appearance="moved">{scanProgress ? `Run ${scanProgress.runs}` : 'Batch Sync'}</Lozenge>
-            </div>
-            <p style={{ fontSize: '13px', color: '#974F0C', margin: '0 0 8px 0' }}>
-              Sync all missing issues from source to target, or update existing ones.
-            </p>
-            {scanProgress && (
-              <div style={{ 
-                fontSize: '12px', 
-                color: '#974F0C', 
-                background: 'rgba(255,139,0,0.1)', 
-                padding: '8px', 
-                borderRadius: '4px',
-                marginBottom: '8px',
-                fontFamily: 'monospace'
-              }}>
-                📊 Progress: {scanProgress.totalCreated} created | {scanProgress.totalAlreadySynced} already synced | {scanProgress.runs} runs
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <Button 
-                appearance="subtle" 
-                onClick={() => handleScanForDeletedIssues(null, { updateExisting: false, syncMissingData: true })} 
-                isLoading={scanningDeleted}
-                style={lozengeButtonStyle}
-              >
-                {scanningDeleted ? 'Syncing...' : 'Sync Missing'}
-              </Button>
-              <Button 
-                appearance="subtle" 
-                onClick={() => handleScanForDeletedIssues(null, { updateExisting: true })} 
-                isLoading={scanningDeleted}
-                style={{ ...lozengeButtonStyle, background: '#E3FCEF', color: '#006644' }}
-                title="Re-sync all issues including already synced ones (applies current field mappings)"
-              >
-                Update All
-              </Button>
-              <Button 
-                appearance="subtle" 
-                onClick={() => handleScanForDeletedIssues(null, { updateExisting: true, dryRun: true })} 
-                isLoading={scanningDeleted}
-                style={{ ...lozengeButtonStyle, background: '#EAE6FF', color: '#403294' }}
-                title="Simulate sync without making changes"
-              >
-                Dry Run
-              </Button>
-              {scanningDeleted && (
-                <Button 
-                  appearance="subtle" 
-                  onClick={handleCancelBulkSync}
-                  style={{ ...lozengeButtonStyle, background: '#FFEBE6', color: '#BF2600' }}
-                >
-                  Cancel
-                </Button>
-              )}
-              {scanProgress && !scanningDeleted && (
-                <Button 
-                  appearance="subtle" 
-                  onClick={resetScanProgress}
-                  style={{ ...lozengeButtonStyle, background: '#f4f5f7' }}
-                >
-                  Reset
-                </Button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Issue Export/Import Section - Collapsible */}

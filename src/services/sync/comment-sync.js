@@ -1,7 +1,7 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
-import { retryWithBackoff } from '../../utils/retry.js';
+import { executeWriteOnce } from '../../utils/retry.js';
 import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
 import { getRemoteKey, getLocalKey, getOrganizationsWithTokens, getRemoteCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
@@ -135,7 +135,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
       
       // Sync the comment
       try {
-        const response = await retryWithBackoff(async () => {
+        const response = await executeWriteOnce(async () => {
           return await fetch(
             `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
             {
@@ -307,7 +307,7 @@ export async function syncComment(event) {
     try {
       console.log(`${LOG_EMOJI.COMMENT} Syncing comment to ${org.name}: ${issueKey} → ${remoteKey} (from ${orgName} - ${userName})`);
 
-      const response = await retryWithBackoff(async () => {
+      const response = await executeWriteOnce(async () => {
         return await fetch(
           `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
           {

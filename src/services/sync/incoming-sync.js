@@ -55,6 +55,7 @@ import * as kvsStore from '../storage/kvs.js';
 import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { recordRejectedFields } from '../storage/rejected-fields.js';
+import { logAuditEntry } from '../storage/stats.js';
 import { LOG_EMOJI, MAX_ATTACHMENT_SIZE } from '../../constants.js';
 import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
@@ -378,26 +379,25 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
 }
 
 async function handleRemoteIssueDeleted(remoteIssue, context) {
+  // Deletion propagation is intentionally disabled for corporate pilot safety.
+  // A remote deletion must not delete the local issue; the mapping is kept for
+  // future reconciliation. No Jira write is performed here.
   const localKey = await getLocalKey(remoteIssue.key, context.orgId);
-    if (!localKey) {
-        return;
-    }
-    
-    console.log(`${LOG_EMOJI.SYNC} Remote issue ${remoteIssue.key} deleted. Deleting local ${localKey}`);
-    
-    await markSyncing(localKey);
-    try {
-        const response = await api.asApp().requestJira(route`/rest/api/3/issue/${localKey}`, {
-            method: 'DELETE'
-        });
-        
-        if (!response.ok) {
-             throw new Error(`Failed to delete local issue: ${await response.text()}`);
-        }
-        console.log(`${LOG_EMOJI.SUCCESS} Deleted local issue ${localKey}`);
-    } finally {
-        await clearSyncFlag(localKey);
-    }
+  if (!localKey) {
+    return;
+  }
+
+  const reason = 'Deletion propagation disabled for corporate pilot safety';
+  console.warn(`${reason}: org=${context.orgId || 'legacy'} remote=${remoteIssue.key} local=${localKey}`);
+  await logAuditEntry({
+    action: 'remote-delete-blocked',
+    sourceIssue: localKey,
+    targetIssue: remoteIssue.key,
+    orgId: context.orgId,
+    orgName: context.org?.name,
+    success: false,
+    errors: [reason]
+  });
 }
 
 async function handleRemoteCommentCreated(payload, context) {

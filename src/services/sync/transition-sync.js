@@ -1,6 +1,6 @@
 import api, { fetch, route } from '@forge/api';
 import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
-import { retryWithBackoff } from '../../utils/retry.js';
+import { executeWriteOnce } from '../../utils/retry.js';
 import { reverseMapping } from '../../utils/mapping.js';
 
 export async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings, syncResult = null) {
@@ -68,7 +68,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
 
     console.log(`Using transition: ${transition.name} → ${transition.to.name}`);
 
-    const transitionResponse = await retryWithBackoff(async () => {
+    const transitionResponse = await executeWriteOnce(async () => {
       return await fetch(
         `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions?notifyUsers=false`,
         {

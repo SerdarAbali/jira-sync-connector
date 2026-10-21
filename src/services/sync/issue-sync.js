@@ -1,7 +1,7 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
-import { retryWithBackoff } from '../../utils/retry.js';
+import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
 import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated } from '../storage/mappings.js';
@@ -648,7 +648,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
       await markSyncing(issue.key);
 
-      const response = await retryWithBackoff(async () => {
+      const response = await executeWriteOnce(async () => {
       return await fetch(`${org.remoteUrl}/rest/api/3/issue?notifyUsers=false`, {
         method: 'POST',
         headers: {
