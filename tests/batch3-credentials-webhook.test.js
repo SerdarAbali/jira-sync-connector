@@ -158,7 +158,7 @@ function webhookRequest(overrides = {}) {
     body: defaultBody,
     ...overrides,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': ['application/json'],
       ...(overrides.headers || {})
     }
   };
@@ -473,8 +473,56 @@ describe('Batch 3 native Jira webhook path authentication', () => {
     const response = await runWebhook(webhookRequest());
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers['Content-Type']).toEqual(['application/json']);
     expect(JSON.parse(response.body)).toEqual({ message: 'Processed' });
     expect(secureCompare).toHaveBeenCalledWith(FAKE_WEBHOOK_SECRET, FAKE_WEBHOOK_SECRET);
+  });
+
+  test('every webhook response uses a Forge array Content-Type', async () => {
+    webhookFromOrg();
+    const responses = [
+      await runWebhook(webhookRequest()),
+      await runWebhook(webhookRequest({ userPath: undefined })),
+      await runWebhook(webhookRequest({ headers: { 'Content-Type': ['text/plain'] } })),
+      await runWebhook(webhookRequest({ body: '{' }))
+    ];
+
+    for (const response of responses) {
+      expect(response.headers['Content-Type']).toEqual(['application/json']);
+    }
+  });
+
+  test('accepts a Forge-style array Content-Type with charset', async () => {
+    webhookFromOrg();
+    const response = await runWebhook(webhookRequest({
+      headers: { 'Content-Type': ['application/json; charset=utf-8'] }
+    }));
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  test('rejects malformed, empty, multiple and duplicate Content-Type headers', async () => {
+    webhookFromOrg();
+    const invalidHeaders = [
+      { 'Content-Type': { malformed: true } },
+      { 'Content-Type': [] },
+      { 'Content-Type': ['application/json', 'application/json'] },
+      { 'Content-Type': ['application/json'], 'content-type': ['application/json'] }
+    ];
+
+    for (const headers of invalidHeaders) {
+      const response = await runWebhook(webhookRequest({ headers }));
+      expect(response.statusCode).toBe(415);
+      expect(response.headers['Content-Type']).toEqual(['application/json']);
+    }
+  });
+
+  test('a valid userPath still reaches processIncomingWebhook', async () => {
+    webhookFromOrg();
+    const response = await runWebhook(webhookRequest());
+
+    expect(response.statusCode).toBe(200);
+    expect(kvsStore.get).toHaveBeenCalledWith('organizations');
   });
 
   test('query-string secrets are rejected', async () => {

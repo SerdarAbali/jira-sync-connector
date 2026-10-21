@@ -61,3 +61,24 @@ describe('Batch 3 frontend webhook-rotation scope', () => {
     expect(source).not.toContain('X-Jira-Sync');
   });
 });
+
+describe('Batch 3 frontend organization-load error handling', () => {
+  const start = source.indexOf('const loadOrganizations = async');
+  const end = source.indexOf('const loadOrgData = async', start);
+  const loadOrganizations = source.slice(start, end);
+
+  test('distinguishes array, forbidden, malformed and invocation failure states', () => {
+    expect(loadOrganizations).toContain('Array.isArray(orgs)');
+    expect(loadOrganizations).toContain("orgs.code === 'FORBIDDEN'");
+    expect(loadOrganizations).toContain('Jira administrator permission is required to load connector configuration.');
+    expect(loadOrganizations).toContain('Unable to load connector organizations.');
+    expect(loadOrganizations).toContain("status: 'loaded'");
+    expect(loadOrganizations).toContain("status: 'error'");
+    expect(loadOrganizations).not.toContain('setOrganizations(orgs || [])');
+  });
+
+  test('does not show the first-organization prompt after a failed load', () => {
+    expect(source).toContain("organizationsLoadState.status === 'loaded' ? (");
+    expect(source).toContain("organizationsLoadState.status === 'error' && (");
+  });
+});

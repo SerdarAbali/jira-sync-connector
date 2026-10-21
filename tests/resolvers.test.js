@@ -15,13 +15,35 @@ jest.mock('@forge/api', () => {
 });
 
 jest.mock('@forge/resolver', () => {
-  const defs = {};
   class FakeResolver {
-    define(name, fn) {
-      defs[name] = fn;
+    constructor() {
+      this.functions = {};
     }
+
+    define(name, fn) {
+      if (typeof fn !== 'function') {
+        throw new Error(`Resolver definition '${name}' callback must be a function`);
+      }
+      this.functions[name] = fn;
+      return this;
+    }
+
     getDefinitions() {
-      return defs;
+      const functions = this.functions;
+      return async (request, backendRuntimePayload) => {
+        const { call, context } = request;
+        const fn = functions[call.functionKey];
+        if (typeof fn !== 'function') {
+          throw new TypeError(`Resolver function '${call.functionKey}' is not a function`);
+        }
+        return fn({
+          payload: call.payload || {},
+          context: {
+            ...context,
+            accountId: backendRuntimePayload?.principal?.accountId
+          }
+        });
+      };
     }
   }
   return { __esModule: true, default: FakeResolver };
@@ -67,20 +89,30 @@ function allowAdmin() {
   });
 }
 
+function forgeCall(functionKey, payload = {}, accountId = 'u1') {
+  return handler(
+    { call: { functionKey, payload, jobId: 'test-job' }, context: {} },
+    { principal: { accountId } }
+  );
+}
+
 describe('Resolver index authorization', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     allowAdmin();
   });
 
-  test('registers resolvers from all groups', () => {
+  test('registers a callable Forge handler from all groups', () => {
     expect(handler).toBeDefined();
-    expect(typeof handler.addOrganization).toBe('function');
-    expect(typeof handler.getOrganizations).toBe('function');
+    expect(typeof handler).toBe('function');
+    expect(Object.keys(handler)).toHaveLength(0);
   });
 
   test('missing context is denied before the resolver runs', async () => {
-    await expect(handler.addOrganization({})).resolves.toEqual({
+    await expect(handler({
+      call: { functionKey: 'addOrganization', payload: {} },
+      context: {}
+    })).resolves.toEqual({
       success: false,
       code: 'FORBIDDEN',
       error: 'Jira administrator permission required'
@@ -89,7 +121,11 @@ describe('Resolver index authorization', () => {
   });
 
   test('missing accountId is denied', async () => {
-    await expect(handler.addOrganization({ context: {} })).resolves.toEqual({
+    await expect(handler({
+      call: { functionKey: 'addOrganization', payload: {} },
+      context: {},
+      backendRuntimePayload: {}
+    })).resolves.toEqual({
       success: false,
       code: 'FORBIDDEN',
       error: 'Jira administrator permission required'
@@ -98,7 +134,7 @@ describe('Resolver index authorization', () => {
   });
 
   test('confirmed administrator can invoke an ADMIN_WRITE resolver', async () => {
-    await expect(handler.addOrganization({ context: { accountId: 'u1' } })).resolves.toEqual({
+    await expect(forgeCall('addOrganization')).resolves.toEqual({
       success: true
     });
     expect(userRequestJira).toHaveBeenCalledTimes(1);
@@ -110,7 +146,7 @@ describe('Resolver index authorization', () => {
       json: async () => ({ permissions: { ADMINISTER: { havePermission: false } } })
     });
 
-    await expect(handler.getOrganizations({ context: { accountId: 'u1' } })).resolves.toEqual({
+    await expect(forgeCall('getOrganizations')).resolves.toEqual({
       success: false,
       code: 'FORBIDDEN',
       error: 'Jira administrator permission required'
@@ -123,7 +159,7 @@ describe('Resolver index authorization', () => {
       json: async () => ({ permissions: { ADMINISTER: { havePermission: false } } })
     });
 
-    await expect(handler.runSystemTest({ context: { accountId: 'u1' } })).resolves.toEqual({
+    await expect(forgeCall('runSystemTest')).resolves.toEqual({
       success: false,
       code: 'FORBIDDEN',
       error: 'Jira administrator permission required'
@@ -131,7 +167,7 @@ describe('Resolver index authorization', () => {
   });
 
   test('runSystemTest returns its disabled response after admin authorization', async () => {
-    await expect(handler.runSystemTest({ context: { accountId: 'u1' } })).resolves.toEqual({
+    await expect(forgeCall('runSystemTest')).resolves.toEqual({
       success: false,
       disabled: true,
       code: 'SYSTEM_TEST_DISABLED'

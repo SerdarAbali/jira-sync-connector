@@ -96,6 +96,10 @@ const App = () => {
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [organizationsLoadState, setOrganizationsLoadState] = useState({
+    status: 'loading',
+    message: ''
+  });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
   const [exportingSettings, setExportingSettings] = useState(false);
@@ -204,14 +208,34 @@ const App = () => {
   }, [selectedOrgId]);
 
   const loadOrganizations = async () => {
+    setOrganizationsLoadState({ status: 'loading', message: '' });
     try {
       const orgs = await invoke('getOrganizations');
-      setOrganizations(orgs || []);
-      if (orgs && orgs.length > 0 && !selectedOrgId) {
-        setSelectedOrgId(orgs[0].id);
+
+      if (Array.isArray(orgs)) {
+        setOrganizations(orgs);
+        setOrganizationsLoadState({ status: 'loaded', message: '' });
+        if (orgs.length > 0 && !selectedOrgId) {
+          setSelectedOrgId(orgs[0].id);
+        }
+        return;
       }
+
+      if (orgs && typeof orgs === 'object' && orgs.code === 'FORBIDDEN') {
+        const message = 'Jira administrator permission is required to load connector configuration.';
+        setOrganizationsLoadState({ status: 'error', message });
+        showMessage(message, 'error');
+        return;
+      }
+
+      const message = 'Unable to load connector organizations.';
+      setOrganizationsLoadState({ status: 'error', message });
+      showMessage(message, 'error');
     } catch (error) {
       console.error('Error loading organizations:', error);
+      const message = 'Unable to load connector organizations.';
+      setOrganizationsLoadState({ status: 'error', message });
+      showMessage(message, 'error');
     } finally {
       setLoading(false);
     }
@@ -1136,7 +1160,17 @@ const App = () => {
           </div>
         )}
 
+        {organizationsLoadState.status === 'error' && (
+          <div style={{ padding: token('space.200', '16px') }}>
+            <SectionMessage
+              appearance="error"
+              title={organizationsLoadState.message}
+            />
+          </div>
+        )}
+
         {!selectedOrgId ? (
+          organizationsLoadState.status === 'loaded' ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
             <div style={{ textAlign: 'center', maxWidth: '500px' }}>
               <h2>Welcome to Jira Sync Connector</h2>
@@ -1153,6 +1187,7 @@ const App = () => {
               </Button>
             </div>
           </div>
+          ) : null
         ) : (
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {/* Organization Header */}

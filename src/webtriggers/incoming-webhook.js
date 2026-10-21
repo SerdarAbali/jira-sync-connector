@@ -26,7 +26,7 @@ function jsonResponse(statusCode, body) {
   return {
     body: JSON.stringify(body),
     statusCode,
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': ['application/json'] }
   };
 }
 
@@ -43,10 +43,23 @@ function readContentType(request) {
   const matches = Object.entries(headers)
     .filter(([name]) => String(name).toLowerCase() === 'content-type');
 
-  if (matches.length !== 1 || typeof matches[0][1] !== 'string') {
+  if (matches.length !== 1) {
     return null;
   }
-  return matches[0][1].trim();
+
+  const rawValue = matches[0][1];
+  // Forge documents request header values as string arrays. A plain string is
+  // accepted only for local backwards compatibility.
+  const values = Array.isArray(rawValue)
+    ? rawValue
+    : (typeof rawValue === 'string' ? [rawValue] : null);
+
+  if (!values || values.length !== 1 || typeof values[0] !== 'string') {
+    return null;
+  }
+
+  const value = values[0].trim();
+  return value || null;
 }
 
 function hasQuerySecret(request) {

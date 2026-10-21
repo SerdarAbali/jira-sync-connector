@@ -3,15 +3,15 @@ import { Queue } from '@forge/events';
 import {
   JIRA_ADMIN_PERMISSION_ENDPOINT,
   checkJiraAdminPermission,
-  createAuthorizedDefinitions,
   createAuthorizedHandler,
+  createAuthorizedResolver,
   forbiddenResponse
 } from '../src/resolvers/authorization.js';
 import {
   POLICY_CATEGORIES,
   RESOLVER_POLICIES
 } from '../src/resolvers/authorization-policy.js';
-import { handler } from '../src/resolvers/index.js';
+import { handler, registeredResolverNames } from '../src/resolvers/index.js';
 import * as kvsStore from '../src/services/storage/kvs.js';
 import logger from '../src/utils/logger.js';
 
@@ -31,13 +31,35 @@ jest.mock('@forge/api', () => {
 });
 
 jest.mock('@forge/resolver', () => {
-  const defs = {};
   class FakeResolver {
-    define(name, fn) {
-      defs[name] = fn;
+    constructor() {
+      this.functions = {};
     }
+
+    define(name, fn) {
+      if (typeof fn !== 'function') {
+        throw new Error(`Resolver definition '${name}' callback must be a function`);
+      }
+      this.functions[name] = fn;
+      return this;
+    }
+
     getDefinitions() {
-      return defs;
+      const functions = this.functions;
+      return async (request, backendRuntimePayload) => {
+        const { call, context } = request;
+        const fn = functions[call.functionKey];
+        if (typeof fn !== 'function') {
+          throw new TypeError(`Resolver function '${call.functionKey}' is not a function`);
+        }
+        return fn({
+          payload: call.payload || {},
+          context: {
+            ...context,
+            accountId: backendRuntimePayload?.principal?.accountId
+          }
+        });
+      };
     }
   }
   return { __esModule: true, default: FakeResolver };
@@ -80,6 +102,13 @@ const userContext = { accountId: 'user-123' };
 
 function request(payload = {}) {
   return { context: userContext, payload };
+}
+
+function forgeCall(functionKey, payload = {}, accountId = 'user-123') {
+  return handler(
+    { call: { functionKey, payload, jobId: 'test-job' }, context: {} },
+    { principal: { accountId } }
+  );
 }
 
 function allowAdmin() {
@@ -208,12 +237,19 @@ describe('Batch 2 default-deny resolver wrapper', () => {
   test('a resolver without a policy is denied by default', async () => {
     const implementation = jest.fn().mockResolvedValue({ success: true });
     const checkPermission = jest.fn().mockResolvedValue(true);
-    const definitions = createAuthorizedDefinitions(
-      { newlyAddedResolver: implementation },
-      { policies: RESOLVER_POLICIES, checkPermission }
+    const resolver = createAuthorizedResolver({
+      policies: RESOLVER_POLICIES,
+      checkPermission
+    });
+    resolver.define('newlyAddedResolver', implementation);
+    const callable = resolver.getDefinitions();
+
+    const result = await callable(
+      { call: { functionKey: 'newlyAddedResolver', payload: {} }, context: {} },
+      { principal: { accountId: 'user-123' } }
     );
 
-    await expect(definitions.newlyAddedResolver(request())).resolves.toEqual(forbiddenResponse());
+    expect(result).toEqual(forbiddenResponse());
     expect(checkPermission).not.toHaveBeenCalled();
     expect(implementation).not.toHaveBeenCalled();
   });
@@ -300,9 +336,11 @@ describe('Batch 2 resolver inventory and actual handler', () => {
   });
 
   test('every currently registered resolver has an explicit valid policy', () => {
-    const registered = Object.keys(handler).sort();
+    const registered = [...registeredResolverNames].sort();
     const classified = Object.keys(RESOLVER_POLICIES).sort();
 
+    expect(typeof handler).toBe('function');
+    expect(Object.keys(handler)).toHaveLength(0);
     expect(registered).toHaveLength(54);
     expect(registered).toEqual(classified);
     expect(RESOLVER_POLICIES.replaceOrganizationToken).toBe('ADMIN_WRITE');
@@ -317,14 +355,14 @@ describe('Batch 2 resolver inventory and actual handler', () => {
   test('confirmed administrator can invoke an ADMIN_READ resolver', async () => {
     allowAdmin();
 
-    await expect(handler.getOrganizations(request())).resolves.toEqual([]);
+    await expect(forgeCall('getOrganizations')).resolves.toEqual([]);
     expect(userRequestJira).toHaveBeenCalledTimes(1);
   });
 
   test('confirmed administrator can invoke an ADMIN_WRITE resolver', async () => {
     allowAdmin();
 
-    await expect(handler.saveConfig(request({ config: { remoteUrl: 'https://example.invalid' } })))
+    await expect(forgeCall('saveConfig', { config: { remoteUrl: 'https://example.invalid' } }))
       .resolves.toEqual({ success: true });
     expect(kvsStore.set).toHaveBeenCalledWith(
       'syncConfig',
@@ -334,11 +372,11 @@ describe('Batch 2 resolver inventory and actual handler', () => {
 
   test('authorization is not cached across users', async () => {
     denyAdmin();
-    await expect(handler.getOrganizations({ context: { accountId: 'user-1' }, payload: {} }))
+    await expect(forgeCall('getOrganizations', {}, 'user-1'))
       .resolves.toEqual(forbiddenResponse());
 
     allowAdmin();
-    await expect(handler.getOrganizations({ context: { accountId: 'user-2' }, payload: {} }))
+    await expect(forgeCall('getOrganizations', {}, 'user-2'))
       .resolves.toEqual([]);
 
     expect(userRequestJira).toHaveBeenCalledTimes(2);
@@ -346,11 +384,11 @@ describe('Batch 2 resolver inventory and actual handler', () => {
 
   test('Jira permission request failures deny actual resolvers', async () => {
     userRequestJira.mockResolvedValueOnce({ ok: false, status: 403 });
-    await expect(handler.getOrganizations({ context: { accountId: 'user-1' }, payload: {} }))
+    await expect(forgeCall('getOrganizations', {}, 'user-1'))
       .resolves.toEqual(forbiddenResponse());
 
     userRequestJira.mockRejectedValueOnce(new Error('permission endpoint unavailable'));
-    await expect(handler.saveConfig(request({ config: { remoteUrl: 'https://example.invalid' } })))
+    await expect(forgeCall('saveConfig', { config: { remoteUrl: 'https://example.invalid' } }))
       .resolves.toEqual(forbiddenResponse());
 
     expect(kvsStore.set).not.toHaveBeenCalled();
@@ -368,7 +406,7 @@ describe('Batch 2 resolver inventory and actual handler', () => {
     ];
 
     for (const [name, payload] of cases) {
-      const result = await handler[name](request(payload));
+      const result = await forgeCall(name, payload);
       expect(result).toEqual(forbiddenResponse());
     }
 
@@ -379,20 +417,20 @@ describe('Batch 2 resolver inventory and actual handler', () => {
   test('importOrgSettings is protected correctly', async () => {
     denyAdmin();
 
-    await expect(handler.importOrgSettings(request({
+    await expect(forgeCall('importOrgSettings', {
       orgId: 'org-1',
       data: { org: { remoteApiToken: 'SECRET_TOKEN' } }
-    }))).resolves.toEqual(forbiddenResponse());
+    })).resolves.toEqual(forbiddenResponse());
     expect(kvsStore.set).not.toHaveBeenCalled();
     expect(kvsStore.setSecret).not.toHaveBeenCalled();
   });
 
   test('scanForDeletedIssues is denied without admin and disabled after admin authorization', async () => {
     denyAdmin();
-    await expect(handler.scanForDeletedIssues(request())).resolves.toEqual(forbiddenResponse());
+    await expect(forgeCall('scanForDeletedIssues')).resolves.toEqual(forbiddenResponse());
 
     allowAdmin();
-    const result = await handler.scanForDeletedIssues(request());
+    const result = await forgeCall('scanForDeletedIssues');
     expect(result).toEqual(expect.objectContaining({
       success: false,
       code: 'BULK_SCAN_RECREATE_DISABLED'
@@ -404,10 +442,10 @@ describe('Batch 2 resolver inventory and actual handler', () => {
 
   test('runSystemTest is denied without admin and disabled after admin authorization', async () => {
     denyAdmin();
-    await expect(handler.runSystemTest(request())).resolves.toEqual(forbiddenResponse());
+    await expect(forgeCall('runSystemTest')).resolves.toEqual(forbiddenResponse());
 
     allowAdmin();
-    const result = await handler.runSystemTest(request());
+    const result = await forgeCall('runSystemTest');
     expect(result).toEqual(expect.objectContaining({
       success: false,
       disabled: true,

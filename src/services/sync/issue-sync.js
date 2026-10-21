@@ -2,7 +2,7 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
-import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF } from '../../utils/adf.js';
+import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
 import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
@@ -745,50 +745,56 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
           remoteOrgName
         );
 
-        console.log(`🔗 Updating remote issue ${result.key} with cross-reference...`);
-        const updateResponse = await retryWithBackoff(async () => {
-          return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
-            method: 'PUT',
-            headers: {
-              'Authorization': `Basic ${auth}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              fields: {
-                description: remoteDescriptionWithRef
-              }
-            })
-          });
-        }, `Update description for ${result.key}`);
-
-        if (updateResponse.ok || updateResponse.status === HTTP_STATUS.NO_CONTENT) {
-          console.log(`${LOG_EMOJI.SUCCESS} Updated remote issue with cross-reference`);
+        if (!remoteDescriptionWithRef || !adfPreservesOriginalContent(remoteDescription, remoteDescriptionWithRef)) {
+          console.log(`⏭️ Skipping remote cross-reference for ${result.key}: unsafe-description`);
+          if (syncResult) syncResult.addWarning('Skipped remote cross-reference: description could not be safely preserved');
         } else {
-          const warningMsg = 'Could not update remote description with cross-reference';
-          console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
-          if (syncResult) syncResult.addWarning(warningMsg);
+          console.log(`🔗 Updating remote issue ${result.key} with cross-reference...`);
+          const updateResponse = await retryWithBackoff(async () => {
+            return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
+              method: 'PUT',
+              headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                fields: {
+                  description: remoteDescriptionWithRef
+                }
+              })
+            });
+          }, `Update description for ${result.key}`);
+
+          if (updateResponse.ok || updateResponse.status === HTTP_STATUS.NO_CONTENT) {
+            console.log(`${LOG_EMOJI.SUCCESS} Updated remote issue with cross-reference`);
+          } else {
+            const warningMsg = 'Could not update remote description with cross-reference';
+            console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
+            if (syncResult) syncResult.addWarning(warningMsg);
+          }
         }
 
         // Update LOCAL issue description with cross-reference back to remote
-        const localDescription = issue.fields.description && typeof issue.fields.description === 'object'
-          ? JSON.parse(JSON.stringify(issue.fields.description)) // Deep clone
-          : { type: 'doc', version: 1, content: [] };
-        
         const localDescriptionWithRef = prependCrossReferenceToADF(
-          localDescription,
+          issue.fields.description,
           issue.key,
           result.key,
           localOrgName,
           remoteOrgName
         );
 
-        const localUpdateSuccess = await updateLocalIssueDescription(issue.key, localDescriptionWithRef);
-        if (localUpdateSuccess) {
-          console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${issue.key} with cross-reference`);
+        if (!localDescriptionWithRef || !adfPreservesOriginalContent(issue.fields.description, localDescriptionWithRef)) {
+          console.log(`⏭️ Skipping local cross-reference for ${issue.key}: unsafe-description`);
+          if (syncResult) syncResult.addWarning('Skipped local cross-reference: description could not be safely preserved');
         } else {
-          const warningMsg = 'Could not update local description with cross-reference';
-          console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
-          if (syncResult) syncResult.addWarning(warningMsg);
+          const localUpdateSuccess = await updateLocalIssueDescription(issue.key, localDescriptionWithRef);
+          if (localUpdateSuccess) {
+            console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${issue.key} with cross-reference`);
+          } else {
+            const warningMsg = 'Could not update local description with cross-reference';
+            console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
+            if (syncResult) syncResult.addWarning(warningMsg);
+          }
         }
       } else {
         // Still need to update description with media IDs if there are attachments
@@ -893,17 +899,14 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
     const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
 
     let description;
-    if (issue.fields.description) {
-      if (typeof issue.fields.description === 'object') {
-        const extractedText = extractTextFromADF(issue.fields.description);
-        description = extractedText ? textToADF(extractedText) : textToADF('');
-      } else if (typeof issue.fields.description === 'string') {
-        description = textToADF(issue.fields.description);
-      } else {
-        description = textToADF('');
-      }
+    if (issue.fields.description === null || issue.fields.description === undefined) {
+      description = { type: 'doc', version: 1, content: [] };
+    } else if (typeof issue.fields.description === 'string') {
+      description = textToADF(issue.fields.description);
+    } else if (isValidADFDocument(issue.fields.description)) {
+      description = JSON.parse(JSON.stringify(issue.fields.description));
     } else {
-      description = textToADF('');
+      description = null;
     }
 
     // Add cross-reference to description if enabled
@@ -912,13 +915,18 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
     if (crossReferenceEnabled) {
       localOrgName = await getOrgName();
       remoteOrgName = org.name;
-      finalDescription = prependCrossReferenceToADF(
-        description,
+      const enhancedDescription = prependCrossReferenceToADF(
+        issue.fields.description,
         localKey,
         remoteKey,
         localOrgName,
         remoteOrgName
       );
+      if (enhancedDescription && adfPreservesOriginalContent(issue.fields.description, enhancedDescription)) {
+        finalDescription = enhancedDescription;
+      } else {
+        console.log(`⏭️ Skipping cross-reference enhancement for ${localKey}: unsafe-description`);
+      }
     } else {
       console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
     }
@@ -940,10 +948,14 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
     const updateData = {
       fields: {
         summary: issue.fields.summary,
-        description: finalDescription,
         issuetype: { name: remoteIssueTypeName }
       }
     };
+    if (finalDescription) {
+      updateData.fields.description = finalDescription;
+    } else {
+      console.log(`⏭️ Skipping description update for ${localKey}: unsafe-description`);
+    }
     
     // ...existing update field mapping code...
     if (issue.fields.priority) {
@@ -1113,13 +1125,17 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
         // Also update local issue with cross-reference (if enabled)
         if (crossReferenceEnabled) {
           const localDescriptionWithRef = prependCrossReferenceToADF(
-            issue.fields.description || { type: 'doc', version: 1, content: [] },
+            issue.fields.description,
             localKey,
             remoteKey,
             localOrgName,
             remoteOrgName
           );
-          await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+          if (!localDescriptionWithRef || !adfPreservesOriginalContent(issue.fields.description, localDescriptionWithRef)) {
+            console.log(`⏭️ Skipping local cross-reference for ${localKey}: unsafe-description`);
+          } else {
+            await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+          }
         }
 
         if (issue.fields.status) {

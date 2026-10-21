@@ -165,8 +165,81 @@ export function textToADF(text) {
   };
 }
 
-export function prependCrossReferenceToADF(adf, localKey, remoteKey, localOrgName, remoteOrgName) {
-  // Create a minimal cross-reference line
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isValidAdfNode(node) {
+  if (!isPlainObject(node) || typeof node.type !== 'string' || !node.type) {
+    return false;
+  }
+  if (node.content !== undefined && !Array.isArray(node.content)) {
+    return false;
+  }
+  if (Array.isArray(node.content) && !node.content.every(isValidAdfNode)) {
+    return false;
+  }
+  if (node.marks !== undefined && !Array.isArray(node.marks)) {
+    return false;
+  }
+  if (node.type === 'text' && typeof node.text !== 'string') {
+    return false;
+  }
+  return true;
+}
+
+export function isValidADFDocument(adf) {
+  return isPlainObject(adf)
+    && adf.type === 'doc'
+    && (adf.version === undefined || adf.version === 1)
+    && Array.isArray(adf.content)
+    && adf.content.every(isValidAdfNode);
+}
+
+function cloneAdf(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeDescriptionToAdf(description) {
+  if (description === null || description === undefined) {
+    return { type: 'doc', version: 1, content: [] };
+  }
+  if (typeof description === 'string') {
+    return textToADF(description);
+  }
+  if (!isValidADFDocument(description)) {
+    return null;
+  }
+  return cloneAdf(description);
+}
+
+function isCrossReferenceParagraph(node) {
+  return isPlainObject(node)
+    && node.type === 'paragraph'
+    && Array.isArray(node.content)
+    && node.content.length === 1
+    && node.content[0]?.type === 'text'
+    && typeof node.content[0]?.text === 'string'
+    && /^🔗 .+ ↔ .+$/.test(node.content[0].text);
+}
+
+function contentWithoutCrossReference(adf) {
+  return adf.content.filter(node => !isCrossReferenceParagraph(node));
+}
+
+/**
+ * Return a new ADF document with exactly one cross-reference paragraph followed
+ * by the original content. The input is never mutated.
+ *
+ * Returns null for malformed/unsupported descriptions so callers can preserve
+ * the existing Jira description instead of writing an empty replacement.
+ */
+export function prependCrossReferenceToADF(adf, localKey, remoteKey) {
+  const original = normalizeDescriptionToAdf(adf);
+  if (!original) {
+    return null;
+  }
+
   const crossRefLine = {
     type: 'paragraph',
     content: [
@@ -178,34 +251,25 @@ export function prependCrossReferenceToADF(adf, localKey, remoteKey, localOrgNam
     ]
   };
 
-  // If adf has no content or is empty, create new doc with just the reference
-  if (!adf || !adf.content || adf.content.length === 0) {
-    return {
-      type: 'doc',
-      version: 1,
-      content: [crossRefLine]
-    };
-  }
-
-  // Check if the first element is already our cross-reference (to avoid duplicates on updates)
-  const firstContent = adf.content[0];
-  if (firstContent && 
-      firstContent.type === 'paragraph' &&
-      firstContent.content?.[0]?.text?.startsWith('🔗 ') &&
-      firstContent.content?.[0]?.text?.includes(' ↔ ')) {
-    // Replace existing cross-reference with updated one
-    return {
-      ...adf,
-      content: [crossRefLine, ...adf.content.slice(1)]
-    };
-  }
-
-  // Prepend the cross-reference line to existing content
   return {
-    ...adf,
-    content: [crossRefLine, ...adf.content]
+    ...original,
+    content: [crossRefLine, ...contentWithoutCrossReference(original)]
   };
 }
+
+export function adfPreservesOriginalContent(originalDescription, resultAdf) {
+  if (!isValidADFDocument(resultAdf)) {
+    return false;
+  }
+  const original = normalizeDescriptionToAdf(originalDescription);
+  if (!original) {
+    return false;
+  }
+  const expectedContent = contentWithoutCrossReference(original);
+  const resultContent = contentWithoutCrossReference(resultAdf);
+  return JSON.stringify(expectedContent) === JSON.stringify(resultContent);
+}
+
 
 const SYNC_PREFIX_REGEX = /^\[Comment from [^\]]+\]:\s*/i;
 const ACCOUNT_MENTION_REGEX = /\[~accountid:[^\]]+\]/gi;

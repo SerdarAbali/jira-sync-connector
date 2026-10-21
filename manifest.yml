@@ -54,6 +54,8 @@ modules:
   webtrigger:
     - key: incoming-webhook
       function: incoming-webhook-func
+      response:
+        type: dynamic
 
   function:
     - key: sync-trigger

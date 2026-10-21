@@ -1,4 +1,5 @@
 import api, { route } from '@forge/api';
+import Resolver from '@forge/resolver';
 import { logAuditEntry } from '../services/storage/stats.js';
 import logger from '../utils/logger.js';
 import {
@@ -159,29 +160,52 @@ export function createAuthorizedHandler(resolverName, resolverFn, options = {}) 
 }
 
 /**
- * Build the complete resolver handler from actual registered definitions.
- * Unknown names are still registered but always denied, so adding a resolver
- * without a policy cannot create an implicit public endpoint.
+ * Create a Resolver whose define() method wraps every implementation with the
+ * explicit authorization policy before registration. This preserves the real
+ * @forge/resolver 2.x contract: getDefinitions() returns the callable Forge
+ * handler, which must be exported unchanged.
  */
-export function createAuthorizedDefinitions(definitions, options = {}) {
+export function createAuthorizedResolver(options = {}) {
+  const resolver = new Resolver();
+  const registeredNames = [];
   const policies = options.policies || null;
   const checkPermission = options.checkPermission || checkJiraAdminPermission;
   const recordAudit = options.recordAudit || logAuditEntry;
-  const authorized = {};
 
-  for (const [resolverName, resolverFn] of Object.entries(definitions || {})) {
-    const policy = policies
-      ? (Object.prototype.hasOwnProperty.call(policies, resolverName)
-        ? policies[resolverName]
-        : null)
-      : getResolverPolicy(resolverName);
+  return {
+    define(resolverName, implementation) {
+      if (typeof resolverName !== 'string' || resolverName.length === 0) {
+        throw new Error('Resolver name must be a non-empty string');
+      }
+      if (registeredNames.includes(resolverName)) {
+        throw new Error(`Resolver definition '${resolverName}' already exists`);
+      }
 
-    authorized[resolverName] = createAuthorizedHandler(resolverName, resolverFn, {
-      policy,
-      checkPermission,
-      recordAudit
-    });
-  }
+      const hasExplicitPolicy = !!(policies
+        && Object.prototype.hasOwnProperty.call(policies, resolverName));
+      const policy = policies
+        ? (hasExplicitPolicy ? policies[resolverName] : null)
+        : getResolverPolicy(resolverName);
 
-  return authorized;
+      const authorized = createAuthorizedHandler(resolverName, implementation, {
+        policy,
+        checkPermission,
+        recordAudit
+      });
+
+      resolver.define(resolverName, (request) => authorized(request));
+      registeredNames.push(resolverName);
+      return this;
+    },
+
+    getRegisteredNames() {
+      return [...registeredNames];
+    },
+
+    getDefinitions() {
+      // Do not enumerate or transform this callable function. Forge dispatches
+      // resolver calls through it using call.functionKey.
+      return resolver.getDefinitions();
+    }
+  };
 }
