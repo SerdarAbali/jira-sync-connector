@@ -1,5 +1,6 @@
 import api, { route, fetch } from '@forge/api';
 import { getRemoteKey, getOrganizationsWithTokens, removeLinkMapping } from '../services/storage/mappings.js';
+import { assertPilotWritesAllowed } from '../services/sync/pilot-pause.js';
 
 export async function run(event, context) {
   console.log(`🔗🗑️ Link deleted trigger fired`);
@@ -111,6 +112,7 @@ export async function run(event, context) {
         }
 
         // Delete the link
+        await assertPilotWritesAllowed('link_delete_remote');
         const deleteResponse = await fetch(
           `${org.remoteUrl}/rest/api/3/issueLink/${matchingLink.id}`,
           {

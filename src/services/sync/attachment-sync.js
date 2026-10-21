@@ -3,6 +3,7 @@ import { getAttachmentMapping, storeAttachmentMapping, removeAttachmentMapping }
 import { downloadAttachment } from '../jira/local-client.js';
 import { uploadAttachment, getRemoteIssueAttachments } from '../jira/remote-client.js';
 import * as kvsStore from '../storage/kvs.js';
+import { assertPilotWritesAllowed } from './pilot-pause.js';
 
 // Lock timeout for attachment sync (30 seconds)
 const ATTACHMENT_LOCK_TTL_MS = 30000;
@@ -186,6 +187,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
 
         // Upload to remote Jira
         console.log(`${LOG_EMOJI.UPLOAD} Uploading attachment ${attachment.id || 'unknown'} to ${remoteIssueKey}...`);
+        await assertPilotWritesAllowed('attachment_upload_remote');
         const remoteAttachmentId = await uploadAttachment(remoteIssueKey, attachment.filename, fileBuffer, config);
 
         if (remoteAttachmentId) {

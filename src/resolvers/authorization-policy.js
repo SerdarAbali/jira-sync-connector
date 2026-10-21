@@ -43,6 +43,9 @@ export const RESOLVER_POLICIES = Object.freeze({
   migrateLegacyConfig: 'ADMIN_WRITE',
   testConnection: 'ADMIN_WRITE',
   getLastSyncTime: 'ADMIN_READ',
+  getPilotStatus: 'ADMIN_READ',
+  pausePilot: 'ADMIN_WRITE',
+  resumePilot: 'ADMIN_WRITE',
 
   // Synchronization and bulk controls (sync.js)
   forceSyncIssue: 'DESTRUCTIVE',

@@ -3,6 +3,7 @@ import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS, MAX_ERROR_ENTRIES } from '../../constants.js';
 import { safeErrorSummary, boundHistory } from '../../utils/redaction.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
+import { assertPilotWritesAllowed } from '../sync/pilot-pause.js';
 import { sleep } from '../../utils/retry.js';
 import { getRemoteKey, getLocalKey, storeLinkMapping, getOrganizationsWithTokens, getLastSyncedLocalUpdated } from '../storage/mappings.js';
 import { removePendingLink, getPendingLinks, removeIssueFromPendingLinksIndex } from '../storage/flags.js';
@@ -162,6 +163,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
             console.log(`${LOG_EMOJI.LINK} Creating link: ${remoteLinkedKey} → ${remoteIssueKey}`);
           }
 
+          await assertPilotWritesAllowed('link_create_remote');
           const response = await fetch(
             `${config.remoteUrl}/rest/api/3/issueLink`,
             {

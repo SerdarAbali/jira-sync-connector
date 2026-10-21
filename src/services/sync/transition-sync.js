@@ -4,6 +4,7 @@ import { executeWriteOnce } from '../../utils/retry.js';
 import { reverseMapping } from '../../utils/mapping.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { safeErrorSummary } from '../../utils/redaction.js';
+import { assertPilotWritesAllowed } from './pilot-pause.js';
 
 export async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings, syncResult = null) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -69,6 +70,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
     }
 
     console.log('Using mapped transition');
+    await assertPilotWritesAllowed('transition_remote');
 
     const transitionResponse = await executeWriteOnce(async () => {
       return await fetch(
@@ -176,6 +178,7 @@ export async function transitionLocalIssue(localKey, remoteStatus, statusMapping
       transition: { id: transition.id }
     };
 
+    await assertPilotWritesAllowed('transition_local');
     const response = await api.asApp().requestJira(
       route`/rest/api/3/issue/${localKey}/transitions`,
       {

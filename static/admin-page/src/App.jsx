@@ -315,12 +315,13 @@ const App = () => {
   const loadStats = async () => {
     setStatsLoading(true);
     try {
-      const [scheduled, webhook, apiUsage] = await Promise.all([
+      const [scheduled, webhook, apiUsage, pilot] = await Promise.all([
         invoke('getScheduledSyncStats'),
         invoke('getWebhookSyncStats'),
-        invoke('getApiUsageStats')
+        invoke('getApiUsageStats'),
+        invoke('getPilotStatus')
       ]);
-      setSyncStats({ scheduled, webhook, apiUsage });
+      setSyncStats({ scheduled, webhook, apiUsage, pilot });
     } catch (error) {
       showMessage('Error loading stats: ' + error.message, 'error');
     } finally {
@@ -1266,6 +1267,7 @@ const App = () => {
                     handleCancelBulkSync={handleCancelBulkSync}
                     handleTriggerScheduledSync={handleTriggerScheduledSync}
                     scheduledSyncLoading={scheduledSyncLoading}
+                    showMessage={showMessage}
                   />
                 </div>
               </TabPanel>
@@ -2233,9 +2235,12 @@ const SyncActivityPanel = ({
   organizations, onExportIssues, issueExporting, onIssueImportClick, issueImporting,
   selectedOrg, syncOptions, handleScanForDeletedIssues, scanningDeleted,
   scanProgress, resetScanProgress, handleCancelBulkSync,
-  handleTriggerScheduledSync, scheduledSyncLoading
+  handleTriggerScheduledSync, scheduledSyncLoading, showMessage
 }) => {
   const [eventsExpanded, setEventsExpanded] = useState(false);
+  const [pilotConfirmAction, setPilotConfirmAction] = useState(null);
+  const [pilotActionLoading, setPilotActionLoading] = useState(false);
+  const [pilotActionError, setPilotActionError] = useState('');
   const [exportJql, setExportJql] = useState('');
   const [exportMode, setExportMode] = useState('predefined'); // 'predefined' or 'custom'
   const [selectedPredefined, setSelectedPredefined] = useState(null);
@@ -2251,6 +2256,33 @@ const SyncActivityPanel = ({
   useEffect(() => {
     loadStats();
   }, []);
+
+  const executePilotAction = async () => {
+    if (!pilotConfirmAction || pilotActionLoading) return;
+
+    setPilotActionLoading(true);
+    setPilotActionError('');
+    try {
+      const result = pilotConfirmAction === 'pause'
+        ? await invoke('pausePilot', { reasonCode: 'emergency_stop' })
+        : await invoke('resumePilot');
+
+      if (result?.success) {
+        setPilotConfirmAction(null);
+        showMessage?.(
+          pilotConfirmAction === 'pause' ? 'Jira writes paused' : 'Jira writes resumed',
+          'success'
+        );
+        await loadStats();
+      } else {
+        setPilotActionError(result?.error || 'Unable to update pilot pause state');
+      }
+    } catch {
+      setPilotActionError('Unable to update pilot pause state');
+    } finally {
+      setPilotActionLoading(false);
+    }
+  };
 
   // Predefined query options (all include positive restrictions for bounded queries)
   const predefinedQueries = [
@@ -2455,6 +2487,143 @@ const SyncActivityPanel = ({
           Refresh Stats
         </Button>
       </div>
+
+      {syncStats?.pilot && (
+        <div style={surfaceCard()} data-testid="pilot-pause-status">
+          <h4 style={{ margin: '0 0 12px 0' }}>Corporate Pilot Status</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px') }}>
+            <StatCard
+              label="Jira Writes"
+              value={syncStats.pilot.paused ? 'PAUSED' : 'ACTIVE'}
+              color={syncStats.pilot.paused ? '#DE350B' : '#00875A'}
+            />
+            <StatCard
+              label="Paused At"
+              value={syncStats.pilot.pausedAt ? formatDateTimeEuro(syncStats.pilot.pausedAt) : 'Not paused'}
+              color="#6B778C"
+            />
+            <StatCard
+              label="Paused By"
+              value={syncStats.pilot.pausedBy || 'None'}
+              color="#6B778C"
+            />
+            <StatCard
+              label="Reason Code"
+              value={syncStats.pilot.reasonCode || 'None'}
+              color="#6B778C"
+            />
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
+            <Button
+              appearance="danger"
+              onClick={() => {
+                setPilotActionError('');
+                setPilotConfirmAction('pause');
+              }}
+              isDisabled={pilotActionLoading || syncStats.pilot.paused}
+              isLoading={pilotActionLoading && pilotConfirmAction === 'pause'}
+            >
+              Pause Jira Writes
+            </Button>
+            <Button
+              appearance="primary"
+              onClick={() => {
+                setPilotActionError('');
+                setPilotConfirmAction('resume');
+              }}
+              isDisabled={pilotActionLoading || !syncStats.pilot.paused}
+              isLoading={pilotActionLoading && pilotConfirmAction === 'resume'}
+            >
+              Resume Jira Writes
+            </Button>
+          </div>
+          {pilotActionError && (
+            <div style={{ marginTop: token('space.150', '12px') }}>
+              <SectionMessage appearance="error">
+                <p style={{ margin: 0, fontSize: '13px' }}>{pilotActionError}</p>
+              </SectionMessage>
+            </div>
+          )}
+          {Array.isArray(syncStats.pilot.organizations) && syncStats.pilot.organizations.length > 0 && (
+            <div style={{ marginTop: token('space.200', '16px') }}>
+              <h5 style={{ margin: '0 0 8px 0' }}>Organization Sync Direction</h5>
+              {syncStats.pilot.organizations.map(org => (
+                <div key={org.id || org.name} style={{
+                  padding: token('space.100', '8px'),
+                  background: token('color.background.neutral.subtle', '#F4F5F7'),
+                  borderRadius: token('border.radius', '8px'),
+                  marginBottom: '4px',
+                  fontSize: '13px'
+                }}>
+                  <strong>{org.name || org.id || 'Organization'}</strong>: {org.syncDirection}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <ModalTransition>
+        {pilotConfirmAction && (
+          <ModalDialog onClose={() => { if (!pilotActionLoading) setPilotConfirmAction(null); }}>
+            <ModalHeader>
+              <ModalTitle>
+                {pilotConfirmAction === 'pause' ? 'Pause Jira Writes?' : 'Resume Jira Writes?'}
+              </ModalTitle>
+            </ModalHeader>
+            <ModalBody>
+              {pilotConfirmAction === 'pause' ? (
+                <>
+                  <p>
+                    This immediately blocks all Jira issue, comment, attachment, link, and transition writes in both directions.
+                  </p>
+                  <SectionMessage appearance="warning" title="Reads remain available">
+                    <p>
+                      Mappings, issues, secrets, and organization configuration are not changed. The fixed reason code
+                      <strong> emergency_stop</strong> is stored with your account ID.
+                    </p>
+                  </SectionMessage>
+                </>
+              ) : (
+                <>
+                  <p>
+                    This allows Jira writes again using each organization's existing sync direction.
+                  </p>
+                  <SectionMessage appearance="info" title="No backfill or recreation">
+                    <p>
+                      Resume does not queue, replay, backfill, recreate, or bulk sync issues. Events received while paused are not replayed.
+                    </p>
+                  </SectionMessage>
+                </>
+              )}
+              {pilotActionError && (
+                <div style={{ marginTop: token('space.150', '12px') }}>
+                  <SectionMessage appearance="error">
+                    <p style={{ margin: 0, fontSize: '13px' }}>{pilotActionError}</p>
+                  </SectionMessage>
+                </div>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button
+                appearance="subtle"
+                onClick={() => setPilotConfirmAction(null)}
+                isDisabled={pilotActionLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                appearance={pilotConfirmAction === 'pause' ? 'danger' : 'primary'}
+                onClick={executePilotAction}
+                isLoading={pilotActionLoading}
+                isDisabled={pilotActionLoading}
+              >
+                {pilotConfirmAction === 'pause' ? 'Pause Jira Writes' : 'Resume Jira Writes'}
+              </Button>
+            </ModalFooter>
+          </ModalDialog>
+        )}
+      </ModalTransition>
 
       {/* Statistics Section - Always visible at top */}
       {syncStats && (

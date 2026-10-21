@@ -78,6 +78,7 @@ import {
 } from './sync-state.js';
 import { recordSyncDecision } from './sync-observability.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
+import { getPilotPause, assertPilotWritesAllowed } from './pilot-pause.js';
 
 const ATTACHMENT_ISSUE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS = 6;
@@ -148,6 +149,16 @@ export async function processIncomingWebhook(payload, auth) {
   if (org.syncDirection !== 'bidirectional') {
     console.warn('Incoming webhook rejected: bidirectional sync not enabled');
     return { status: 403, body: { error: 'Incoming sync is not enabled' } };
+  }
+
+  // Acknowledge and discard writes while paused. The event is not queued or
+  // replayed later, so resume cannot trigger backfill or recreation.
+  const pause = await getPilotPause();
+  if (pause.paused) {
+    return {
+      status: 200,
+      body: { message: 'Jira writes are paused', state: 'paused' }
+    };
   }
 
   const remoteApiToken = await kvsStore.getSecret(`secret:${orgId}:token`);
@@ -255,6 +266,9 @@ export async function processIncomingWebhook(payload, auth) {
       });
       return { status: 409, body: { error: 'MAPPING_CONFLICT' } };
     }
+    if (error?.code === 'PILOT_PAUSED') {
+      return { status: 200, body: { message: 'Jira writes are paused', state: 'paused' } };
+    }
     console.error(`${LOG_EMOJI.ERROR} Error processing incoming webhook:`, error);
     return { status: 500, body: { error: 'Webhook processing unavailable' } };
   }
@@ -286,6 +300,7 @@ function extractRejectedFields(bodyText) {
  * @returns {{ ok: boolean, response?: any, status?: number, skippedFields: string[], failure?: string }}
  */
 async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
+  await assertPilotWritesAllowed(issueKey ? 'issue_update_local' : 'issue_create_local');
   const skippedFields = [];
   let fields = { ...(payload.fields || {}) };
 
@@ -468,6 +483,7 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
         }
 
         const buffer = Buffer.from(await downloadResponse.arrayBuffer());
+        await assertPilotWritesAllowed('attachment_upload_local');
         const uploaded = await uploadAttachment(localKey, attachment.filename, buffer);
 
         if (uploaded) {
@@ -835,6 +851,7 @@ async function createLocalComment(localIssueKey, body, parentLocalId = null) {
 }
 
 async function postLocalComment(localIssueKey, payload) {
+  await assertPilotWritesAllowed('comment_create_local');
   return await api.asApp().requestJira(route`/rest/api/3/issue/${localIssueKey}/comment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1409,6 +1426,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
 
     // 2. Upload to Local
     console.log(`⬆️ Uploading to local issue ${localKey}...`);
+    await assertPilotWritesAllowed('attachment_upload_local');
     const uploadedAttachment = await uploadAttachment(localKey, attachment.filename, buffer);
 
     if (uploadedAttachment) {
@@ -1808,6 +1826,7 @@ function matchesLink(link, targetKey, linkTypeName) {
 }
 
 async function createLocalIssueLink(outwardKey, inwardKey, linkTypeName) {
+  await assertPilotWritesAllowed('link_create_local');
   const payload = {
     type: { name: linkTypeName },
     inwardIssue: { key: inwardKey },

@@ -5,6 +5,7 @@ import { safeErrorSummary } from '../../utils/redaction.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
+import { assertPilotWritesAllowed } from './pilot-pause.js';
 
 /**
  * Create a link between two issues on the remote Jira instance
@@ -25,6 +26,8 @@ export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKe
     linkPayload.outwardIssue = { key: sourceRemoteKey };
     console.log(`${LOG_EMOJI.LINK} Creating link: ${targetRemoteKey} → ${sourceRemoteKey} (${linkTypeName})`);
   }
+
+  await assertPilotWritesAllowed('link_create_remote');
 
   try {
     const response = await executeWriteOnce(async () => {
@@ -171,6 +174,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
         console.log(`${LOG_EMOJI.LINK} Creating link: ${remoteLinkedKey} ${link.type.outward} ${remoteIssueKey}`);
       }
 
+      await assertPilotWritesAllowed('link_create_remote');
       const response = await fetch(
         `${config.remoteUrl}/rest/api/3/issueLink`,
         {

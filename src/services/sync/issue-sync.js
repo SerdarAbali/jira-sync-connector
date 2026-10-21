@@ -29,6 +29,7 @@ import {
   SYNC_DECISIONS
 } from './sync-state.js';
 import { recordSyncDecision } from './sync-observability.js';
+import { assertPilotWritesAllowed } from './pilot-pause.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
@@ -494,6 +495,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
   if (syncOptions?.dryRun) {
     return await createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult, orgId, depth);
   }
+  await assertPilotWritesAllowed('issue_create_remote');
   const lease = await acquireIssueLease({
     orgId,
     localKey: issue.key,
@@ -733,6 +735,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       }
 
       await markSyncing(issue.key);
+      await assertPilotWritesAllowed('issue_create_remote');
 
       const response = await executeWriteOnce(async () => {
       return await fetch(`${org.remoteUrl}/rest/api/3/issue?notifyUsers=false`, {
@@ -847,6 +850,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           if (syncResult) syncResult.addWarning('Skipped remote cross-reference: description could not be safely preserved');
         } else {
           console.log(`🔗 Updating remote issue ${result.key} with cross-reference...`);
+          await assertPilotWritesAllowed('issue_description_update_remote');
           const updateResponse = await retryWithBackoff(async () => {
             return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
               method: 'PUT',
@@ -884,6 +888,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           console.log(`⏭️ Skipping local cross-reference for ${issue.key}: unsafe-description`);
           if (syncResult) syncResult.addWarning('Skipped local cross-reference: description could not be safely preserved');
         } else {
+          await assertPilotWritesAllowed('issue_description_update_local');
           const localUpdateSuccess = await updateLocalIssueDescription(issue.key, localDescriptionWithRef);
           if (localUpdateSuccess) {
             console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${issue.key} with cross-reference`);
@@ -900,6 +905,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
             Object.keys(attachmentMapping).length > 0) {
           const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
           console.log(`🖼️ Updating description with corrected media references...`);
+          await assertPilotWritesAllowed('issue_description_update_remote');
           await retryWithBackoff(async () => {
             return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
               method: 'PUT',
@@ -978,6 +984,9 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
 
 export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
+  if (!syncOptions?.dryRun) {
+    await assertPilotWritesAllowed('issue_update_remote');
+  }
   const lease = await acquireIssueLease({
     orgId,
     localKey,
@@ -1334,6 +1343,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
         };
       }
 
+      await assertPilotWritesAllowed('issue_update_remote');
       const response = await retryWithBackoff(async () => {
         return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?notifyUsers=false`, {
           method: 'PUT',
@@ -1414,6 +1424,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
               fieldHash: sourceHash
             });
           } else {
+            await assertPilotWritesAllowed('issue_description_update_local');
             const localUpdated = await updateLocalIssueDescription(localKey, localDescriptionWithRef);
             if (localUpdated) {
               await recordDestinationWrite({

@@ -11,6 +11,7 @@ import { SyncResult } from './sync-result.js';
 import { isSyncing } from '../storage/flags.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { safeErrorSummary } from '../../utils/redaction.js';
+import { assertPilotWritesAllowed } from './pilot-pause.js';
 // Threading helpers were removed because Jira flattens replies; we now embed context inline.
 
 /**
@@ -137,6 +138,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
       
       // Sync the comment
       try {
+        await assertPilotWritesAllowed('comment_create_remote');
         const response = await executeWriteOnce(async () => {
           return await fetch(
             `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
@@ -298,6 +300,7 @@ export async function syncComment(event) {
     try {
       console.log(`${LOG_EMOJI.COMMENT} Syncing comment to ${org.id || 'organization'}: ${issueKey} → ${remoteKey}`);
 
+      await assertPilotWritesAllowed('comment_create_remote');
       const response = await executeWriteOnce(async () => {
         return await fetch(
           `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,

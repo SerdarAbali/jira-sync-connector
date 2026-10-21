@@ -3,6 +3,7 @@ import { defineSyncResolvers } from './sync.js';
 import { defineDataResolvers } from './data.js';
 import { defineStatsResolvers } from './stats.js';
 import { defineAuditResolvers } from './audit.js';
+import { definePilotResolvers } from './pilot.js';
 import { defineDiagnosticsResolvers } from './diagnostics.js';
 import { createAuthorizedResolver } from './authorization.js';
 
@@ -15,6 +16,7 @@ defineSyncResolvers(resolver);
 defineDataResolvers(resolver);
 defineStatsResolvers(resolver);
 defineAuditResolvers(resolver);
+definePilotResolvers(resolver);
 defineDiagnosticsResolvers(resolver);
 
 export const registeredResolverNames = resolver.getRegisteredNames();
