@@ -52,7 +52,7 @@ const BLOCKED_FIELD_KEYS = new Set([
 ]);
 import api, { route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
-import { getLocalKey, storeMapping, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
+import { getLocalKey, storeMapping, ensureMappingPair, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { logAuditEntry } from '../storage/stats.js';
@@ -64,6 +64,19 @@ import { mapUserToLocal } from '../../utils/mapping.js';
 import { uploadAttachment, getFullIssue } from '../jira/local-client.js';
 import { secureCompare } from '../../utils/secure-compare.js';
 import { claimWebhookEvent, markWebhookCompleted, releaseWebhookEvent } from './webhook-replay.js';
+import { hashSynchronizedFields } from './field-normalization.js';
+import { resolveLocalDestinationHash } from './destination-state.js';
+import { acquireIssueLease, releaseIssueLease } from './issue-lease.js';
+import {
+  findAppCausedEcho,
+  getLatestAccepted,
+  evaluateStaleEvent,
+  recordLatestAccepted,
+  recordDestinationWrite,
+  recordConflict,
+  SYNC_DECISIONS
+} from './sync-state.js';
+import { recordSyncDecision } from './sync-observability.js';
 
 const ATTACHMENT_ISSUE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS = 6;
@@ -71,6 +84,17 @@ const ATTACHMENT_ISSUE_CACHE_RETRY_DELAY_MS = 500; // 0.5s wait between cache po
 const PARENT_MAPPING_RETRY_ATTEMPTS = 6;
 const PARENT_MAPPING_RETRY_DELAY_MS = 500;
 const PENDING_CHILD_MAX_ATTEMPTS = 3;
+
+function remoteMappedFieldIds(fieldMappings) {
+  return Object.keys(fieldMappings || {}).filter(id => id.startsWith('customfield_'));
+}
+
+function hashRemoteFields(fields, context) {
+  return hashSynchronizedFields(fields, {
+    customFieldIds: remoteMappedFieldIds(context?.mappings?.fieldMappings),
+    includeStatus: false
+  });
+}
 
 export const WEBHOOK_ORG_ID_PATTERN = /^org-\d{1,32}$/;
 export const WEBHOOK_CREDENTIAL_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
@@ -177,6 +201,7 @@ export async function processIncomingWebhook(payload, auth) {
     return { status: 503, body: { error: 'Webhook processing temporarily unavailable' } };
   }
   const markerKey = claim.status === 'claimed' ? claim.key : null;
+  const markerToken = claim.status === 'claimed' ? claim.token : null;
 
   // 2. Route Event
   try {
@@ -203,16 +228,31 @@ export async function processIncomingWebhook(payload, auth) {
 
     if (markerKey) {
       try {
-        await markWebhookCompleted(markerKey);
+        const completion = await markWebhookCompleted(markerKey, markerToken);
+        if (!completion?.completed) {
+          await releaseWebhookEvent(markerKey, markerToken);
+          return { status: 503, body: { error: 'Webhook processing temporarily unavailable' } };
+        }
       } catch {
-        console.warn('Webhook completion marker could not be stored');
+        await releaseWebhookEvent(markerKey, markerToken);
+        return { status: 503, body: { error: 'Webhook processing temporarily unavailable' } };
       }
     }
 
     return { status: 200, body: { message: 'Processed' } };
   } catch (error) {
     if (markerKey) {
-      await releaseWebhookEvent(markerKey);
+      await releaseWebhookEvent(markerKey, markerToken);
+    }
+    if (error?.code === 'MAPPING_CONFLICT') {
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.MAPPING_CONFLICT,
+        orgId,
+        localKey: error.details?.localKey || null,
+        remoteKey: error.details?.remoteKey || payload?.issue?.key || null,
+        reason: 'mapping_conflict'
+      });
+      return { status: 409, body: { error: 'MAPPING_CONFLICT' } };
     }
     console.error(`${LOG_EMOJI.ERROR} Error processing incoming webhook:`, error);
     return { status: 500, body: { error: 'Webhook processing unavailable' } };
@@ -313,6 +353,43 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
     return;
   }
 
+  const sourceHash = hashRemoteFields(resolvedRemoteIssue.fields, context);
+  const echo = await findAppCausedEcho({
+    orgId,
+    localKey: null,
+    remoteKey: remoteIssue.key,
+    observedSide: 'remote',
+    fieldHash: sourceHash
+  });
+  if (echo.echo) {
+    await recordSyncDecision({
+      decision: SYNC_DECISIONS.SKIPPED_ECHO,
+      orgId,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      reason: 'app-caused-create-marker'
+    });
+    return;
+  }
+
+  const lease = await acquireIssueLease({
+    orgId,
+    remoteKey: remoteIssue.key,
+    sourceKey: remoteIssue.key,
+    direction: 'remote-to-local'
+  });
+  if (!lease.acquired) {
+    await recordSyncDecision({
+      decision: lease.status === 'LEASE_STORAGE_ERROR' ? SYNC_DECISIONS.FAILED : SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      reason: lease.status === 'LEASE_STORAGE_ERROR' ? 'lease-storage-error' : 'issue-lease-held'
+    });
+    return;
+  }
+
+  try {
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
   const result = await writeJiraIssueWithRecovery({ method: 'POST', payload });
@@ -330,6 +407,39 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   console.log(`${LOG_EMOJI.SUCCESS} Created local issue ${localKey} from remote ${remoteIssue.key}`);
 
   await storeMapping(localKey, remoteIssue.key, orgId);
+  await recordLatestAccepted({
+    orgId,
+    direction: 'remote-to-local',
+    localKey,
+    remoteKey: remoteIssue.key,
+    sourceUpdated: resolvedRemoteIssue.fields?.updated,
+    fieldHash: sourceHash
+  });
+  const localDestination = await resolveLocalDestinationHash({
+    localKey,
+    mappings: context.mappings
+  });
+  if (localDestination.available) {
+    await recordDestinationWrite({
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      observedSide: 'local',
+      sourceUpdated: resolvedRemoteIssue.fields?.updated,
+      fieldHash: localDestination.hash
+    });
+  } else {
+    await recordSyncDecision({
+      decision: 'echo_hash_unavailable',
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      sourceUpdated: resolvedRemoteIssue.fields?.updated,
+      reason: localDestination.reason
+    });
+  }
   await processPendingChildIssues(remoteIssue.key, context);
 
   // Sync attachments if present
@@ -368,14 +478,17 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
       }
     }
   }
+  } finally {
+    await releaseIssueLease({ key: lease.key, token: lease.token });
+  }
 }
 
 async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
-  const { org, orgId, mappings } = context;
+  const { orgId, mappings } = context;
   const localKey = await getLocalKey(remoteIssue.key, orgId);
   if (!localKey) {
     console.log(`⚠️ Remote issue ${remoteIssue.key} not mapped. Ignoring update.`);
-    return;
+    return { status: 'SKIPPED_UNMAPPED' };
   }
 
   if (payload && shouldSkipUpdateForAttachmentOnly(payload)) {
@@ -384,34 +497,147 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
       await recordAttachmentIssueMappingFromChangelog(payload.changelog.items, remoteIssue.key, context.orgId);
       console.log(`${LOG_EMOJI.INFO} Attachment changelog items: ${JSON.stringify(payload.changelog.items)}`);
     }
-    return;
+    return { status: 'SKIPPED_ATTACHMENT_ONLY' };
   }
 
-  console.log(`${LOG_EMOJI.SYNC} Processing update for ${localKey} (from ${remoteIssue.key})`);
+  try {
+    if (typeof ensureMappingPair === 'function') {
+      await ensureMappingPair(localKey, remoteIssue.key, orgId);
+    }
+  } catch (error) {
+    if (error?.code === 'MAPPING_CONFLICT') throw error;
+    console.warn(`Mapping pair repair check failed for ${localKey}`);
+  }
 
-  // Prevent Loop
+  const resolvedRemoteIssue = await loadRemoteIssue(remoteIssue, context);
+  if (!resolvedRemoteIssue) {
+    console.log(`${LOG_EMOJI.WARNING} Could not fetch remote issue ${remoteIssue.key}. Skipping update.`);
+    return { status: 'SKIPPED_UNREADABLE' };
+  }
+
+  const sourceUpdated = resolvedRemoteIssue.fields?.updated || null;
+  const sourceHash = hashRemoteFields(resolvedRemoteIssue.fields, context);
+
+  const echo = await findAppCausedEcho({
+    orgId,
+    localKey,
+    remoteKey: remoteIssue.key,
+    observedSide: 'remote',
+    fieldHash: sourceHash
+  });
+  if (echo.echo && !payloadHasNonFieldContentChange(payload)) {
+    await recordSyncDecision({
+      decision: SYNC_DECISIONS.SKIPPED_ECHO,
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      sourceUpdated,
+      fieldHash: sourceHash,
+      reason: 'app-caused-write-marker'
+    });
+    return { status: 'SYNC_ECHO_SKIPPED' };
+  }
+
   if (await isSyncing(localKey)) {
-    console.log(`🔄 Loop detected: ${localKey} is already syncing. Skipping.`);
-    return;
+    await recordSyncDecision({
+      decision: SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      reason: 'legacy-syncing-flag'
+    });
+    return { status: 'SYNC_ALREADY_IN_PROGRESS' };
   }
+
+  const lease = await acquireIssueLease({
+    orgId,
+    localKey,
+    remoteKey: remoteIssue.key,
+    direction: 'remote-to-local'
+  });
+  if (!lease.acquired) {
+    await recordSyncDecision({
+      decision: lease.status === 'LEASE_STORAGE_ERROR' ? SYNC_DECISIONS.FAILED : SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      reason: lease.status === 'LEASE_STORAGE_ERROR' ? 'lease-storage-error' : 'issue-lease-held'
+    });
+    return { status: lease.status };
+  }
+
 
   await markSyncing(localKey);
   try {
-    const resolvedRemoteIssue = await loadRemoteIssue(remoteIssue, context);
-    if (!resolvedRemoteIssue) {
-      console.log(`${LOG_EMOJI.WARNING} Could not fetch remote issue ${remoteIssue.key}. Skipping update.`);
-      return;
+    const latest = await getLatestAccepted({
+      orgId,
+      direction: 'remote-to-local',
+      localKey,
+      remoteKey: remoteIssue.key
+    });
+    const ordering = evaluateStaleEvent({ latest, sourceUpdated, fieldHash: sourceHash });
+
+    if (ordering.decision === 'stale' || ordering.decision === 'duplicate' || ordering.decision === 'conflict') {
+      const decision = ordering.decision === 'stale'
+        ? SYNC_DECISIONS.SKIPPED_STALE
+        : ordering.decision === 'duplicate'
+          ? SYNC_DECISIONS.DUPLICATE
+          : SYNC_DECISIONS.CONFLICT;
+      const safeReason = ordering.decision === 'conflict'
+        ? 'equal_timestamp_different_hash'
+        : ordering.decision === 'stale'
+          ? 'older_than_last_applied'
+          : 'same_timestamp_same_hash';
+      if (ordering.decision === 'conflict') {
+        await recordConflict({
+          orgId,
+          localKey,
+          remoteKey: remoteIssue.key,
+          direction: 'remote-to-local',
+          remoteTimestamp: sourceUpdated,
+          sourceHash,
+          destinationHash: latest?.fieldHash || null,
+          reason: safeReason
+        });
+      } else {
+        await recordSyncDecision({
+          decision,
+          orgId,
+          localKey,
+          remoteKey: remoteIssue.key,
+          direction: 'remote-to-local',
+          sourceUpdated,
+          fieldHash: sourceHash,
+          reason: safeReason
+        });
+      }
+      return { status: ordering.status };
+    }
+
+    if (ordering.decision === 'unverified') {
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.APPLIED,
+        orgId,
+        localKey,
+        remoteKey: remoteIssue.key,
+        direction: 'remote-to-local',
+        sourceUpdated,
+        reason: 'ordering-unverified-processing-safely'
+      });
     }
 
     await syncIncomingLinksForIssue(resolvedRemoteIssue, localKey, context);
 
-    const payload = await buildUpdatePayload(resolvedRemoteIssue, context);
-    if (Object.keys(payload.fields).length === 0) {
-       console.log(`ℹ️ No fields to update for ${localKey}`);
-       return;
+    const updatePayload = await buildUpdatePayload(resolvedRemoteIssue, context);
+    if (Object.keys(updatePayload.fields).length === 0) {
+      console.log(`ℹ️ No fields to update for ${localKey}`);
+      return { status: 'NO_FIELDS' };
     }
 
-    const result = await writeJiraIssueWithRecovery({ method: 'PUT', issueKey: localKey, payload });
+    const result = await writeJiraIssueWithRecovery({ method: 'PUT', issueKey: localKey, payload: updatePayload });
     if (!result.ok) {
       throw new Error(`Failed to update local issue: ${result.errorBody || 'unknown error'}`);
     }
@@ -424,8 +650,54 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
     if (resolvedRemoteIssue.fields?.status) {
       await transitionLocalIssue(localKey, resolvedRemoteIssue.fields.status, mappings.statusMappings);
     }
+
+    const localDestination = await resolveLocalDestinationHash({
+      localKey,
+      mappings: context.mappings
+    });
+    await recordLatestAccepted({
+      orgId,
+      direction: 'remote-to-local',
+      localKey,
+      remoteKey: remoteIssue.key,
+      sourceUpdated,
+      fieldHash: sourceHash
+    });
+    if (localDestination.available) {
+      await recordDestinationWrite({
+        orgId,
+        localKey,
+        remoteKey: remoteIssue.key,
+        direction: 'remote-to-local',
+        observedSide: 'local',
+        sourceUpdated,
+        fieldHash: localDestination.hash
+      });
+    } else {
+      await recordSyncDecision({
+        decision: 'echo_hash_unavailable',
+        orgId,
+        localKey,
+        remoteKey: remoteIssue.key,
+        direction: 'remote-to-local',
+        sourceUpdated,
+        reason: localDestination.reason
+      });
+    }
+    await recordSyncDecision({
+      decision: SYNC_DECISIONS.APPLIED,
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: 'remote-to-local',
+      sourceUpdated,
+      fieldHash: sourceHash,
+      reason: 'destination-write-succeeded'
+    });
+    return { status: 'APPLIED' };
   } finally {
     await clearSyncFlag(localKey);
+    await releaseIssueLease({ key: lease.key, token: lease.token });
   }
 }
 
@@ -1475,6 +1747,12 @@ function shouldSyncIncomingLinks(syncOptions) {
     return syncOptions.syncLinks;
   }
   return true;
+}
+
+function payloadHasNonFieldContentChange(payload) {
+  const items = payload?.changelog?.items;
+  if (!Array.isArray(items)) return false;
+  return items.some(item => ['link', 'attachment', 'comment'].includes(String(item?.field || '').toLowerCase()));
 }
 
 function shouldSkipUpdateForAttachmentOnly(payload) {

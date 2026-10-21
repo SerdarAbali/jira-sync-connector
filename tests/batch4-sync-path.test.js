@@ -1,0 +1,347 @@
+const mockStore = new Map();
+
+jest.mock('@forge/api', () => {
+  const requestJira = jest.fn();
+  const fetchMock = jest.fn();
+  return {
+    __esModule: true,
+    default: { asApp: () => ({ requestJira }) },
+    route: (strings, ...values) => strings.reduce((out, part, i) => out + part + (values[i] ?? ''), ''),
+    fetch: fetchMock
+  };
+});
+
+jest.mock('../src/services/storage/kvs.js', () => ({
+  get: jest.fn(async key => (mockStore.has(key) ? mockStore.get(key) : null)),
+  set: jest.fn(async (key, value) => { mockStore.set(key, value); }),
+  del: jest.fn(async key => { mockStore.delete(key); }),
+  getSecret: jest.fn(async key => (key.includes('incomingSecret') ? 'abcdefghijklmnop' : 'token')),
+  setIfNotExists: jest.fn(async (key, value) => {
+    if (mockStore.has(key)) {
+      const error = new Error('already exists');
+      error.code = 'KEY_ALREADY_EXISTS';
+      throw error;
+    }
+    mockStore.set(key, value);
+  }),
+  setWithTtl: jest.fn(async (key, value) => { mockStore.set(key, value); })
+}));
+
+jest.mock('../src/services/storage/mappings.js', () => ({
+  getRemoteKey: jest.fn(),
+  getLocalKey: jest.fn(),
+  storeMapping: jest.fn(),
+  ensureMappingPair: jest.fn(),
+  getOrganizationsWithTokens: jest.fn(),
+  setLastSyncedLocalUpdated: jest.fn(),
+  storeAttachmentMapping: jest.fn(),
+  getAttachmentMapping: jest.fn(),
+  storeLinkMapping: jest.fn(),
+  getLocalCommentId: jest.fn(),
+  storeCommentMapping: jest.fn()
+}));
+
+jest.mock('../src/services/storage/flags.js', () => ({
+  markSyncing: jest.fn(),
+  clearSyncFlag: jest.fn(),
+  isSyncing: jest.fn(),
+  findPendingLinksToIssue: jest.fn(),
+  removePendingLink: jest.fn(),
+  enqueuePendingChildIssue: jest.fn(),
+  consumePendingChildIssues: jest.fn()
+}));
+
+jest.mock('../src/services/storage/stats.js', () => ({
+  logAuditEntry: jest.fn(async () => undefined),
+  trackWebhookSync: jest.fn(),
+  trackApiCall: jest.fn()
+}));
+
+jest.mock('../src/services/jira/local-client.js', () => ({
+  getFullIssue: jest.fn(),
+  getFullComment: jest.fn(),
+  getOrgName: jest.fn(async () => 'Local Org'),
+  updateLocalIssueDescription: jest.fn(async () => true),
+  uploadAttachment: jest.fn()
+}));
+
+jest.mock('../src/services/jira/remote-client.js', () => ({
+  getRemoteIssue: jest.fn(),
+  getRemoteComment: jest.fn()
+}));
+
+jest.mock('../src/services/sync/attachment-sync.js', () => ({ syncAttachments: jest.fn(async () => ({})) }));
+jest.mock('../src/services/sync/link-sync.js', () => ({
+  syncIssueLinks: jest.fn(async () => ({ synced: 0 })),
+  createLinkOnRemote: jest.fn(async () => ({ success: true }))
+}));
+jest.mock('../src/services/sync/comment-sync.js', () => ({ syncAllComments: jest.fn(async () => ({ synced: 0, skipped: 0 })) }));
+jest.mock('../src/services/sync/transition-sync.js', () => ({
+  transitionRemoteIssue: jest.fn(async () => false),
+  transitionLocalIssue: jest.fn(async () => false)
+}));
+jest.mock('../src/services/storage/rejected-fields.js', () => ({ recordRejectedFields: jest.fn() }));
+
+import { updateIssueForOrg, createIssueForOrg } from '../src/services/sync/issue-sync.js';
+import api, { fetch } from '@forge/api';
+import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { acquireIssueLease } from '../src/services/sync/issue-lease.js';
+import { latestAcceptedKey, echoMarkerKey, getLatestAccepted, findAppCausedEcho } from '../src/services/sync/sync-state.js';
+import { hashSynchronizedFields } from '../src/services/sync/field-normalization.js';
+import { prependCrossReferenceToADF, adfPreservesOriginalContent } from '../src/utils/adf.js';
+import { storeMapping, getLocalKey } from '../src/services/storage/mappings.js';
+import { getRemoteIssue } from '../src/services/jira/remote-client.js';
+import { getFullIssue } from '../src/services/jira/local-client.js';
+import { run as runBulkSync } from '../src/triggers/bulk-sync.js';
+import { defineDiagnosticsResolvers } from '../src/resolvers/diagnostics.js';
+
+const mockFetch = fetch;
+const mockRequestJira = api.asApp().requestJira;
+
+const ORG = {
+  id: 'org-1',
+  name: 'Remote Org',
+  remoteUrl: 'https://remote.example.invalid',
+  remoteEmail: 'sync@example.invalid',
+  remoteApiToken: 'test-token',
+  remoteProjectKey: 'REMOTE'
+};
+
+const DESCRIPTION = {
+  type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Keep this' }] }]
+};
+
+function localIssue(overrides = {}) {
+  return {
+    key: 'LOCAL-1',
+    fields: {
+      project: { key: 'LOCAL' },
+      summary: 'Test issue',
+      description: DESCRIPTION,
+      issuetype: { name: 'Task', id: '10001' },
+      status: { name: 'To Do' },
+      updated: '2026-10-21T12:00:00.000Z',
+      labels: [],
+      ...overrides
+    }
+  };
+}
+
+function mappings() {
+  return { userMappings: {}, fieldMappings: {}, statusMappings: {}, issueTypeMappings: {}, projectMappings: {} };
+}
+
+function authContext() {
+  mockStore.set('organizations', [{
+    ...ORG,
+    syncDirection: 'bidirectional',
+    allowedProjects: ['LOCAL']
+  }]);
+  mockStore.set('syncOptions:org-1', { syncLinks: false, syncComments: false, syncAttachments: false });
+}
+
+beforeEach(() => {
+  mockStore.clear();
+  jest.clearAllMocks();
+  mockFetch.mockResolvedValue({ ok: true, status: 204, text: async () => '', json: async () => ({}) });
+  mockRequestJira.mockResolvedValue({ ok: true, status: 204, text: async () => '', json: async () => ({}) });
+  getLocalKey.mockResolvedValue('LOCAL-1');
+  storeMapping.mockResolvedValue({ localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', idempotent: false });
+});
+
+
+describe('Batch 4 issue write paths', () => {
+  test('19. a failed destination write does not advance the latest accepted timestamp', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'rejected' });
+    const result = await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+    expect(result).toBeNull();
+    expect(await getLatestAccepted({ orgId: 'org-1', direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' })).toBeNull();
+  });
+
+  test('28. a positively detected conflict performs zero destination writes', async () => {
+    mockStore.set(latestAcceptedKey({ orgId: 'org-1', direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' }), {
+      sourceUpdated: '2026-10-21T12:00:00.000Z',
+      fieldHash: 'different-hash'
+    });
+    const result = await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+    expect(result).toEqual(expect.objectContaining({ skipped: true, status: 'SYNC_CONFLICT_REVIEW_REQUIRED' }));
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('30. a non-conflicting update still synchronizes and advances state', async () => {
+    const result = await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+    expect(result).not.toEqual(expect.objectContaining({ skipped: true }));
+    expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/rest/api/3/issue/REMOTE-1'), expect.objectContaining({ method: 'PUT' }));
+    expect(await getLatestAccepted({ orgId: 'org-1', direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' }))
+      .toEqual(expect.objectContaining({ sourceUpdated: '2026-10-21T12:00:00.000Z' }));
+  });
+
+  test('30b. a held issue lease prevents concurrent destination writes', async () => {
+    await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
+    const result = await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+    expect(result).toEqual(expect.objectContaining({ skipped: true, status: 'SYNC_ALREADY_IN_PROGRESS' }));
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('30c. a successful update records a full-remote-state marker that matches the later remote echo', async () => {
+    const remoteEchoFields = {
+      summary: 'Test issue',
+      description: DESCRIPTION,
+      issuetype: { name: 'Task' },
+      priority: null,
+      labels: [],
+      components: [],
+      fixVersions: [],
+      versions: [],
+      assignee: { accountId: 'remote-account' },
+      reporter: { accountId: 'remote-account' },
+      parent: null
+    };
+    mockFetch.mockImplementation(async (url, options = {}) => {
+      if (options.method === 'GET') {
+        return { ok: true, status: 200, json: async () => ({ key: 'REMOTE-1', fields: remoteEchoFields }) };
+      }
+      return { ok: true, status: 204 };
+    });
+    getRemoteIssue.mockResolvedValue({ key: 'REMOTE-1', fields: remoteEchoFields });
+
+    await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+
+    const marker = mockStore.get(echoMarkerKey({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: 'remote' }));
+    expect(marker).toEqual(expect.objectContaining({
+      fieldHash: hashSynchronizedFields(remoteEchoFields, { includeStatus: false })
+    }));
+    await expect(findAppCausedEcho({
+      orgId: 'org-1',
+      localKey: 'LOCAL-1',
+      remoteKey: 'REMOTE-1',
+      observedSide: 'remote',
+      fieldHash: hashSynchronizedFields(remoteEchoFields, { includeStatus: false })
+    })).resolves.toEqual(expect.objectContaining({ echo: true }));
+    expect(JSON.stringify(marker)).not.toContain('Keep this');
+  });
+
+  test('30d. if the complete remote state cannot be read, no misleading echo marker is written', async () => {
+    getRemoteIssue.mockResolvedValue(null);
+    mockFetch.mockImplementation(async (url, options = {}) => {
+      if (options.method === 'GET') {
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      return { ok: true, status: 204 };
+    });
+
+    await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+
+    const marker = mockStore.get(echoMarkerKey({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: 'remote' }));
+    expect(marker).toBeUndefined();
+    const decisions = Array.from(mockStore.values()).filter(value => value?.decision === 'echo_hash_unavailable');
+    expect(decisions.length).toBeGreaterThan(0);
+  });
+
+  test('44. Org A -> Org B issue creation still succeeds under mocks', async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ key: 'REMOTE-9' }) })
+      .mockResolvedValueOnce({ ok: true, status: 204 });
+    const issue = localIssue();
+    const result = await createIssueForOrg(issue, ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
+    expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/rest/api/3/issue?notifyUsers=false'), expect.objectContaining({ method: 'POST' }));
+    expect(storeMapping).toHaveBeenCalledWith('LOCAL-1', 'REMOTE-9', 'org-1');
+    expect(result).toEqual(expect.objectContaining({ key: 'REMOTE-9' }));
+  });
+});
+
+
+describe('Batch 4 inbound and safety regressions', () => {
+  const credential = 'abcdefghijklmnop';
+
+  test('45. Org B -> Org A issue update still succeeds under mocks', async () => {
+    authContext();
+    const localDestinationFields = {
+      summary: 'Remote change',
+      description: DESCRIPTION,
+      issuetype: { name: 'Task', id: '10001' },
+      status: { name: 'In Progress' },
+      labels: ['remote'],
+      assignee: null,
+      reporter: null
+    };
+    getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: localDestinationFields });
+    getRemoteIssue.mockResolvedValue({
+      key: 'REMOTE-1',
+      fields: {
+        summary: 'Remote change',
+        description: DESCRIPTION,
+        issuetype: { name: 'Task', id: '10001' },
+        status: { name: 'In Progress' },
+        updated: '2026-10-21T12:00:05.000Z',
+        labels: ['remote']
+      }
+    });
+
+    const response = await processIncomingWebhook({
+      webhookEvent: 'jira:issue_updated',
+      timestamp: 1780000005000,
+      issue: {
+        id: '20001',
+        key: 'REMOTE-1',
+        fields: { updated: '2026-10-21T12:00:05.000Z' }
+      }
+    }, { orgId: 'org-1', credential });
+
+    expect(response.status).toBe(200);
+    expect(mockRequestJira).toHaveBeenCalledWith(
+      expect.stringContaining('/rest/api/3/issue/LOCAL-1'),
+      expect.objectContaining({ method: 'PUT' })
+    );
+    const marker = mockStore.get(echoMarkerKey({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: 'local' }));
+    expect(marker).toEqual(expect.objectContaining({
+      fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: false })
+    }));
+    await expect(findAppCausedEcho({
+      orgId: 'org-1',
+      localKey: 'LOCAL-1',
+      remoteKey: 'REMOTE-1',
+      observedSide: 'local',
+      fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: false })
+    })).resolves.toEqual(expect.objectContaining({ echo: true }));
+  });
+
+  test('46. cross-reference description preservation still holds', () => {
+    const result = prependCrossReferenceToADF(DESCRIPTION, 'LOCAL-1', 'REMOTE-1', 'A', 'B');
+    expect(adfPreservesOriginalContent(DESCRIPTION, result)).toBe(true);
+    expect(JSON.stringify(result)).toContain('Keep this');
+  });
+
+  test('47. deletion propagation remains disabled', async () => {
+    authContext();
+    const response = await processIncomingWebhook({
+      webhookEvent: 'jira:issue_deleted',
+      timestamp: 1780000006000,
+      issue: { id: '20001', key: 'REMOTE-1' }
+    }, { orgId: 'org-1', credential });
+
+    expect(response.status).toBe(200);
+    expect(mockRequestJira).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('48. bulk sync consumer remains disabled', async () => {
+    const result = await runBulkSync({ body: { orgId: 'org-1', syncMissingData: true } }, {});
+    expect(result).toEqual(expect.objectContaining({ success: false, code: 'BULK_SYNC_CONSUMER_DISABLED' }));
+    expect(mockRequestJira).not.toHaveBeenCalled();
+  });
+
+  test('49. destructive system test remains disabled', async () => {
+    const definitions = {};
+    defineDiagnosticsResolvers({ define: (name, fn) => { definitions[name] = fn; } });
+    const result = await definitions.runSystemTest();
+    expect(result).toEqual(expect.objectContaining({ disabled: true, code: 'SYSTEM_TEST_DISABLED' }));
+    expect(result.message).toContain('No Jira writes or deletes');
+  });
+
+  test('50. existing mapping is not replaced by a different issue pair', async () => {
+    const latest = await getLatestAccepted({ orgId: 'org-1', direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
+    expect(latest).toBeNull();
+    expect(storeMapping).not.toHaveBeenCalled();
+  });
+});

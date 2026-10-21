@@ -14,6 +14,19 @@ import { syncAllComments } from './comment-sync.js';
 import { transitionRemoteIssue } from './transition-sync.js';
 import { SyncResult } from './sync-result.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
+import { hashSynchronizedFields } from './field-normalization.js';
+import { resolveRemoteDestinationHash } from './destination-state.js';
+import { acquireIssueLease, releaseIssueLease } from './issue-lease.js';
+import {
+  findAppCausedEcho,
+  getLatestAccepted,
+  evaluateStaleEvent,
+  recordLatestAccepted,
+  recordDestinationWrite,
+  recordConflict,
+  SYNC_DECISIONS
+} from './sync-state.js';
+import { recordSyncDecision } from './sync-observability.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
@@ -22,6 +35,25 @@ let epicLinkFieldCache = {
 };
 
 const CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
+
+function hasNonFieldContentChange(event) {
+  const items = event?.changelog?.items;
+  if (!Array.isArray(items)) return false;
+  return items.some(item => ['link', 'attachment', 'comment'].includes(String(item?.field || '').toLowerCase()));
+}
+
+function localMappedFieldIds(fieldMappings) {
+  return Object.values(fieldMappings || {})
+    .map(mapping => (typeof mapping === 'string' ? mapping : mapping?.localId))
+    .filter(id => typeof id === 'string' && id.startsWith('customfield_'));
+}
+
+function hashLocalFields(fields, mappings = {}) {
+  return hashSynchronizedFields(fields, {
+    customFieldIds: localMappedFieldIds(mappings.fieldMappings),
+    includeStatus: false
+  });
+}
 
 function isRankLikeString(value) {
   return typeof value === 'string' && /^\d+\|[A-Za-z0-9]+:/.test(value);
@@ -331,6 +363,34 @@ export async function syncIssue(event) {
     };
 
     const existingRemoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);
+    const sourceHash = hashLocalFields(issue.fields, mappings);
+
+    if (existingRemoteKey) {
+      const echo = await findAppCausedEcho({
+        orgId: org.id === 'legacy' ? null : org.id,
+        localKey: issueKey,
+        remoteKey: existingRemoteKey,
+        observedSide: 'local',
+        fieldHash: sourceHash
+      });
+      if (echo.echo) {
+        if (hasNonFieldContentChange(event)) {
+          console.log(`ℹ️ Echo marker matched but event includes link/attachment/comment changes; processing.`);
+        } else {
+          await recordSyncDecision({
+            decision: SYNC_DECISIONS.SKIPPED_ECHO,
+            orgId: org.id === 'legacy' ? null : org.id,
+            localKey: issueKey,
+            remoteKey: existingRemoteKey,
+            direction: 'local-to-remote',
+            sourceUpdated: issue.fields.updated,
+            fieldHash: sourceHash,
+            reason: 'app-caused-write-marker'
+          });
+          continue;
+        }
+      }
+    }
 
     // Create sync result tracker
     const syncResult = new SyncResult(existingRemoteKey ? 'update' : 'create');
@@ -339,7 +399,16 @@ export async function syncIssue(event) {
     try {
       if (existingRemoteKey) {
         console.log(`${LOG_EMOJI.UPDATE} UPDATE for ${org.name}: ${issueKey} → ${existingRemoteKey}`);
-        await updateRemoteIssueForOrg(issueKey, existingRemoteKey, issue, org, mappings, syncOptions, syncResult);
+        const updateResult = await updateRemoteIssueForOrg(issueKey, existingRemoteKey, issue, org, mappings, syncOptions, syncResult);
+        if (updateResult?.skipped) {
+          await trackWebhookSync('skip', false, updateResult.status || 'Update skipped', org.id, issueKey, {
+            remoteKey: existingRemoteKey,
+            projectKey,
+            issueType: issue.fields.issuetype.name,
+            reason: updateResult.status || 'Update skipped'
+          });
+          continue;
+        }
         await trackWebhookSync('update', syncResult.success, syncResult.errors.join('; '), org.id, issueKey, {
           remoteKey: existingRemoteKey,
           projectKey,
@@ -419,6 +488,34 @@ export async function updateRemoteIssue(localKey, remoteKey, issue, config, mapp
 
 // Internal multi-org functions
 async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null, depth = 0) {
+  const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
+  if (syncOptions?.dryRun) {
+    return await createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult, orgId, depth);
+  }
+  const lease = await acquireIssueLease({
+    orgId,
+    localKey: issue.key,
+    direction: 'local-to-remote'
+  });
+  if (!lease.acquired) {
+    await recordSyncDecision({
+      decision: lease.status === 'LEASE_STORAGE_ERROR' ? SYNC_DECISIONS.FAILED : SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      localKey: issue.key,
+      direction: 'local-to-remote',
+      reason: lease.status === 'LEASE_STORAGE_ERROR' ? 'lease-storage-error' : 'issue-lease-held'
+    });
+    if (syncResult) syncResult.addWarning(`Skipped create: ${lease.status}`);
+    return null;
+  }
+  try {
+    return await createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult, orgId, depth);
+  } finally {
+    await releaseIssueLease({ key: lease.key, token: lease.token });
+  }
+}
+
+async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null, depth = 0) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
   
@@ -819,6 +916,50 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
         console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
       }
 
+      const remoteDestination = await resolveRemoteDestinationHash({
+        org,
+        remoteKey: result.key,
+        mappings
+      });
+      await recordLatestAccepted({
+        orgId,
+        direction: 'local-to-remote',
+        localKey: issue.key,
+        remoteKey: result.key,
+        sourceUpdated: issue.fields.updated,
+        fieldHash: hashLocalFields(issue.fields, mappings)
+      });
+      if (remoteDestination.available) {
+        await recordDestinationWrite({
+          orgId,
+          localKey: issue.key,
+          remoteKey: result.key,
+          direction: 'local-to-remote',
+          observedSide: 'remote',
+          sourceUpdated: issue.fields.updated,
+          fieldHash: remoteDestination.hash
+        });
+      } else {
+        await recordSyncDecision({
+          decision: 'echo_hash_unavailable',
+          orgId,
+          localKey: issue.key,
+          remoteKey: result.key,
+          direction: 'local-to-remote',
+          sourceUpdated: issue.fields.updated,
+          reason: remoteDestination.reason
+        });
+      }
+      await recordDestinationWrite({
+        orgId,
+        localKey: issue.key,
+        remoteKey: result.key,
+        direction: 'local-to-remote',
+        observedSide: 'local',
+        sourceUpdated: issue.fields.updated,
+        fieldHash: hashLocalFields(issue.fields, mappings)
+      });
+
       await clearSyncFlag(issue.key);
       return { key: result.key, details: syncDetails };
     } else {
@@ -837,6 +978,34 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 }
 
 export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
+  const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
+  const lease = await acquireIssueLease({
+    orgId,
+    localKey,
+    remoteKey,
+    direction: 'local-to-remote'
+  });
+  if (!lease.acquired) {
+    await recordSyncDecision({
+      decision: lease.status === 'LEASE_STORAGE_ERROR' ? SYNC_DECISIONS.FAILED : SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      localKey,
+      remoteKey,
+      direction: 'local-to-remote',
+      reason: lease.status === 'LEASE_STORAGE_ERROR' ? 'lease-storage-error' : 'issue-lease-held'
+    });
+    if (syncResult) syncResult.addWarning(`Skipped update: ${lease.status}`);
+    return { skipped: true, status: lease.status };
+  }
+
+  try {
+    return await updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult, orgId);
+  } finally {
+    await releaseIssueLease({ key: lease.key, token: lease.token });
+  }
+}
+
+async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
 
@@ -858,6 +1027,65 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
     // Count totals from the issue for context
     syncDetails.attachmentsTotal = issue.fields.attachment?.length || 0;
     syncDetails.linksTotal = issue.fields.issuelinks?.length || 0;
+
+    const sourceUpdated = issue.fields.updated;
+    const sourceHash = hashLocalFields(issue.fields, mappings);
+    const latest = await getLatestAccepted({
+      orgId,
+      direction: 'local-to-remote',
+      localKey,
+      remoteKey
+    });
+    const ordering = evaluateStaleEvent({ latest, sourceUpdated, fieldHash: sourceHash });
+
+    if (ordering.decision === 'stale' || ordering.decision === 'duplicate' || ordering.decision === 'conflict') {
+      const decision = ordering.decision === 'stale'
+        ? SYNC_DECISIONS.SKIPPED_STALE
+        : ordering.decision === 'duplicate'
+          ? SYNC_DECISIONS.DUPLICATE
+          : SYNC_DECISIONS.CONFLICT;
+      const safeReason = ordering.decision === 'conflict'
+        ? 'equal_timestamp_different_hash'
+        : ordering.decision === 'stale'
+          ? 'older_than_last_applied'
+          : 'same_timestamp_same_hash';
+      if (ordering.decision === 'conflict') {
+        await recordConflict({
+          orgId,
+          localKey,
+          remoteKey,
+          direction: 'local-to-remote',
+          localTimestamp: sourceUpdated,
+          sourceHash,
+          destinationHash: latest?.fieldHash || null,
+          reason: safeReason
+        });
+      } else {
+        await recordSyncDecision({
+          decision,
+          orgId,
+          localKey,
+          remoteKey,
+          direction: 'local-to-remote',
+          sourceUpdated,
+          fieldHash: sourceHash,
+          reason: safeReason
+        });
+      }
+      return { skipped: true, status: ordering.status };
+    }
+
+    if (ordering.decision === 'unverified') {
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.APPLIED,
+        orgId,
+        localKey,
+        remoteKey,
+        direction: 'local-to-remote',
+        sourceUpdated,
+        reason: 'ordering-unverified-processing-safely'
+      });
+    }
 
     const attachmentEnabled = syncOptions?.syncAttachments !== false && !syncOptions?.dryRun;
     const linksEnabled = syncOptions?.syncLinks !== false && !syncOptions?.dryRun;
@@ -1121,6 +1349,49 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
       if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
         console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
         await setLastSyncedLocalUpdated(localKey, issue.fields.updated, orgId);
+        await recordLatestAccepted({
+          orgId,
+          direction: 'local-to-remote',
+          localKey,
+          remoteKey,
+          sourceUpdated: issue.fields.updated,
+          fieldHash: sourceHash
+        });
+        await recordDestinationWrite({
+          orgId,
+          localKey,
+          remoteKey,
+          direction: 'local-to-remote',
+          observedSide: 'local',
+          sourceUpdated: issue.fields.updated,
+          fieldHash: sourceHash
+        });
+        const remoteDestination = await resolveRemoteDestinationHash({
+          org,
+          remoteKey,
+          mappings
+        });
+        if (remoteDestination.available) {
+          await recordDestinationWrite({
+            orgId,
+            localKey,
+            remoteKey,
+            direction: 'local-to-remote',
+            observedSide: 'remote',
+            sourceUpdated: issue.fields.updated,
+            fieldHash: remoteDestination.hash
+          });
+        } else {
+          await recordSyncDecision({
+            decision: 'echo_hash_unavailable',
+            orgId,
+            localKey,
+            remoteKey,
+            direction: 'local-to-remote',
+            sourceUpdated: issue.fields.updated,
+            reason: remoteDestination.reason
+          });
+        }
 
         // Also update local issue with cross-reference (if enabled)
         if (crossReferenceEnabled) {
@@ -1133,8 +1404,29 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
           );
           if (!localDescriptionWithRef || !adfPreservesOriginalContent(issue.fields.description, localDescriptionWithRef)) {
             console.log(`⏭️ Skipping local cross-reference for ${localKey}: unsafe-description`);
+          } else if (JSON.stringify(issue.fields.description) === JSON.stringify(localDescriptionWithRef)) {
+            await recordDestinationWrite({
+              orgId,
+              localKey,
+              remoteKey,
+              direction: 'local-to-remote',
+              observedSide: 'local',
+              sourceUpdated: issue.fields.updated,
+              fieldHash: sourceHash
+            });
           } else {
-            await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+            const localUpdated = await updateLocalIssueDescription(localKey, localDescriptionWithRef);
+            if (localUpdated) {
+              await recordDestinationWrite({
+                orgId,
+                localKey,
+                remoteKey,
+                direction: 'local-to-remote',
+                observedSide: 'local',
+                sourceUpdated: issue.fields.updated,
+                fieldHash: sourceHash
+              });
+            }
           }
         }
 

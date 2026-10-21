@@ -223,8 +223,36 @@ function isCrossReferenceParagraph(node) {
     && /^🔗 .+ ↔ .+$/.test(node.content[0].text);
 }
 
+function isLegacyCrossReferencePanel(node) {
+  return isPlainObject(node)
+    && node.type === 'panel'
+    && node.attrs?.panelType === 'info'
+    && node.content?.[0]?.content?.[0]?.text === '🔗 Synced Issue Reference';
+}
+
+/**
+ * True for generated cross-reference boilerplate. Exported so hashing code can
+ * ignore connector-owned description changes without logging description text.
+ */
+export function isCrossReferenceNode(node) {
+  return isCrossReferenceParagraph(node) || isLegacyCrossReferencePanel(node);
+}
+
+/**
+ * Remove connector-owned cross-reference paragraphs/panels from an ADF tree
+ * without mutating the input. No other user content is removed.
+ */
+export function stripCrossReferenceFromADF(adf) {
+  if (!isPlainObject(adf) || !Array.isArray(adf.content)) {
+    return adf;
+  }
+  const cloned = cloneAdf(adf);
+  cloned.content = cloned.content.filter(node => !isCrossReferenceNode(node));
+  return cloned;
+}
+
 function contentWithoutCrossReference(adf) {
-  return adf.content.filter(node => !isCrossReferenceParagraph(node));
+  return adf.content.filter(node => !isCrossReferenceNode(node));
 }
 
 /**

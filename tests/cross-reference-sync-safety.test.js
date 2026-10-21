@@ -113,7 +113,8 @@ describe('Cross-reference local write safety', () => {
     );
 
     expect(result).not.toBeNull();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'GET' }));
     expect(updateLocalIssueDescription).not.toHaveBeenCalled();
   });
 
@@ -153,7 +154,8 @@ describe('Cross-reference local write safety', () => {
     );
 
     expect(result).not.toBeNull();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'GET' }));
     expect(updateLocalIssueDescription).not.toHaveBeenCalled();
   });
 });

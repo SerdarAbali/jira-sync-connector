@@ -1,5 +1,8 @@
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import * as kvsStore from '../storage/kvs.js';
+import { isKeyConflictError } from '../../utils/storage-errors.js';
+
+export { isKeyConflictError };
 
 export const PROCESSING_LEASE_SECONDS = 60;
 export const COMPLETED_MARKER_TTL_SECONDS = 300;
@@ -41,14 +44,32 @@ export function buildWebhookFingerprint(payload, orgId) {
     || stablePrimitive(fields.updated)
     || stablePrimitive(payload.updated);
 
-  // An entity identifier is required. A timestamp alone can collide across
-  // unrelated events and must not be used to claim an exact duplicate.
-  const hasEntityIdentity = !!(issueId || issueKey || commentId || attachmentId || issueLinkId);
-  if (!hasEntityIdentity) return null;
+  // Each event family has its own reliable identity. Falling back to an issue
+  // id for a comment/attachment/link would collapse distinct events into one
+  // false duplicate. An update without a timestamp is likewise untracked.
+  let identityKind = null;
+  if (event === 'jira:issue_created') {
+    identityKind = (issueId || issueKey) ? 'issue-created' : null;
+  } else if (event === 'jira:issue_updated') {
+    identityKind = (issueId || issueKey) && timestamp ? 'issue-updated' : null;
+  } else if (event === 'jira:issue_deleted') {
+    identityKind = (issueId || issueKey) ? 'issue-deleted' : null;
+  } else if (event === 'comment_created') {
+    identityKind = commentId ? 'comment-created' : null;
+  } else if (event === 'attachment_created' || event === 'jira:attachment_created' || event === 'attachment_deleted' || event === 'jira:attachment_deleted') {
+    identityKind = attachmentId ? 'attachment-event' : null;
+  } else if (event === 'jira:issue_link_created' || event === 'jira:issue_link_deleted') {
+    identityKind = issueLinkId ? 'issue-link-event' : null;
+  } else {
+    identityKind = (issueId || issueKey) ? 'generic' : null;
+  }
+
+  if (!identityKind) return null;
 
   const canonical = JSON.stringify([
     ['orgId', orgId],
     ['event', event],
+    ['identity', identityKind],
     ['issueId', issueId],
     ['issueKey', issueKey],
     ['commentId', commentId],
@@ -62,15 +83,6 @@ export function buildWebhookFingerprint(payload, orgId) {
 
 export function webhookMarkerKey(orgId, fingerprint) {
   return `webhook-replay:${orgId}:${fingerprint}`;
-}
-
-export function isKeyConflictError(error) {
-  const code = String(error?.code || error?.name || '').toUpperCase();
-  if (['KEY_ALREADY_EXISTS', 'KEY_EXISTS', 'ALREADY_EXISTS', 'CONFLICT', 'CONDITIONAL_CHECK_FAILED'].includes(code)) {
-    return true;
-  }
-  const message = String(error?.message || '');
-  return /already exists|key .*exists|exists already|fail_if_exists/i.test(message);
 }
 
 /**
@@ -89,16 +101,18 @@ export async function claimWebhookEvent(payload, orgId) {
 
   const key = webhookMarkerKey(orgId, fingerprint);
   const now = Date.now();
+  const token = randomBytes(24).toString('hex');
   const marker = {
     state: 'processing',
     fingerprint,
+    token,
     claimedAt: new Date(now).toISOString(),
     leaseExpiresAt: new Date(now + PROCESSING_LEASE_SECONDS * 1000).toISOString()
   };
 
   try {
     await kvsStore.setIfNotExists(key, marker, PROCESSING_LEASE_SECONDS);
-    return { status: 'claimed', key };
+    return { status: 'claimed', key, token };
   } catch (error) {
     if (!isKeyConflictError(error)) {
       return { status: 'storage_error' };
@@ -121,17 +135,36 @@ export async function claimWebhookEvent(payload, orgId) {
   }
 }
 
-export async function markWebhookCompleted(key) {
+export async function markWebhookCompleted(key, token = null) {
+  if (token) {
+    try {
+      const existing = await kvsStore.get(key);
+      if (existing?.token && existing.token !== token) {
+        return { completed: false, status: 'not-owner' };
+      }
+    } catch {
+      return { completed: false, status: 'storage-error' };
+    }
+  }
   await kvsStore.setWithTtl(key, {
     state: 'completed',
     completedAt: new Date().toISOString()
   }, COMPLETED_MARKER_TTL_SECONDS);
+  return { completed: true, status: 'completed' };
 }
 
-export async function releaseWebhookEvent(key) {
+export async function releaseWebhookEvent(key, token = null) {
   try {
+    if (token) {
+      const existing = await kvsStore.get(key);
+      if (existing?.token && existing.token !== token) {
+        return { released: false, status: 'not-owner' };
+      }
+    }
     await kvsStore.del(key);
+    return { released: true, status: 'released' };
   } catch {
     // The short processing lease is the fallback so Jira can retry.
+    return { released: false, status: 'storage-error' };
   }
 }

@@ -1,6 +1,30 @@
 import * as kvsStore from './kvs.js';
 import { redactSecrets } from '../../utils/redaction.js';
 
+const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+
+export class MappingConflictError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'MappingConflictError';
+    this.code = 'MAPPING_CONFLICT';
+    this.details = details;
+  }
+}
+
+export function isValidIssueKey(key) {
+  return typeof key === 'string' && key.length <= 100 && ISSUE_KEY_PATTERN.test(key);
+}
+
+function mappingKeys(localKey, remoteKey, orgId) {
+  return {
+    localToRemote: orgId ? `${orgId}:local-to-remote:${localKey}` : `local-to-remote:${localKey}`,
+    remoteToLocal: orgId ? `${orgId}:remote-to-local:${remoteKey}` : `remote-to-local:${remoteKey}`,
+    meta: orgId ? `mapping-meta:${orgId}:${localKey}` : `mapping-meta:legacy:${localKey}`,
+    repair: orgId ? `mapping-repair:${orgId}:${localKey}:${remoteKey}` : `mapping-repair:legacy:${localKey}:${remoteKey}`
+  };
+}
+
 // Cache for organizations to reduce KVS calls
 let orgsCache = {
   data: null,
@@ -79,30 +103,105 @@ export async function getLocalKey(remoteKey, orgId = null) {
  * Uses kvs.query() for retrieval instead of maintaining a separate index array
  */
 export async function storeMapping(localKey, remoteKey, orgId = null) {
-  const localToRemoteKey = orgId ? `${orgId}:local-to-remote:${localKey}` : `local-to-remote:${localKey}`;
-  const remoteToLocalKey = orgId ? `${orgId}:remote-to-local:${remoteKey}` : `remote-to-local:${remoteKey}`;
-  
-  // Use transaction for atomic write (both mappings succeed or fail together)
-  try {
-    await kvsStore.transaction()
-      .set(localToRemoteKey, remoteKey)
-      .set(remoteToLocalKey, localKey)
-      .execute();
-  } catch (error) {
-    // Fallback to individual writes if transaction fails
-    console.warn('Transaction failed, falling back to individual writes:', error.message);
-    await kvsStore.set(localToRemoteKey, remoteKey);
-    await kvsStore.set(remoteToLocalKey, localKey);
+  if (!isValidIssueKey(localKey) || !isValidIssueKey(remoteKey)) {
+    throw new Error('Invalid issue key in mapping');
   }
-  
-  // Store mapping metadata for queryability (replaces mappings-index array)
-  // Key pattern: mapping-meta:{orgId}:{localKey} 
-  const metaKey = orgId ? `mapping-meta:${orgId}:${localKey}` : `mapping-meta:legacy:${localKey}`;
-  await kvsStore.set(metaKey, { 
-    localKey, 
-    remoteKey, 
-    createdAt: new Date().toISOString() 
-  });
+
+  const keys = mappingKeys(localKey, remoteKey, orgId);
+  const [existingRemote, existingLocal] = await Promise.all([
+    kvsStore.get(keys.localToRemote),
+    kvsStore.get(keys.remoteToLocal)
+  ]);
+
+  if (existingRemote && existingRemote !== remoteKey) {
+    throw new MappingConflictError('Local issue already maps to a different remote issue', {
+      localKey, remoteKey, existingRemote
+    });
+  }
+  if (existingLocal && existingLocal !== localKey) {
+    throw new MappingConflictError('Remote issue already maps to a different local issue', {
+      localKey, remoteKey, existingLocal
+    });
+  }
+
+  const metadata = {
+    localKey,
+    remoteKey,
+    orgId: orgId || 'legacy',
+    updatedAt: new Date().toISOString()
+  };
+  const idempotent = !!(existingRemote === remoteKey && existingLocal === localKey);
+
+  let atomicWriteSucceeded = false;
+  if (typeof kvsStore.transaction === 'function') {
+    try {
+      await kvsStore.transaction()
+        .set(keys.localToRemote, remoteKey)
+        .set(keys.remoteToLocal, localKey)
+        .set(keys.meta, metadata)
+        .execute();
+      atomicWriteSucceeded = true;
+    } catch {
+      console.warn('Mapping transaction failed; using compensating writes');
+    }
+  }
+
+  if (!atomicWriteSucceeded) {
+    const results = [];
+    results.push(await settleWrite(keys.remoteToLocal, localKey));
+    results.push(await settleWrite(keys.localToRemote, remoteKey));
+    results.push(await settleWrite(keys.meta, metadata));
+
+    if (results.some(result => !result.ok)) {
+      try {
+        await kvsStore.set(keys.repair, {
+          localKey,
+          remoteKey,
+          orgId: orgId || 'legacy',
+          reason: 'partial-mapping-write',
+          detectedAt: new Date().toISOString()
+        });
+      } catch {
+        // The mismatch is still observable by reading both directions.
+      }
+      throw new Error('Partial mapping write requires repair');
+    }
+  }
+
+  return { localKey, remoteKey, idempotent };
+}
+
+async function settleWrite(key, value) {
+  try {
+    await kvsStore.set(key, value);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function ensureMappingPair(localKey, remoteKey, orgId = null) {
+  if (!isValidIssueKey(localKey) || !isValidIssueKey(remoteKey)) {
+    throw new Error('Invalid issue key in mapping');
+  }
+  const keys = mappingKeys(localKey, remoteKey, orgId);
+  const [existingRemote, existingLocal] = await Promise.all([
+    kvsStore.get(keys.localToRemote),
+    kvsStore.get(keys.remoteToLocal)
+  ]);
+  if ((existingRemote && existingRemote !== remoteKey) || (existingLocal && existingLocal !== localKey)) {
+    throw new MappingConflictError('Existing mapping refers to a different issue pair', {
+      localKey, remoteKey
+    });
+  }
+  if (!existingRemote) await kvsStore.set(keys.localToRemote, remoteKey);
+  if (!existingLocal) await kvsStore.set(keys.remoteToLocal, localKey);
+  return { localKey, remoteKey, repaired: !existingRemote || !existingLocal };
+}
+
+export async function getMappingRepairRecord(localKey, remoteKey, orgId = null) {
+  const keys = mappingKeys(localKey, remoteKey, orgId);
+  return await kvsStore.get(keys.repair);
 }
 
 export async function removeMapping(localKey, remoteKey, orgId = null) {

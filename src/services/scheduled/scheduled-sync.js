@@ -452,6 +452,17 @@ export async function performScheduledSync() {
           if (syncCheck.action === 'update') {
             console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
             const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
+            if (syncDetails?.skipped) {
+              stats.issuesSkipped++;
+              recordEvent(stats, {
+                type: 'skip',
+                issueKey,
+                remoteKey: syncCheck.remoteKey,
+                orgName,
+                reason: syncDetails.status || 'update-skipped'
+              });
+              continue;
+            }
             
             // Force verification of links for the mapped issue during the
             // scheduled update path.
