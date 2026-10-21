@@ -110,8 +110,7 @@ export async function updateLocalIssueDescription(issueKey, description) {
       console.log(`✅ Updated local issue ${issueKey} description`);
       return true;
     } else {
-      const errorText = await response.text();
-      console.error(`❌ Failed to update local issue ${issueKey}: ${errorText}`);
+      console.error(`❌ Failed to update local issue ${issueKey}`);
       return false;
     }
   } catch (error) {

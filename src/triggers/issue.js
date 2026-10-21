@@ -7,15 +7,13 @@ export async function run(event, context) {
   console.log(`🔔 Trigger fired: ${event.eventType}`);
   console.log(`📝 Issue: ${event.issue?.key}`);
   
-  // Log what changed
+  // Log field names only; changelog values can contain user-authored content.
   if (event.changelog?.items) {
-    console.log(`🔄 Changes detected:`);
+    console.log(`🔄 Changes detected: ${event.changelog.items.length} field(s)`);
     let hasLinkChanges = false;
     event.changelog.items.forEach(item => {
-      console.log(`   - ${item.field}: "${item.fromString}" → "${item.toString}"`);
       if (item.field === 'Link') {
         hasLinkChanges = true;
-        console.log(`   🔗 LINK CHANGE DETECTED: "${item.fromString}" → "${item.toString}"`);
       }
     });
     if (hasLinkChanges) {

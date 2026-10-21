@@ -89,10 +89,10 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
       let existingMapping = normalizeAttachmentMappingValue(rawMapping);
 
       if (rawMapping && !existingMapping) {
-        console.log(`${LOG_EMOJI.WARNING} Attachment ${attachment.filename} had invalid mapping data, removing to force re-sync`);
+        console.log(`${LOG_EMOJI.WARNING} Attachment attachment ${attachment.id || 'unknown'} had invalid mapping data, removing to force re-sync`);
         await removeAttachmentMapping(attachment.id, orgId);
       } else if (rawMapping && existingMapping && rawMapping !== existingMapping) {
-        console.log(`${LOG_EMOJI.INFO} Attachment ${attachment.filename} mapping normalized to id ${existingMapping}`);
+        console.log(`${LOG_EMOJI.INFO} Attachment attachment ${attachment.id || 'unknown'} mapping normalized to id ${existingMapping}`);
         await storeAttachmentMapping(attachment.id, existingMapping, orgId);
       }
       
@@ -103,10 +103,10 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
 
         if (existsOnRemote) {
           if (forceCheck) {
-            console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} verified on remote`);
+            console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} verified on remote`);
             if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'verified on remote');
           } else {
-            console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already synced (mapping exists: ${existingMapping})`);
+            console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} already synced (mapping exists: ${existingMapping})`);
             if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'already synced');
           }
 
@@ -114,7 +114,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
           continue;
         }
 
-        console.log(`${LOG_EMOJI.WARNING} Attachment ${attachment.filename} mapping exists but not on remote - will re-upload`);
+        console.log(`${LOG_EMOJI.WARNING} Attachment attachment ${attachment.id || 'unknown'} mapping exists but not on remote - will re-upload`);
         await removeAttachmentMapping(attachment.id, orgId);
         existingMapping = null;
       }
@@ -126,7 +126,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
       );
       
       if (duplicateOnRemote) {
-        console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already exists on remote (id: ${duplicateOnRemote.id})`);
+        console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} already exists on remote (id: ${duplicateOnRemote.id})`);
         // Store the mapping for future reference
         await storeAttachmentMapping(attachment.id, duplicateOnRemote.id, orgId);
         attachmentMapping[attachment.id] = duplicateOnRemote.id;
@@ -136,7 +136,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
 
       // Check file size
       if (attachment.size > MAX_ATTACHMENT_SIZE) {
-        console.log(`${LOG_EMOJI.WARNING} Skipping ${attachment.filename} - too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB > ${MAX_ATTACHMENT_SIZE_MB}MB)`);
+        console.log(`${LOG_EMOJI.WARNING} Skipping attachment ${attachment.id || 'unknown'} - too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB > ${MAX_ATTACHMENT_SIZE_MB}MB)`);
         if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, `too large (${(attachment.size / 1024 / 1024).toFixed(2)}MB)`);
         continue;
       }
@@ -144,7 +144,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
       // Try to acquire lock to prevent concurrent uploads of same attachment
       const lockAcquired = await tryAcquireAttachmentLock(attachment.id, orgId);
       if (!lockAcquired) {
-        console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} is being synced by another process`);
+        console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} is being synced by another process`);
         if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'sync in progress');
         continue;
       }
@@ -153,7 +153,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
         // Re-check mapping after acquiring lock (another process may have completed)
         const mappingAfterLock = await getAttachmentMapping(attachment.id, orgId);
         if (mappingAfterLock) {
-          console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} was synced by another process`);
+          console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} was synced by another process`);
           attachmentMapping[attachment.id] = mappingAfterLock;
           if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'synced by another process');
           continue;
@@ -167,35 +167,35 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
         );
         
         if (recentDuplicate) {
-          console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} was uploaded concurrently (id: ${recentDuplicate.id})`);
+          console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} was uploaded concurrently (id: ${recentDuplicate.id})`);
           await storeAttachmentMapping(attachment.id, recentDuplicate.id, orgId);
           attachmentMapping[attachment.id] = recentDuplicate.id;
           if (syncResult) syncResult.addAttachmentSkipped(attachment.filename, 'uploaded concurrently');
           continue;
         }
 
-        console.log(`${LOG_EMOJI.DOWNLOAD} Downloading ${attachment.filename} (${(attachment.size / 1024).toFixed(2)}KB)...`);
+        console.log(`${LOG_EMOJI.DOWNLOAD} Downloading attachment ${attachment.id || 'unknown'} (${(attachment.size / 1024).toFixed(2)}KB)...`);
 
         // Download from local Jira
         const fileBuffer = await downloadAttachment(attachment.content);
         if (!fileBuffer) {
-          console.error(`${LOG_EMOJI.ERROR} Failed to download ${attachment.filename}`);
+          console.error(`${LOG_EMOJI.ERROR} Failed to download attachment ${attachment.id || 'unknown'}`);
           if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'download failed');
           continue;
         }
 
         // Upload to remote Jira
-        console.log(`${LOG_EMOJI.UPLOAD} Uploading ${attachment.filename} to ${remoteIssueKey}...`);
+        console.log(`${LOG_EMOJI.UPLOAD} Uploading attachment ${attachment.id || 'unknown'} to ${remoteIssueKey}...`);
         const remoteAttachmentId = await uploadAttachment(remoteIssueKey, attachment.filename, fileBuffer, config);
 
         if (remoteAttachmentId) {
           // Store mapping to prevent re-syncing (org-specific)
           await storeAttachmentMapping(attachment.id, remoteAttachmentId, orgId);
           attachmentMapping[attachment.id] = remoteAttachmentId;
-          console.log(`${LOG_EMOJI.SUCCESS} Synced attachment: ${attachment.filename} (remote id: ${remoteAttachmentId})`);
+          console.log(`${LOG_EMOJI.SUCCESS} Synced attachment: attachment ${attachment.id || 'unknown'} (remote id: ${remoteAttachmentId})`);
           if (syncResult) syncResult.addAttachmentSuccess(attachment.filename);
         } else {
-          console.error(`${LOG_EMOJI.ERROR} Failed to upload ${attachment.filename}`);
+          console.error(`${LOG_EMOJI.ERROR} Failed to upload attachment ${attachment.id || 'unknown'}`);
           if (syncResult) syncResult.addAttachmentFailure(attachment.filename, 'upload failed');
         }
       } finally {
@@ -204,7 +204,7 @@ export async function syncAttachments(localIssueKey, remoteIssueKey, issue, conf
       }
 
     } catch (error) {
-      console.error(`${LOG_EMOJI.ERROR} Error syncing attachment ${attachment.filename}:`, error);
+      console.error(`${LOG_EMOJI.ERROR} Error syncing attachment attachment ${attachment.id || 'unknown'}:`, error);
       if (syncResult) syncResult.addAttachmentFailure(attachment.filename, error.message);
     }
   }

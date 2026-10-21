@@ -25,8 +25,7 @@ export async function getRemoteIssue(remoteKey, config, fields = []) {
       return await response.json();
     }
 
-    const errorText = await response.text();
-    console.error(`${LOG_EMOJI.ERROR} Failed to get remote issue ${remoteKey}: ${errorText}`);
+    console.error(`${LOG_EMOJI.ERROR} Failed to get remote issue ${remoteKey}`);
     return null;
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error getting remote issue ${remoteKey}:`, error);
@@ -108,8 +107,7 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
       console.error('Attachment upload response missing id field');
       return null;
     } else {
-      const errorText = await response.text();
-      console.error(`Failed to upload attachment: ${errorText}`);
+      console.error(`Failed to upload attachment`);
       return null;
     }
   } catch (error) {
@@ -141,8 +139,7 @@ export async function getRemoteComment(issueKey, commentId, config) {
       return await response.json();
     }
 
-    const errorText = await response.text();
-    console.error(`${LOG_EMOJI.ERROR} Failed to get remote comment ${commentId}: ${errorText}`);
+    console.error(`${LOG_EMOJI.ERROR} Failed to get remote comment ${commentId}`);
     return null;
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error getting remote comment ${commentId}:`, error);

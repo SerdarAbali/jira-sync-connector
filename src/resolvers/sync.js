@@ -49,7 +49,7 @@ export function defineSyncResolvers(resolver) {
 
         if (allowedProjects.length === 0) {
           const message = 'No project filters selected for this organization';
-          console.log(`⛔ ${org.name}: ${message}`);
+          console.log(`⛔ ${org.id || 'organization'}: ${message}`);
           results.push({ org: org.name, success: false, error: message });
           continue;
         }
@@ -57,7 +57,7 @@ export function defineSyncResolvers(resolver) {
         const projectAllowed = await isProjectAllowedToSync(issueProjectKey, org);
         if (!projectAllowed) {
           const message = `Project ${issueProjectKey} not selected for sync`;
-          console.log(`⏭️ ${org.name}: ${message}`);
+          console.log(`⏭️ ${org.id || 'organization'}: ${message}`);
           results.push({ org: org.name, success: false, error: message });
           continue;
         }
@@ -81,11 +81,11 @@ export function defineSyncResolvers(resolver) {
 
         try {
           if (existingRemoteKey) {
-            console.log(`🔄 Force UPDATE for ${org.name}: ${issueKey} → ${existingRemoteKey}`);
+            console.log(`🔄 Force UPDATE for ${org.id || 'organization'}: ${issueKey} → ${existingRemoteKey}`);
             await updateRemoteIssue(issueKey, existingRemoteKey, issue, org, mappings, null, syncOptions);
             results.push({ org: org.name, success: true, message: `Updated ${issueKey} → ${existingRemoteKey}` });
           } else {
-            console.log(`✨ Force CREATE for ${org.name}: ${issueKey}`);
+            console.log(`✨ Force CREATE for ${org.id || 'organization'}: ${issueKey}`);
             const createResult = await createRemoteIssue(issue, org, mappings, null, syncOptions);
             const remoteKey = createResult?.key || createResult;
             if (remoteKey) {
@@ -95,7 +95,7 @@ export function defineSyncResolvers(resolver) {
             }
           }
         } catch (orgError) {
-          console.error(`Error syncing to ${org.name}:`, orgError);
+          console.error(`Error syncing to ${org.id || 'organization'}:`, orgError);
           results.push({ org: org.name, success: false, error: orgError.message });
         }
       }

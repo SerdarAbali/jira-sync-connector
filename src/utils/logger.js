@@ -1,3 +1,5 @@
+import { redactForLog, sanitizeLogText } from './redaction.js';
+
 const LOG_LEVELS = {
   ERROR: 'ERROR',
   WARN: 'WARN',
@@ -9,8 +11,8 @@ function log(level, message, metadata = {}) {
   const logEntry = {
     timestamp: new Date().toISOString(),
     level,
-    message,
-    ...metadata
+    message: sanitizeLogText(message, 300),
+    ...redactForLog(metadata)
   };
   
   console.log(JSON.stringify(logEntry));

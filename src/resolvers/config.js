@@ -998,7 +998,6 @@ export function defineConfigResolvers(resolver) {
           message: `Connected as ${user.displayName} (${latency}ms)`
         };
       } else {
-        const errorText = await response.text();
         return {
           success: false,
           status: response.status,

@@ -1,11 +1,17 @@
 import * as kvsStore from '../services/storage/kvs.js';
 import { getApiUsageStats, resetApiUsageStats } from '../services/storage/stats.js';
+import { MAX_ERROR_ENTRIES } from '../constants.js';
+import { sanitizeErrorEntry, safeErrorSummary, boundHistory, safeErrorForLog } from '../utils/redaction.js';
 
 export function defineStatsResolvers(resolver) {
   resolver.define('getScheduledSyncStats', async () => {
     const stats = await kvsStore.get('scheduledSyncStats');
     if (stats) {
       stats.events = Array.isArray(stats.events) ? stats.events : [];
+      stats.errors = boundHistory(
+        Array.isArray(stats.errors) ? stats.errors.map(error => safeErrorSummary(error)) : [],
+        MAX_ERROR_ENTRIES
+      );
       return stats;
     }
     return {
@@ -21,7 +27,15 @@ export function defineStatsResolvers(resolver) {
 
   resolver.define('getWebhookSyncStats', async () => {
     const stats = await kvsStore.get('webhookSyncStats');
-    return stats || {
+    if (stats) {
+      const safeStats = { ...stats };
+      safeStats.errors = boundHistory(
+        Array.isArray(stats.errors) ? stats.errors.map(sanitizeErrorEntry) : [],
+        MAX_ERROR_ENTRIES
+      );
+      return safeStats;
+    }
+    return {
       totalSyncs: 0,
       issuesCreated: 0,
       issuesUpdated: 0,
@@ -49,8 +63,8 @@ export function defineStatsResolvers(resolver) {
       }
       return { success: true, message: 'Webhook errors cleared' };
     } catch (error) {
-      console.error('Error clearing webhook errors:', error);
-      return { success: false, error: error.message };
+      console.error('Error clearing webhook errors:', safeErrorForLog(error));
+      return { success: false, error: 'Unable to clear webhook errors' };
     }
   });
 
@@ -63,8 +77,8 @@ export function defineStatsResolvers(resolver) {
       }
       return { success: true, message: 'Scheduled sync errors cleared' };
     } catch (error) {
-      console.error('Error clearing scheduled errors:', error);
-      return { success: false, error: error.message };
+      console.error('Error clearing scheduled errors:', safeErrorForLog(error));
+      return { success: false, error: 'Unable to clear scheduled errors' };
     }
   });
 }

@@ -1,5 +1,6 @@
 import * as kvsStore from './kvs.js';
-import { MAX_AUDIT_LOG_ENTRIES, MAX_HOURLY_HISTORY } from '../../constants.js';
+import { MAX_AUDIT_LOG_ENTRIES, MAX_ERROR_ENTRIES, MAX_HOURLY_HISTORY } from '../../constants.js';
+import { sanitizeAuditEntry, sanitizeErrorEntry, boundHistory, safeErrorForLog } from '../../utils/redaction.js';
 
 // Track API usage and rate limits
 export async function trackApiCall(endpoint, success, isRateLimited = false, orgId = null) {
@@ -249,23 +250,18 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
     } else {
       stats.issuesSkipped++;
       if (error) {
-        // Enhanced error tracking with detailed context
-        const errorEntry = { 
-          timestamp: new Date().toISOString(), 
+        // Enhanced error tracking with safe, content-free context only.
+        const errorEntry = sanitizeErrorEntry({
+          timestamp: new Date().toISOString(),
           error: typeof error === 'string' ? error : error.message || String(error),
           orgId: orgId || 'unknown',
           issueKey: issueKey || 'unknown',
-          operation: type || 'unknown'
-        };
+          operation: type || 'unknown',
+          details
+        });
 
-        // Add additional details if provided
-        if (details) {
-          errorEntry.details = details;
-        }
-
-        // Keep only last 50 errors
         stats.errors.unshift(errorEntry);
-        if (stats.errors.length > 50) stats.errors = stats.errors.slice(0, 50);
+        stats.errors = boundHistory(stats.errors, MAX_ERROR_ENTRIES);
       }
     }
 
@@ -278,16 +274,15 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
 export async function logAuditEntry(entry) {
   try {
     const auditLog = await kvsStore.get('auditLog') || [];
-    auditLog.unshift({
+    auditLog.unshift(sanitizeAuditEntry({
       ...entry,
       timestamp: new Date().toISOString()
-    });
-    // Keep only last MAX_AUDIT_LOG_ENTRIES entries to prevent storage bloat
-    if (auditLog.length > MAX_AUDIT_LOG_ENTRIES) {
-      auditLog.length = MAX_AUDIT_LOG_ENTRIES;
-    }
-    await kvsStore.set('auditLog', auditLog);
+    }));
+    // Bound the KVS array so audit history cannot grow indefinitely.
+    const bounded = boundHistory(auditLog, MAX_AUDIT_LOG_ENTRIES);
+    bounded.length = Math.min(bounded.length, MAX_AUDIT_LOG_ENTRIES);
+    await kvsStore.set('auditLog', bounded);
   } catch (error) {
-    console.error('Error logging audit entry:', error);
+    console.error('Error logging audit entry:', safeErrorForLog(error));
   }
 }

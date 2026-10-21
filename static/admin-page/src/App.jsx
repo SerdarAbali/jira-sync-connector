@@ -71,7 +71,6 @@ const formatDateTimeEuro = (timestamp, options = {}) => {
       ...options
     }).format(new Date(timestamp));
   } catch (error) {
-    console.error('Error formatting date/time:', error);
     return new Date(timestamp).toLocaleString('fi-FI', { hour12: false, ...options });
   }
 };
@@ -232,7 +231,6 @@ const App = () => {
       setOrganizationsLoadState({ status: 'error', message });
       showMessage(message, 'error');
     } catch (error) {
-      console.error('Error loading organizations:', error);
       const message = 'Unable to load connector organizations.';
       setOrganizationsLoadState({ status: 'error', message });
       showMessage(message, 'error');
@@ -264,7 +262,6 @@ const App = () => {
       if (lastSyncData?.lastSync) setLastSyncTime(lastSyncData.lastSync);
       if (rejectedFieldData?.fields) setRejectedFieldIds(rejectedFieldData.fields);
     } catch (error) {
-      console.error('Error loading org data:', error);
     }
   };
 
@@ -813,7 +810,6 @@ const App = () => {
                 setTimeout(() => pollStatus(attempts + 1), 1000);
               }
             } catch (pollError) {
-              console.error('Poll error:', pollError);
               setTimeout(() => pollStatus(attempts + 1), 2000);
             }
           };
@@ -895,25 +891,18 @@ const App = () => {
   };
 
   const handleExportIssues = async (options) => {
-    console.log('[Export Debug] handleExportIssues called', { options });
     
     // Check if invoke function is available
     if (typeof invoke !== 'function') {
-      console.error('[Export Debug] invoke function is not available');
       showMessage('Error: Bridge function not available. Please refresh the page.', 'error');
       return;
     }
     
     if (!options?.jql?.trim()) {
-      console.log('[Export Debug] No JQL provided, showing error');
       showMessage('Enter a JQL query to export issues', 'error');
       return;
     }
 
-    console.log('[Sync Connector] Export issues clicked', {
-      location: window?.location?.href,
-      options
-    });
 
     setIssueExporting(true);
     try {
@@ -926,9 +915,7 @@ const App = () => {
         includeIssueLinks: options.includeIssueLinks
       };
 
-      console.log('[Export Debug] Invoking exportIssues with payload:', payload);
       const result = await invoke('exportIssues', payload);
-      console.log('[Export Debug] Received result:', result);
       if (result.success && result.data) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json' });
@@ -945,10 +932,8 @@ const App = () => {
         showMessage(`Error exporting issues: ${result.error || 'Unknown error'}`, 'error');
       }
     } catch (error) {
-      console.error('[Export Debug] Error in handleExportIssues:', error);
       showMessage('Error exporting issues: ' + error.message, 'error');
     } finally {
-      console.log('[Export Debug] Export process completed');
       setIssueExporting(false);
     }
   };
@@ -2250,7 +2235,6 @@ const SyncActivityPanel = ({
   scanProgress, resetScanProgress, handleCancelBulkSync,
   handleTriggerScheduledSync, scheduledSyncLoading
 }) => {
-  console.log('[Debug] SyncActivityPanel rendered', { onExportIssues: !!onExportIssues, organizations: organizations?.length });
   const [eventsExpanded, setEventsExpanded] = useState(false);
   const [exportJql, setExportJql] = useState('');
   const [exportMode, setExportMode] = useState('predefined'); // 'predefined' or 'custom'
@@ -2349,27 +2333,16 @@ const SyncActivityPanel = ({
       event.stopPropagation();
     }
     
-    console.log('[Export Debug] triggerIssueExport called', { 
-      onExportIssues: !!onExportIssues,
-      exportJql,
-      exportLimit,
-      exportIncludeComments,
-      exportIncludeAttachments,
-      exportIncludeChangelog,
-      exportIncludeLinks
-    });
     
     // Generate JQL based on current selections
     const jqlQuery = generateJQL();
     
     // Check if JQL is provided
     if (!jqlQuery || !jqlQuery.trim()) {
-      console.warn('[Export Debug] No JQL query generated');
       return;
     }
     
     if (!onExportIssues) {
-      console.error('[Export Debug] onExportIssues is not available');
       return;
     }
     
@@ -3609,6 +3582,5 @@ function initApp() {
       </ErrorBoundary>
     );
   } else {
-    console.error('Root element not found');
   }
 }

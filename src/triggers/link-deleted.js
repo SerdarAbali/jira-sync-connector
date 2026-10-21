@@ -3,7 +3,6 @@ import { getRemoteKey, getOrganizationsWithTokens, removeLinkMapping } from '../
 
 export async function run(event, context) {
   console.log(`🔗🗑️ Link deleted trigger fired`);
-  console.log(`🔗🗑️ Link delete event:`, JSON.stringify(event, null, 2));
 
   try {
     const linkId = event.issueLink?.id;
@@ -70,11 +69,11 @@ export async function run(event, context) {
       const remoteDestKey = await getRemoteKey(destinationIssueKey, orgId);
 
       if (!remoteSourceKey || !remoteDestKey) {
-        console.log(`⏭️ One or both issues not synced to ${org.name}, skipping link deletion`);
+        console.log(`⏭️ One or both issues not synced to ${org.id || 'organization'}, skipping link deletion`);
         continue;
       }
 
-      console.log(`🔗🗑️ Looking for link ${remoteSourceKey} → ${remoteDestKey} in ${org.name}`);
+      console.log(`🔗🗑️ Looking for link ${remoteSourceKey} → ${remoteDestKey} in ${org.id || 'organization'}`);
 
       const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
 
@@ -124,15 +123,14 @@ export async function run(event, context) {
         );
 
         if (deleteResponse.ok || deleteResponse.status === 204) {
-          console.log(`✅ Deleted link ${matchingLink.id} from ${org.name}`);
+          console.log(`✅ Deleted link ${matchingLink.id} from ${org.id || 'organization'}`);
           // Remove the link mapping
           await removeLinkMapping(linkId, orgId);
         } else {
-          const errorText = await deleteResponse.text();
-          console.error(`❌ Failed to delete link from ${org.name}: ${errorText}`);
+          console.error(`❌ Failed to delete link from ${org.id || 'organization'}`);
         }
       } catch (error) {
-        console.error(`❌ Error deleting link from ${org.name}:`, error);
+        console.error(`❌ Error deleting link from ${org.id || 'organization'}:`, error);
       }
     }
 

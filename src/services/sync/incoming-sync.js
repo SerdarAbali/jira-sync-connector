@@ -77,6 +77,7 @@ import {
   SYNC_DECISIONS
 } from './sync-state.js';
 import { recordSyncDecision } from './sync-observability.js';
+import { formatHttpFailure } from '../../utils/http-error.js';
 
 const ATTACHMENT_ISSUE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS = 6;
@@ -181,7 +182,7 @@ export async function processIncomingWebhook(payload, auth) {
   
   if (!issue) {
       if (isAttachmentEvent(webhookEvent)) {
-        console.log(`${LOG_EMOJI.WARNING} Attachment webhook missing issue payload. Keys: ${Object.keys(payload).join(', ')}`);
+        console.log(`${LOG_EMOJI.WARNING} Attachment webhook missing issue payload`);
       } else {
         return { status: 400, body: { error: 'No issue in payload' } };
       }
@@ -282,7 +283,7 @@ function extractRejectedFields(bodyText) {
  * (read-only, unknown, or not-on-screen fields) and retrying.
  * This prevents a single unmappable field from blocking an entire sync.
  *
- * @returns {{ ok: boolean, response?: any, status?: number, skippedFields: string[], errorBody?: string }}
+ * @returns {{ ok: boolean, response?: any, status?: number, skippedFields: string[], failure?: string }}
  */
 async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
   const skippedFields = [];
@@ -318,10 +319,10 @@ async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
       continue;
     }
 
-    return { ok: false, status: response.status, skippedFields, errorBody: bodyText };
+    return { ok: false, status: response.status, skippedFields, failure: formatHttpFailure(response.status) };
   }
 
-  return { ok: false, skippedFields, errorBody: 'Exhausted issue write attempts' };
+  return { ok: false, skippedFields, failure: 'remote_write_failed' };
 }
 
 async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
@@ -394,7 +395,7 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
 
   const result = await writeJiraIssueWithRecovery({ method: 'POST', payload });
   if (!result.ok) {
-    throw new Error(`Failed to create local issue: ${result.errorBody || 'unknown error'}`);
+    throw new Error(`Failed to create local issue: ${result.failure || 'remote_write_failed'}`);
   }
   if (result.skippedFields.length > 0) {
     console.log(`${LOG_EMOJI.WARNING} Created local issue without unmappable field(s): ${result.skippedFields.join(', ')}`);
@@ -449,7 +450,7 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
     for (const attachment of resolvedRemoteIssue.fields.attachment) {
       try {
         if (attachment.size > MAX_ATTACHMENT_SIZE) {
-          console.log(`${LOG_EMOJI.WARNING} Skipping attachment ${attachment.filename} - too large`);
+          console.log(`${LOG_EMOJI.WARNING} Skipping attachment attachment ${attachment.id || 'unknown'} - too large`);
           continue;
         }
 
@@ -462,7 +463,7 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
         });
 
         if (!downloadResponse.ok) {
-          console.error(`${LOG_EMOJI.ERROR} Failed to download remote attachment ${attachment.filename}: ${downloadResponse.status}`);
+          console.error(`${LOG_EMOJI.ERROR} Failed to download remote attachment attachment ${attachment.id || 'unknown'}: ${downloadResponse.status}`);
           continue;
         }
 
@@ -471,10 +472,10 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
 
         if (uploaded) {
           await storeAttachmentMapping(uploaded.id, attachment.id, orgId);
-          console.log(`${LOG_EMOJI.SUCCESS} Synced attachment ${attachment.filename}`);
+          console.log(`${LOG_EMOJI.SUCCESS} Synced attachment attachment ${attachment.id || 'unknown'}`);
         }
       } catch (error) {
-        console.error(`${LOG_EMOJI.ERROR} Error syncing attachment ${attachment.filename}:`, error);
+        console.error(`${LOG_EMOJI.ERROR} Error syncing attachment attachment ${attachment.id || 'unknown'}:`, error);
       }
     }
   }
@@ -495,7 +496,7 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
     console.log(`${LOG_EMOJI.INFO} Skipping field update for ${localKey}; changelog contains attachment changes only.`);
     if (payload?.changelog?.items) {
       await recordAttachmentIssueMappingFromChangelog(payload.changelog.items, remoteIssue.key, context.orgId);
-      console.log(`${LOG_EMOJI.INFO} Attachment changelog items: ${JSON.stringify(payload.changelog.items)}`);
+      console.log(`${LOG_EMOJI.INFO} Attachment changelog contained ${payload.changelog.items.length} item(s)`);
     }
     return { status: 'SKIPPED_ATTACHMENT_ONLY' };
   }
@@ -639,7 +640,7 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
 
     const result = await writeJiraIssueWithRecovery({ method: 'PUT', issueKey: localKey, payload: updatePayload });
     if (!result.ok) {
-      throw new Error(`Failed to update local issue: ${result.errorBody || 'unknown error'}`);
+      throw new Error(`Failed to update local issue: ${result.failure || 'remote_write_failed'}`);
     }
     if (result.skippedFields.length > 0) {
       console.log(`${LOG_EMOJI.WARNING} Updated local issue without unmappable field(s): ${result.skippedFields.join(', ')}`);
@@ -725,7 +726,7 @@ async function handleRemoteIssueDeleted(remoteIssue, context) {
 
 async function handleRemoteCommentCreated(payload, context) {
   if (!shouldSyncIncomingComments(context.syncOptions)) {
-    console.log(`⏭️ Incoming comments disabled for ${context.org.name}`);
+    console.log(`⏭️ Incoming comments disabled for ${context.orgId || 'organization'}`);
     return;
   }
 
@@ -783,8 +784,7 @@ async function handleRemoteCommentCreated(payload, context) {
     let response = await createLocalComment(localKey, body, parentContext.localParentId);
 
     if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Failed to sync incoming comment: ${err}`);
+      throw new Error(`Failed to sync incoming comment: ${formatHttpFailure(response.status)}`);
     }
 
     const createdComment = await response.json();
@@ -794,7 +794,7 @@ async function handleRemoteCommentCreated(payload, context) {
       jsdParentId: createdComment?.jsdParentId || null,
       propertiesCount: Array.isArray(createdComment?.properties) ? createdComment.properties.length : 0
     };
-    console.log(`${LOG_EMOJI.INFO} Created local comment ${localCommentId} with parent markers ${JSON.stringify(parentMarkers)}`);
+    console.log(`${LOG_EMOJI.INFO} Created local comment with ${parentMarkers.propertiesCount} parent marker(s)`);
     const replyLabel = parentContext.parentAuthor
       ? ` (reply to ${parentContext.parentAuthor})`
       : parentContext.localParentId
@@ -830,8 +830,7 @@ async function createLocalComment(localIssueKey, body, parentLocalId = null) {
     return initialResponse;
   }
 
-  const errorText = await initialResponse.text();
-  console.log(`${LOG_EMOJI.WARNING} Failed to create threaded reply on ${localIssueKey}: ${errorText}. Retrying as top-level comment.`);
+  console.log(`${LOG_EMOJI.WARNING} Failed to create threaded reply on ${localIssueKey}. Retrying as top-level comment.`);
   return await postLocalComment(localIssueKey, { body });
 }
 
@@ -1077,7 +1076,7 @@ async function buildUpdatePayload(remoteIssue, context) {
     delete fields.attachment;
   }
 
-  console.log(`📦 Update payload fields: ${Object.keys(fields).join(', ')}`);
+  console.log(`📦 Update payload contains ${Object.keys(fields).length} field(s)`);
 
   return { fields };
 }
@@ -1335,7 +1334,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
   console.log(`${LOG_EMOJI.ATTACHMENT} Handling attachment_created event for ${payload.issue?.key || 'unknown issue'} (attachment ${payload.attachment?.id || 'unknown'})`);
   
   if (!shouldSyncIncomingAttachments(context.syncOptions)) {
-    console.log(`⏭️ Incoming attachments disabled for ${context.org.name}`);
+    console.log(`⏭️ Incoming attachments disabled for ${context.orgId || 'organization'}`);
     return;
   }
 
@@ -1343,7 +1342,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
   let remoteIssueKey = payload.issue?.key;
 
   if (!attachment) {
-    console.log(`${LOG_EMOJI.WARNING} Attachment event missing attachment data. Keys: ${Object.keys(payload).join(', ')}`);
+    console.log(`${LOG_EMOJI.WARNING} Attachment event missing attachment data`);
     return;
   }
 
@@ -1356,8 +1355,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
   }
 
   if (!remoteIssueKey) {
-    console.log(`${LOG_EMOJI.ERROR} Could not determine remote issue key for attachment ${attachment.id}`);
-    console.log(`${LOG_EMOJI.INFO} Attachment payload: ${JSON.stringify(attachment)}`);
+    console.log(`${LOG_EMOJI.ERROR} Could not determine remote issue key for attachment`);
     return;
   }
 
@@ -1372,24 +1370,24 @@ async function handleRemoteAttachmentCreated(payload, context) {
   // Check if already synced
   const existingMapping = await getAttachmentMapping(attachment.id, context.orgId);
   if (existingMapping) {
-    console.log(`${LOG_EMOJI.SKIP} Attachment ${attachment.filename} already synced (mapping exists)`);
+    console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} already synced (mapping exists)`);
     return;
   }
 
-  console.log(`${LOG_EMOJI.INFO} Attachment ${attachment.filename} (${attachment.size} bytes) not mapped yet; proceeding with download`);
+  console.log(`${LOG_EMOJI.INFO} Attachment attachment ${attachment.id || 'unknown'} (${attachment.size} bytes) not mapped yet; proceeding with download`);
 
   // Check file size
   if (attachment.size > MAX_ATTACHMENT_SIZE) {
-    console.log(`${LOG_EMOJI.WARNING} Skipping attachment ${attachment.filename} - too large (${(attachment.size / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`${LOG_EMOJI.WARNING} Skipping attachment attachment ${attachment.id || 'unknown'} - too large (${(attachment.size / 1024 / 1024).toFixed(2)} MB)`);
     return;
   }
 
-  console.log(`${LOG_EMOJI.ATTACHMENT} Syncing incoming attachment ${attachment.filename} (${attachment.size} bytes)`);
+  console.log(`${LOG_EMOJI.ATTACHMENT} Syncing incoming attachment attachment ${attachment.id || 'unknown'} (${attachment.size} bytes)`);
 
   await markSyncing(localKey);
   try {
     // 1. Download from Remote
-    console.log(`⬇️ Downloading from: ${attachment.content}`);
+    console.log(`⬇️ Downloading from: [REDACTED_URL]`);
     const auth = Buffer.from(`${context.org.remoteEmail}:${context.org.remoteApiToken}`).toString('base64');
     const downloadResponse = await fetch(attachment.content, {
       headers: {
@@ -1414,7 +1412,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
     const uploadedAttachment = await uploadAttachment(localKey, attachment.filename, buffer);
 
     if (uploadedAttachment) {
-      console.log(`${LOG_EMOJI.SUCCESS} Synced attachment ${attachment.filename} to ${localKey}`);
+      console.log(`${LOG_EMOJI.SUCCESS} Synced attachment attachment ${attachment.id || 'unknown'} to ${localKey}`);
       // Store mapping: Remote ID -> Local ID (Note: getAttachmentMapping usually expects Local ID -> Remote ID, 
       // but for inbound we might need to store it differently or just rely on the fact that we check by Remote ID here?
       // Actually, storeAttachmentMapping stores localAttachmentId -> remoteAttachmentId.
@@ -1434,7 +1432,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
 
 async function handleRemoteIssueLinkCreated(payload, context) {
   if (!shouldSyncIncomingLinks(context.syncOptions)) {
-    console.log(`⏭️ Incoming links disabled for ${context.org.name}`);
+    console.log(`⏭️ Incoming links disabled for ${context.orgId || 'organization'}`);
     return;
   }
 
@@ -1830,8 +1828,7 @@ async function createLocalIssueLink(outwardKey, inwardKey, linkTypeName) {
       return true;
     }
 
-    const errorText = await response.text();
-    console.error(`${LOG_EMOJI.ERROR} Failed to create local issue link: ${errorText}`);
+    console.error(`${LOG_EMOJI.ERROR} Failed to create local issue link`);
     return false;
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error creating local issue link:`, error);

@@ -4,6 +4,8 @@ import { getOrgName, getFullIssue } from '../services/jira/local-client.js';
 import { getAllRemoteKeys, getRemoteKey, removeMapping } from '../services/storage/mappings.js';
 import { getRejectedFields, clearRejectedField } from '../services/storage/rejected-fields.js';
 import { createIssueForOrg, updateIssueForOrg } from '../services/sync/issue-sync.js';
+import { formatHttpFailure } from '../utils/http-error.js';
+import { safeErrorSummary } from '../utils/redaction.js';
 
 const MAX_ISSUE_EXPORT = 250;
 const ISSUE_EXPORT_PAGE_SIZE = 50;
@@ -95,8 +97,7 @@ export function defineDataResolvers(resolver) {
         route`/rest/api/3/project/${projectKey}/statuses`
       );
       if (!statusesResponse.ok) {
-        const errText = await statusesResponse.text();
-        throw new Error(`Could not fetch local statuses for project '${projectKey}': HTTP ${statusesResponse.status} - ${errText}`);
+        throw new Error(`Could not fetch local statuses for project '${projectKey}': ${formatHttpFailure(statusesResponse.status)}`);
       }
       const statusData = await statusesResponse.json();
 
@@ -151,7 +152,7 @@ export function defineDataResolvers(resolver) {
       const orgId = payload?.orgId;
       let config;
 
-      console.log('fetchRemoteData called with orgId:', orgId);
+      console.log('fetchRemoteData requested');
 
       if (orgId) {
         // Use new organization format
@@ -226,8 +227,7 @@ export function defineDataResolvers(resolver) {
         { headers }
       );
       if (!statusesResponse.ok) {
-        const errText = await statusesResponse.text();
-        throw new Error(`Could not fetch remote statuses for project '${config.remoteProjectKey}': HTTP ${statusesResponse.status} - ${errText}`);
+        throw new Error(`Could not fetch remote statuses for project '${config.remoteProjectKey}': ${formatHttpFailure(statusesResponse.status)}`);
       }
       const statusData = await statusesResponse.json();
 
@@ -279,7 +279,6 @@ export function defineDataResolvers(resolver) {
   resolver.define('exportIssues', async ({ payload, context }) => {
     try {
       const jql = payload?.jql?.trim();
-      console.log('[Export Debug] Received JQL:', jql);
       
       if (!jql) {
         return { success: false, error: 'JQL query is required' };
@@ -293,7 +292,6 @@ export function defineDataResolvers(resolver) {
         if (requestingAccountId) {
           const accountLiteral = requestingAccountId.replace(/"/g, '');
           effectiveJql = jql.replace(currentUserPattern, accountLiteral);
-          console.log('[Export Debug] currentUser() replaced with accountId literal for user:', requestingAccountId);
         } else {
           console.warn('[Export Debug] JQL uses currentUser() but no accountId found in context');
         }
@@ -324,8 +322,7 @@ export function defineDataResolvers(resolver) {
           requestBody.nextPageToken = nextPageToken;
         }
         
-        console.log('[Export Debug] POST body:', JSON.stringify(requestBody));
-        console.log('[Export Debug] JQL being sent:', effectiveJql);
+        console.log('[Export Debug] Submitting issue export search');
         
         const searchResponse = await api.asApp().requestJira(
           route`/rest/api/3/search/jql`,
@@ -339,8 +336,7 @@ export function defineDataResolvers(resolver) {
         );
 
         if (!searchResponse.ok) {
-          const errorText = await searchResponse.text();
-          return { success: false, error: `Search failed: ${errorText}` };
+          return { success: false, error: `Search failed: ${formatHttpFailure(searchResponse.status)}` };
         }
 
         const searchData = await searchResponse.json();
@@ -369,8 +365,7 @@ export function defineDataResolvers(resolver) {
           );
 
           if (!issueResponse.ok) {
-            const errorText = await issueResponse.text();
-            return { success: false, error: `Failed to fetch ${issue.key}: ${errorText}` };
+            return { success: false, error: `Failed to fetch ${issue.key}: ${formatHttpFailure(issueResponse.status)}` };
           }
 
           const issueDetail = await issueResponse.json();
@@ -457,7 +452,7 @@ export function defineDataResolvers(resolver) {
       };
     } catch (error) {
       console.error('Error exporting issues:', error);
-      return { success: false, error: error.message };
+      return { success: false, error: safeErrorSummary(error.message) };
     }
   });
 
@@ -562,14 +557,14 @@ export function defineDataResolvers(resolver) {
           }
         } catch (error) {
           console.error(`Error importing ${issueKey}:`, error);
-          results.errors.push({ issueKey, message: error.message });
+          results.errors.push({ issueKey, message: safeErrorSummary(error.message) });
         }
       }
 
       return { success: true, results };
     } catch (error) {
       console.error('Error importing issues:', error);
-      return { success: false, error: error.message };
+      return { success: false, error: safeErrorSummary(error.message) };
     }
   });
 
@@ -636,7 +631,7 @@ export function defineDataResolvers(resolver) {
       };
     } catch (error) {
       console.error('Error auto-matching:', error);
-      return { success: false, error: error.message };
+      return { success: false, error: safeErrorSummary(error.message) };
     }
   });
 
@@ -696,7 +691,7 @@ export function defineDataResolvers(resolver) {
               : 'Could not verify remote issue'
       };
     } catch (error) {
-      return { error: error.message };
+      return { error: safeErrorSummary(error.message) };
     }
   });
 }

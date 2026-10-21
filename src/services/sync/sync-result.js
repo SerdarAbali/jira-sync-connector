@@ -1,4 +1,5 @@
 import { LOG_EMOJI, OPERATION_RESULT } from '../../constants.js';
+import { safeErrorSummary } from '../../utils/redaction.js';
 
 // Class to track sync operation results
 export class SyncResult {
@@ -17,14 +18,16 @@ export class SyncResult {
   }
 
   addWarning(message) {
-    this.warnings.push(message);
-    console.warn(`${LOG_EMOJI.WARNING} ${message}`);
+    const safeMessage = safeErrorSummary(message);
+    this.warnings.push(safeMessage);
+    console.warn(`${LOG_EMOJI.WARNING} ${safeMessage}`);
   }
 
   addError(message) {
-    this.errors.push(message);
+    const safeMessage = safeErrorSummary(message);
+    this.errors.push(safeMessage);
     this.success = false;
-    console.error(`${LOG_EMOJI.ERROR} ${message}`);
+    console.error(`${LOG_EMOJI.ERROR} ${safeMessage}`);
   }
 
   addAttachmentSuccess(filename) {
@@ -32,9 +35,11 @@ export class SyncResult {
   }
 
   addAttachmentFailure(filename, error) {
+    void filename;
+    const safeError = safeErrorSummary(error);
     this.details.attachments.failed++;
-    this.details.attachments.errors.push(`${filename}: ${error}`);
-    this.addWarning(`Attachment failed: ${filename} - ${error}`);
+    this.details.attachments.errors.push(`attachment: ${safeError}`);
+    this.addWarning(`Attachment failed: ${safeError}`);
   }
 
   addAttachmentSkipped(filename, reason) {
@@ -46,9 +51,10 @@ export class SyncResult {
   }
 
   addLinkFailure(linkedIssue, error) {
+    const safeError = safeErrorSummary(error);
     this.details.links.failed++;
-    this.details.links.errors.push(`${linkedIssue}: ${error}`);
-    this.addWarning(`Link failed: ${linkedIssue} - ${error}`);
+    this.details.links.errors.push(`${linkedIssue}: ${safeError}`);
+    this.addWarning(`Link failed: ${linkedIssue} - ${safeError}`);
   }
 
   addLinkSkipped(linkedIssue, reason) {
@@ -60,9 +66,10 @@ export class SyncResult {
   }
 
   addTransitionFailure(status, error) {
+    const safeError = safeErrorSummary(error);
     this.details.transitions.failed++;
-    this.details.transitions.errors.push(`${status}: ${error}`);
-    this.addWarning(`Transition failed: ${status} - ${error}`);
+    this.details.transitions.errors.push(`${status}: ${safeError}`);
+    this.addWarning(`Transition failed: ${status} - ${safeError}`);
   }
 
   logSummary(issueKey, remoteKey) {

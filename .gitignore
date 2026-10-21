@@ -29,3 +29,9 @@ dist/
 build/
 static/admin-page/.parcel-cache/
 static/admin-page/package-lock.json
+
+# Runtime log captures
+logs*.txt
+*.log
+scr*.log
+latest-sync.log

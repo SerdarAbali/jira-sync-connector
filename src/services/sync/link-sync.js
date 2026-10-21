@@ -1,5 +1,7 @@
 import { fetch } from '@forge/api';
 import { LOG_EMOJI } from '../../constants.js';
+import { formatHttpFailure } from '../../utils/http-error.js';
+import { safeErrorSummary } from '../../utils/redaction.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
@@ -43,13 +45,13 @@ export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKe
       console.log(`${LOG_EMOJI.SUCCESS} Created issue link (${linkTypeName})`);
       return { success: true };
     } else {
-      const errorText = await response.text();
-      console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
-      return { success: false, error: errorText };
+      console.error(`${LOG_EMOJI.ERROR} Failed to create link`);
+      return { success: false, error: formatHttpFailure(response.status) };
     }
   } catch (error) {
-    console.error(`${LOG_EMOJI.ERROR} Error creating link: ${error.message}`);
-    return { success: false, error: error.message };
+    const safeFailure = safeErrorSummary(error.message);
+    console.error(`${LOG_EMOJI.ERROR} Error creating link: ${safeFailure}`);
+    return { success: false, error: safeFailure };
   }
 }
 
@@ -190,16 +192,15 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
         if (syncResult) syncResult.addLinkSuccess(linkedIssueKey, linkTypeName);
         result.synced++;
       } else {
-        const errorText = await response.text();
-        console.error(`${LOG_EMOJI.ERROR} Failed to create link: ${errorText}`);
-        if (syncResult) syncResult.addLinkFailure(linkedIssueKey, errorText);
+        console.error(`${LOG_EMOJI.ERROR} Failed to create link`);
+        if (syncResult) syncResult.addLinkFailure(linkedIssueKey, formatHttpFailure(response.status));
         result.failed++;
       }
 
     } catch (error) {
       console.error(`${LOG_EMOJI.ERROR} Error syncing link ${link.id}:`, error);
       const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
-      if (syncResult) syncResult.addLinkFailure(linkedKey, error.message);
+      if (syncResult) syncResult.addLinkFailure(linkedKey, safeErrorSummary(error.message));
       result.failed++;
     }
   }

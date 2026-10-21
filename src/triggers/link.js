@@ -4,7 +4,6 @@ import { LOG_EMOJI } from '../constants.js';
 
 export async function run(event, context) {
   console.log(`${LOG_EMOJI.LINK} Link creation trigger fired`);
-  console.log(`${LOG_EMOJI.LINK} Link event:`, JSON.stringify(event, null, 2));
   
   try {
     // Get both source and target issue keys from the link

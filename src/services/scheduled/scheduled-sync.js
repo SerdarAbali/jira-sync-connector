@@ -1,6 +1,8 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
-import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
+import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS, MAX_ERROR_ENTRIES } from '../../constants.js';
+import { safeErrorSummary, boundHistory } from '../../utils/redaction.js';
+import { formatHttpFailure } from '../../utils/http-error.js';
 import { sleep } from '../../utils/retry.js';
 import { getRemoteKey, getLocalKey, storeLinkMapping, getOrganizationsWithTokens, getLastSyncedLocalUpdated } from '../storage/mappings.js';
 import { removePendingLink, getPendingLinks, removeIssueFromPendingLinksIndex } from '../storage/flags.js';
@@ -51,6 +53,12 @@ function recordEvent(stats, event) {
   }
 }
 
+function recordScheduledError(stats, message) {
+  if (!stats) return;
+  stats.errors.push(safeErrorSummary(message));
+  stats.errors = boundHistory(stats.errors, MAX_ERROR_ENTRIES);
+}
+
 export async function retryAllPendingLinks(config, mappings, stats) {
   console.log(`🔄 Starting pending link retry...`);
 
@@ -92,11 +100,11 @@ export async function retryAllPendingLinks(config, mappings, stats) {
       const remoteIssueKey = await getRemoteKey(localIssueKey, orgId);
 
       if (!remoteIssueKey) {
-        console.log(`⏭️ Skipping ${localIssueKey} - not synced to remote yet (org: ${config.name || orgId})`);
+        console.log(`⏭️ Skipping ${localIssueKey} - not synced to remote yet (org: ${orgId || 'organization'})`);
         continue;
       }
 
-      console.log(`🔗 Retrying ${orgPendingLinks.length} pending link(s) for ${localIssueKey} (org: ${config.name || orgId})`);
+      console.log(`🔗 Retrying ${orgPendingLinks.length} pending link(s) for ${localIssueKey} (org: ${orgId || 'organization'})`);
 
       const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
 
@@ -180,15 +188,15 @@ export async function retryAllPendingLinks(config, mappings, stats) {
               });
             }
           } else {
-            const errorText = await response.text();
-            console.error(`${LOG_EMOJI.ERROR} Failed to create pending link: ${errorText}`);
+            const safeFailure = formatHttpFailure(response.status);
+            console.error(`${LOG_EMOJI.ERROR} Failed to create pending link`);
             totalFailed++;
             if (stats) {
               recordEvent(stats, {
                 type: 'link-error',
                 issueKey: localIssueKey,
                 linkedIssueKey: pendingLink.linkedIssueKey,
-                message: errorText
+                message: safeFailure
               });
             }
             // Keep as pending for next retry
@@ -294,7 +302,7 @@ export async function performScheduledSync() {
       // Check for timeout before starting org
       if (Date.now() - startTime > TIMEOUT_THRESHOLD_MS) {
         console.warn(`⚠️ Scheduled sync approaching timeout. Stopping early.`);
-        stats.errors.push('Sync stopped early due to timeout risk');
+        recordScheduledError(stats, 'Sync stopped early due to timeout risk');
         break;
       }
 
@@ -393,7 +401,7 @@ export async function performScheduledSync() {
         ? `${baseFilter} AND updated >= -24h ORDER BY updated DESC`
         : `${baseFilter} ORDER BY updated DESC`;
       
-      console.log(`🔍 JQL: ${jql}`);
+      console.log('🔍 Querying mapped issues');
       
       const searchBody = {
         jql,
@@ -414,8 +422,7 @@ export async function performScheduledSync() {
       );
 
       if (!searchResponse.ok) {
-        const errorText = await searchResponse.text();
-        throw new Error(`Failed to fetch issues: ${errorText}`);
+        throw new Error(`Failed to fetch issues: ${formatHttpFailure(searchResponse.status)}`);
       }
 
       const searchResults = await searchResponse.json();
@@ -426,7 +433,7 @@ export async function performScheduledSync() {
         // Check for timeout inside the issue loop
         if (Date.now() - startTime > TIMEOUT_THRESHOLD_MS) {
           console.warn(`⚠️ Scheduled sync approaching timeout. Stopping issue loop for ${orgName}.`);
-          stats.errors.push(`Sync stopped early for ${orgName} due to timeout risk`);
+          recordScheduledError(stats, `Sync stopped early for ${orgName} due to timeout risk`);
           break;
         }
 
@@ -488,7 +495,7 @@ export async function performScheduledSync() {
           
         } catch (error) {
           console.error(`Error syncing ${issueKey}:`, error);
-          stats.errors.push(`${issueKey}: ${error.message}`);
+          recordScheduledError(stats, `${issueKey}: ${error.message}`);
           recordEvent(stats, {
             type: 'error',
             issueKey,
@@ -508,7 +515,7 @@ export async function performScheduledSync() {
       
     } catch (error) {
       console.error(`Error processing org ${orgName}:`, error);
-      stats.errors.push(`${orgName}: ${error.message}`);
+      recordScheduledError(stats, `${orgName}: ${error.message}`);
       recordEvent(stats, {
         type: 'error',
         message: error.message,

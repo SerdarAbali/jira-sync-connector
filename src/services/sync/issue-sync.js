@@ -14,6 +14,8 @@ import { syncAllComments } from './comment-sync.js';
 import { transitionRemoteIssue } from './transition-sync.js';
 import { SyncResult } from './sync-result.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
+import { formatHttpFailure } from '../../utils/http-error.js';
+import { safeErrorSummary } from '../../utils/redaction.js';
 import { hashSynchronizedFields } from './field-normalization.js';
 import { resolveRemoteDestinationHash } from './destination-state.js';
 import { acquireIssueLease, releaseIssueLease } from './issue-lease.js';
@@ -118,12 +120,12 @@ async function getRemoteEpicLinkFieldId(org) {
       );
       if (epicLinkField) {
         epicLinkFieldCache.remote[org.id] = { id: epicLinkField.id, expiresAt: now + CACHE_TTL_MS };
-        console.log(`🎯 Found remote Epic Link field for ${org.name}: ${epicLinkField.id}`);
+        console.log(`🎯 Found remote Epic Link field for ${org.id || 'organization'}: ${epicLinkField.id}`);
         return epicLinkField.id;
       }
     }
   } catch (e) {
-    console.log(`⚠️ Could not find remote Epic Link field for ${org.name}: ${e.message}`);
+    console.log(`⚠️ Could not find remote Epic Link field for ${org.id || 'organization'}: ${e.message}`);
   }
   return null;
 }
@@ -166,7 +168,7 @@ async function matchesJqlFilter(issueKey, jqlFilter) {
     const matches = result.total > 0;
     
     if (!matches) {
-      console.log(`${LOG_EMOJI.INFO} Issue ${issueKey} does not match JQL filter: ${jqlFilter}`);
+      console.log(`${LOG_EMOJI.INFO} Issue ${issueKey} does not match the configured JQL filter`);
     }
     
     return matches;
@@ -202,7 +204,7 @@ async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) 
   // Find the remote epic link field
   const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
   if (!remoteEpicFieldId) {
-    console.log(`${LOG_EMOJI.WARNING} Remote org ${org.name} doesn't have Epic Link field (might be next-gen project)`);
+    console.log(`${LOG_EMOJI.WARNING} Remote org ${org.id || 'organization'} doesn't have Epic Link field (might be next-gen project)`);
     return null;
   }
   
@@ -326,12 +328,12 @@ export async function syncIssue(event) {
 
   // Sync to all organizations
   for (const org of organizations) {
-    console.log(`\n🌐 Syncing to organization: ${org.name} (${org.id})`);
+    console.log(`\n🌐 Syncing to organization: ${org.id || 'organization'} (${org.id})`);
 
     // Check if project is allowed to sync for this org
     const isAllowed = await isProjectAllowedToSync(projectKey, org);
     if (!isAllowed) {
-      console.log(`⏭️ Skipping ${issueKey} for ${org.name} - project ${projectKey} not in allowed list`);
+      console.log(`⏭️ Skipping ${issueKey} for ${org.id || 'organization'} - project ${projectKey} not in allowed list`);
       continue;
     }
 
@@ -339,7 +341,7 @@ export async function syncIssue(event) {
     if (org.jqlFilter) {
       const matchesFilter = await matchesJqlFilter(issueKey, org.jqlFilter);
       if (!matchesFilter) {
-        console.log(`⏭️ Skipping ${issueKey} for ${org.name} - does not match JQL filter`);
+        console.log(`⏭️ Skipping ${issueKey} for ${org.id || 'organization'} - does not match JQL filter`);
         continue;
       }
     }
@@ -398,7 +400,7 @@ export async function syncIssue(event) {
 
     try {
       if (existingRemoteKey) {
-        console.log(`${LOG_EMOJI.UPDATE} UPDATE for ${org.name}: ${issueKey} → ${existingRemoteKey}`);
+        console.log(`${LOG_EMOJI.UPDATE} UPDATE for ${org.id || 'organization'}: ${issueKey} → ${existingRemoteKey}`);
         const updateResult = await updateRemoteIssueForOrg(issueKey, existingRemoteKey, issue, org, mappings, syncOptions, syncResult);
         if (updateResult?.skipped) {
           await trackWebhookSync('skip', false, updateResult.status || 'Update skipped', org.id, issueKey, {
@@ -426,7 +428,7 @@ export async function syncIssue(event) {
           errors: syncResult.errors
         });
       } else {
-        console.log(`${LOG_EMOJI.CREATE} CREATE for ${org.name}: ${issueKey}`);
+        console.log(`${LOG_EMOJI.CREATE} CREATE for ${org.id || 'organization'}: ${issueKey}`);
         remoteKey = await createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncResult);
         await trackWebhookSync('create', syncResult.success && remoteKey, syncResult.errors.join('; '), org.id, issueKey, {
           remoteKey: remoteKey || 'failed',
@@ -449,7 +451,7 @@ export async function syncIssue(event) {
       // Log comprehensive summary for this org
       syncResult.logSummary(issueKey, remoteKey, org.name);
     } catch (error) {
-      console.error(`${LOG_EMOJI.ERROR} Error syncing to ${org.name}:`, error);
+      console.error(`${LOG_EMOJI.ERROR} Error syncing to ${org.id || 'organization'}:`, error);
       await trackWebhookSync(existingRemoteKey ? 'update' : 'create', false, error.message, org.id, issueKey, {
         remoteKey: existingRemoteKey || 'none',
         projectKey,
@@ -587,17 +589,17 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
 
   if (issue.fields.components && issue.fields.components.length > 0) {
     remoteIssue.fields.components = issue.fields.components.map(c => ({ name: c.name }));
-    console.log(`🏷️ Syncing ${issue.fields.components.length} component(s): ${issue.fields.components.map(c => c.name).join(', ')}`);
+    console.log(`🏷️ Syncing ${issue.fields.components.length} component(s)`);
   }
 
   if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
     remoteIssue.fields.fixVersions = issue.fields.fixVersions.map(v => ({ name: v.name }));
-    console.log(`🔖 Syncing ${issue.fields.fixVersions.length} fix version(s): ${issue.fields.fixVersions.map(v => v.name).join(', ')}`);
+    console.log(`🔖 Syncing ${issue.fields.fixVersions.length} fix version(s)`);
   }
 
   if (issue.fields.versions && issue.fields.versions.length > 0) {
     remoteIssue.fields.versions = issue.fields.versions.map(v => ({ name: v.name }));
-    console.log(`📌 Syncing ${issue.fields.versions.length} affects version(s): ${issue.fields.versions.map(v => v.name).join(', ')}`);
+    console.log(`📌 Syncing ${issue.fields.versions.length} affects version(s)`);
   }
 
   if (issue.fields.timetracking && Object.keys(issue.fields.timetracking).length > 0) {
@@ -608,7 +610,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     if (issue.fields.timetracking.remainingEstimate) {
       remoteIssue.fields.timetracking.remainingEstimate = issue.fields.timetracking.remainingEstimate;
     }
-    console.log(`⏱️ Syncing time tracking: ${issue.fields.timetracking.originalEstimate || 'no estimate'}`);
+    console.log('⏱️ Syncing time tracking');
   }
 
   if (issue.fields.parent && issue.fields.parent.key) {
@@ -651,7 +653,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     const mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, mappings.userMappings);
     if (mappedAssignee) {
       remoteIssue.fields.assignee = { accountId: mappedAssignee };
-      console.log(`👤 Mapped assignee: ${issue.fields.assignee.accountId} → ${mappedAssignee}`);
+      console.log('👤 Mapped assignee');
     }
   }
   
@@ -659,12 +661,12 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     const mappedReporter = mapUserToRemote(issue.fields.reporter.accountId, mappings.userMappings);
     if (mappedReporter) {
       remoteIssue.fields.reporter = { accountId: mappedReporter };
-      console.log(`👤 Mapped reporter: ${issue.fields.reporter.accountId} → ${mappedReporter}`);
+      console.log('👤 Mapped reporter');
     }
   }
 
   const reversedFieldMap = reverseMapping(mappings.fieldMappings);
-  console.log(`🗺️ Field mappings to process:`, JSON.stringify(Object.keys(reversedFieldMap)));
+  console.log(`🗺️ Field mappings to process: ${Object.keys(reversedFieldMap).length}`);
   
   // Fields that should never be synced (Jira internal fields)
   const blockedFields = [
@@ -687,10 +689,8 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     if (issue.fields[localFieldId] !== undefined && issue.fields[localFieldId] !== null) {
       let fieldValue = issue.fields[localFieldId];
       
-      // Log the actual field value for debugging
-      console.log(`🔍 Field ${localFieldId} raw value:`, JSON.stringify(fieldValue).substring(0, 200));
-      
-      // Skip rank/lexorank fields (string values like "0|i00067:")
+      // Log field identity only; field values may contain user-authored content.
+      console.log(`📝 Processing field ${localFieldId} → ${remoteFieldId}, value type: ${typeof fieldValue}, isArray: ${Array.isArray(fieldValue)}`);
       if (isRankLikeString(fieldValue)) {
         console.log(`⏭️ Skipping lexorank field ${localFieldId} - value looks like rank data`);
         continue;
@@ -718,11 +718,11 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
 
   try {
       console.log('Creating remote issue for:', issue.key);
-      console.log('📦 Payload fields:', JSON.stringify(Object.keys(remoteIssue.fields)));
+      console.log('📦 Create payload prepared');
 
       // DRY RUN CHECK
       if (syncOptions?.dryRun) {
-        console.log(`[DRY RUN] Would create issue ${issue.key} in ${org.name} with payload:`, JSON.stringify(remoteIssue, null, 2));
+        console.log(`[DRY RUN] Would create issue ${issue.key} in ${org.id || 'organization'} with ${Object.keys(remoteIssue.fields).length} field(s)`);
         return {
           key: 'DRY-RUN-KEY',
           id: 'DRY-RUN-ID',
@@ -963,14 +963,13 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       await clearSyncFlag(issue.key);
       return { key: result.key, details: syncDetails };
     } else {
-      const errorText = await response.text();
-      console.error(`${LOG_EMOJI.ERROR} Create failed: ${errorText}`);
-      if (syncResult) syncResult.addError(`Create failed: ${errorText}`);
+      console.error(`${LOG_EMOJI.ERROR} Create failed`);
+      if (syncResult) syncResult.addError(`Create failed: ${formatHttpFailure(response.status)}`);
       await clearSyncFlag(issue.key);
     }
   } catch (error) {
     console.error(`${LOG_EMOJI.ERROR} Error creating remote issue:`, error);
-    if (syncResult) syncResult.addError(`Error creating remote issue: ${error.message}`);
+    if (syncResult) syncResult.addError(`Error creating remote issue: ${safeErrorSummary(error.message)}`);
     await clearSyncFlag(issue.key);
   }
 
@@ -1200,7 +1199,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
     if (issue.fields.components && issue.fields.components.length > 0) {
       updateData.fields.components = issue.fields.components.map(c => ({ name: c.name }));
-      console.log(`🏷️ Updating ${issue.fields.components.length} component(s): ${issue.fields.components.map(c => c.name).join(', ')}`);
+      console.log(`🏷️ Updating ${issue.fields.components.length} component(s)`);
     } else if (issue.fields.components && issue.fields.components.length === 0) {
       updateData.fields.components = [];
       console.log(`🏷️ Clearing components`);
@@ -1208,7 +1207,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
     if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
       updateData.fields.fixVersions = issue.fields.fixVersions.map(v => ({ name: v.name }));
-      console.log(`🔖 Updating ${issue.fields.fixVersions.length} fix version(s): ${issue.fields.fixVersions.map(v => v.name).join(', ')}`);
+      console.log(`🔖 Updating ${issue.fields.fixVersions.length} fix version(s)`);
     } else if (issue.fields.fixVersions && issue.fields.fixVersions.length === 0) {
       updateData.fields.fixVersions = [];
       console.log(`🔖 Clearing fix versions`);
@@ -1216,7 +1215,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
     if (issue.fields.versions && issue.fields.versions.length > 0) {
       updateData.fields.versions = issue.fields.versions.map(v => ({ name: v.name }));
-      console.log(`📌 Updating ${issue.fields.versions.length} affects version(s): ${issue.fields.versions.map(v => v.name).join(', ')}`);
+      console.log(`📌 Updating ${issue.fields.versions.length} affects version(s)`);
     } else if (issue.fields.versions && issue.fields.versions.length === 0) {
       updateData.fields.versions = [];
       console.log(`📌 Clearing affects versions`);
@@ -1230,7 +1229,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
       if (issue.fields.timetracking.remainingEstimate) {
         updateData.fields.timetracking.remainingEstimate = issue.fields.timetracking.remainingEstimate;
       }
-      console.log(`⏱️ Updating time tracking: ${issue.fields.timetracking.originalEstimate || 'no estimate'}`);
+      console.log('⏱️ Updating time tracking');
     }
 
     if (issue.fields.parent && issue.fields.parent.key) {
@@ -1266,7 +1265,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
       const mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, mappings.userMappings);
       if (mappedAssignee) {
         updateData.fields.assignee = { accountId: mappedAssignee };
-        console.log(`👤 Mapped assignee: ${issue.fields.assignee.accountId} → ${mappedAssignee}`);
+        console.log('👤 Mapped assignee');
       }
     } else if (issue.fields.assignee === null) {
       updateData.fields.assignee = null;
@@ -1327,7 +1326,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
       // DRY RUN CHECK
       if (syncOptions?.dryRun) {
-        console.log(`[DRY RUN] Would update issue ${localKey} -> ${remoteKey} in ${org.name} with payload:`, JSON.stringify(updateData, null, 2));
+        console.log(`[DRY RUN] Would update issue ${localKey} -> ${remoteKey} in ${org.id || 'organization'} with ${Object.keys(updateData.fields).length} field(s)`);
         return {
           ...syncDetails,
           dryRun: true,
@@ -1436,14 +1435,13 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
         }
         return syncDetails;
       } else {
-        const errorText = await response.text();
-        console.error(`${LOG_EMOJI.ERROR} Update failed: ${errorText}`);
-        if (syncResult) syncResult.addError(`Update failed: ${errorText}`);
+        console.error(`${LOG_EMOJI.ERROR} Update failed`);
+        if (syncResult) syncResult.addError(`Update failed: ${formatHttpFailure(response.status)}`);
         return null;
       }
     } catch (error) {
       console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
-      if (syncResult) syncResult.addError(`Error updating remote issue: ${error.message}`);
+      if (syncResult) syncResult.addError(`Error updating remote issue: ${safeErrorSummary(error.message)}`);
       return null;
     }
   } finally {

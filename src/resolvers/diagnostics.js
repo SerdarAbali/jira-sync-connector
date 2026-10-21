@@ -18,7 +18,7 @@ export function defineDiagnosticsResolvers(resolver) {
       
       if (!org) throw new Error('Organization not found');
       
-      results.steps.push({ name: 'Load Configuration', status: 'success', message: `Loaded config for ${org.name}` });
+      results.steps.push({ name: 'Load Configuration', status: 'success', message: 'Organization configuration loaded' });
 
       const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
       const headers = {
@@ -28,17 +28,17 @@ export function defineDiagnosticsResolvers(resolver) {
 
       // 2. Check Authentication (Remote)
       const myselfRes = await fetch(`${org.remoteUrl}/rest/api/3/myself`, { headers });
-      if (!myselfRes.ok) throw new Error(`Authentication failed: ${myselfRes.status}`);
-      const user = await myselfRes.json();
-      results.steps.push({ name: 'Remote Authentication', status: 'success', message: `Authenticated as ${user.displayName}` });
+      if (!myselfRes.ok) throw new Error('Authentication check failed');
+      await myselfRes.json();
+      results.steps.push({ name: 'Remote Authentication', status: 'success', message: 'Remote authentication succeeded' });
 
       // 3. Check Remote Project Access
       const projectRes = await fetch(`${org.remoteUrl}/rest/api/3/project/${org.remoteProjectKey}`, { headers });
       if (!projectRes.ok) {
-        if (projectRes.status === 404) throw new Error(`Project ${org.remoteProjectKey} not found or not accessible`);
-        throw new Error(`Project check failed: ${projectRes.status}`);
+        if (projectRes.status === 404) throw new Error('Remote project not found or not accessible');
+        throw new Error('Remote project check failed');
       }
-      results.steps.push({ name: 'Remote Project Access', status: 'success', message: `Found project ${org.remoteProjectKey}` });
+      results.steps.push({ name: 'Remote Project Access', status: 'success', message: 'Remote project accessible' });
 
       // 4. Check Create Permissions (Remote)
       const permRes = await fetch(`${org.remoteUrl}/rest/api/3/mypermissions?projectKey=${org.remoteProjectKey}&permissions=CREATE_ISSUES,EDIT_ISSUES,DELETE_ISSUES`, { headers });
@@ -73,12 +73,12 @@ export function defineDiagnosticsResolvers(resolver) {
           }
         }
       } catch (e) {
-        results.steps.push({ name: 'Local App Permissions', status: 'warning', message: `Could not check local permissions: ${e.message}` });
+        results.steps.push({ name: 'Local App Permissions', status: 'warning', message: 'Could not verify local permissions' });
       }
 
     } catch (error) {
       results.success = false;
-      results.steps.push({ name: 'Fatal Error', status: 'error', message: error.message });
+      results.steps.push({ name: 'Fatal Error', status: 'error', message: 'Health check failed' });
     }
 
     return results;
@@ -134,12 +134,13 @@ export function defineDiagnosticsResolvers(resolver) {
       
       // Summary
       if (localIssue.fields.summary !== remoteIssue.fields.summary) {
-        results.discrepancies.push(`Summary mismatch: "${localIssue.fields.summary}" vs "${remoteIssue.fields.summary}"`);
+        results.discrepancies.push('Summary mismatch');
       }
 
       // Status
-      // Note: Statuses might have different names/IDs, so we just report them
-      results.details.status = { local: localIssue.fields.status.name, remote: remoteIssue.fields.status.name };
+      results.details.status = {
+        match: localIssue.fields.status?.name === remoteIssue.fields.status?.name
+      };
 
       // Attachments
       const localAttachments = localIssue.fields.attachment || [];
@@ -148,7 +149,7 @@ export function defineDiagnosticsResolvers(resolver) {
       results.details.attachments = { local: localAttachments.length, remote: remoteAttachments.length };
       
       if (localAttachments.length !== remoteAttachments.length) {
-        results.discrepancies.push(`Attachment count mismatch: ${localAttachments.length} vs ${remoteAttachments.length}`);
+        results.discrepancies.push('Attachment count mismatch');
       }
 
       // Check for missing attachments by filename/size
@@ -159,9 +160,7 @@ export function defineDiagnosticsResolvers(resolver) {
       });
 
       if (missingAttachments.length > 0) {
-        missingAttachments.forEach(att => {
-          results.discrepancies.push(`Missing attachment on remote: ${att.filename} (${att.size} bytes)`);
-        });
+        results.discrepancies.push(`Missing attachment count: ${missingAttachments.length}`);
       }
 
       // Comments
@@ -175,7 +174,7 @@ export function defineDiagnosticsResolvers(resolver) {
       results.details.comments = { local: localComments.length, remote: remoteComments.length };
 
     } catch (error) {
-      results.error = error.message;
+      results.error = 'VERIFICATION_FAILED';
     }
 
     return results;

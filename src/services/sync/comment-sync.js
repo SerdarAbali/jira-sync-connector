@@ -9,6 +9,8 @@ import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
 import { SyncResult } from './sync-result.js';
 import { isSyncing } from '../storage/flags.js';
+import { formatHttpFailure } from '../../utils/http-error.js';
+import { safeErrorSummary } from '../../utils/redaction.js';
 // Threading helpers were removed because Jira flattens replies; we now embed context inline.
 
 /**
@@ -266,7 +268,7 @@ export async function syncComment(event) {
     const orgId = org.id === 'legacy' ? null : org.id;
     const existingRemoteCommentId = await getRemoteCommentId(commentId, orgId);
     if (existingRemoteCommentId) {
-      console.log(`${LOG_EMOJI.SKIP} Comment ${commentId} already synced to ${org.name} as ${existingRemoteCommentId}`);
+      console.log(`${LOG_EMOJI.SKIP} Comment ${commentId} already synced to ${org.id || 'organization'} as ${existingRemoteCommentId}`);
       continue;
     }
 
@@ -274,27 +276,27 @@ export async function syncComment(event) {
     const syncOptionsKey = org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`;
     const syncOptions = await kvsStore.get(syncOptionsKey) || { syncComments: true };
     if (!syncOptions.syncComments) {
-      console.log(`⏭️ Comment sync skipped for ${org.name}: disabled in sync options`);
+      console.log(`⏭️ Comment sync skipped for ${org.id || 'organization'}: disabled in sync options`);
       continue;
     }
 
     // Check if project is allowed to sync for this org
     const isAllowed = await isProjectAllowedToSync(projectKey, org);
     if (!isAllowed) {
-      console.log(`⏭️ Skipping comment on ${issueKey} for ${org.name} - project ${projectKey} not in allowed list`);
+      console.log(`⏭️ Skipping comment on ${issueKey} for ${org.id || 'organization'} - project ${projectKey} not in allowed list`);
       continue;
     }
 
     const remoteKey = await getRemoteKey(issueKey, orgId);
     if (!remoteKey) {
-      console.log(`No remote issue found for ${issueKey} in ${org.name}`);
+      console.log(`No remote issue found for ${issueKey} in ${org.id || 'organization'}`);
       continue;
     }
 
     const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
     const syncResult = new SyncResult('comment');
     try {
-      console.log(`${LOG_EMOJI.COMMENT} Syncing comment to ${org.name}: ${issueKey} → ${remoteKey} (from ${orgName} - ${userName})`);
+      console.log(`${LOG_EMOJI.COMMENT} Syncing comment to ${org.id || 'organization'}: ${issueKey} → ${remoteKey}`);
 
       const response = await executeWriteOnce(async () => {
         return await fetch(
@@ -317,7 +319,7 @@ export async function syncComment(event) {
           await storeCommentMapping(commentId, remoteCommentId, orgId);
         }
 
-        console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.name} (${remoteKey})${remoteCommentId ? ` → remote comment ${remoteCommentId}` : ''}`);
+        console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.id || 'organization'} (${remoteKey})${remoteCommentId ? ` → remote comment ${remoteCommentId}` : ''}`);
         syncResult.details.comments.success++;
         await trackWebhookSync('comment', true, null, org.id, issueKey, {
           remoteKey,
@@ -329,30 +331,26 @@ export async function syncComment(event) {
           parentRemoteId: null
         });
       } else {
-        const errorText = await response.text();
-        console.error(`${LOG_EMOJI.ERROR} Comment sync failed for ${org.name}: ${errorText}`);
+        console.error(`${LOG_EMOJI.ERROR} Comment sync failed for ${org.id || 'organization'}`);
+        const safeFailure = formatHttpFailure(response.status);
         syncResult.details.comments.failed++;
-        syncResult.addError(`Comment sync failed: ${errorText}`);
-        await trackWebhookSync('comment', false, errorText, org.id, issueKey, {
+        syncResult.addError(`Comment sync failed: ${safeFailure}`);
+        await trackWebhookSync('comment', false, safeFailure, org.id, issueKey, {
           remoteKey,
           projectKey,
           commentId,
-          author: userName,
-          httpStatus: response.status,
-          errorDetails: errorText
+          httpStatus: response.status
         });
       }
     } catch (error) {
-      console.error(`${LOG_EMOJI.ERROR} Error syncing comment to ${org.name}:`, error);
+      console.error(`${LOG_EMOJI.ERROR} Error syncing comment to ${org.id || 'organization'}:`, error);
+      const safeFailure = safeErrorSummary(error.message);
       syncResult.details.comments.failed++;
-      syncResult.addError(`Error syncing comment: ${error.message}`);
-      await trackWebhookSync('comment', false, error.message, org.id, issueKey, {
+      syncResult.addError(`Error syncing comment: ${safeFailure}`);
+      await trackWebhookSync('comment', false, safeFailure, org.id, issueKey, {
         remoteKey,
         projectKey,
-        commentId,
-        author: userName,
-        errorStack: error.stack,
-        errorDetails: error.toString()
+        commentId
       });
     }
 

@@ -57,7 +57,7 @@ async function runLegacyBulkSync(event, context) {
     let totalErrors = 0;
 
     for (const org of orgsToScan) {
-      console.log(`📋 Processing organization: ${org.name}`);
+      console.log(`📋 Processing organization: ${org.id || 'organization'}`);
       
       // Fetch API token from secret storage
       const token = await kvsStore.getSecret(`secret:${org.id}:token`);
@@ -67,7 +67,7 @@ async function runLegacyBulkSync(event, context) {
       };
       
       if (!orgWithToken.remoteApiToken) {
-        console.error(`❌ No API token found for organization ${org.name}`);
+        console.error(`❌ No API token found for organization ${org.id || 'organization'}`);
         totalErrors++;
         continue;
       }
@@ -99,7 +99,7 @@ async function runLegacyBulkSync(event, context) {
         effectiveSyncOptions.dryRun = true;
       }
 
-      console.log(`⚙️ Sync options for ${org.name}:`, JSON.stringify({
+      console.log(`⚙️ Sync options for ${org.id || 'organization'}:`, JSON.stringify({
         syncAttachments: effectiveSyncOptions.syncAttachments !== false,
         syncLinks: effectiveSyncOptions.syncLinks !== false,
         syncComments: effectiveSyncOptions.syncComments !== false,
@@ -120,7 +120,7 @@ async function runLegacyBulkSync(event, context) {
         : [];
 
       if (allowedProjects.length === 0) {
-        console.log(`⛔ Skipping ${org.name} - no project filters selected`);
+        console.log(`⛔ Skipping ${org.id || 'organization'} - no project filters selected`);
         continue;
       }
       
@@ -175,8 +175,7 @@ async function runLegacyBulkSync(event, context) {
           );
 
           if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`Failed to search issues in ${projectKey}: ${response.status} - ${errorText}`);
+            console.error(`Failed to search issues in ${projectKey}: ${response.status}`);
             break;
           }
 
