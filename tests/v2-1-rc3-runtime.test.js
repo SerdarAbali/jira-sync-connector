@@ -1,0 +1,554 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { act } from 'react-dom/test-utils';
+import { invoke } from '@forge/bridge';
+import { App, ADMIN_UI_VERSION } from '../static/admin-page/src/App.jsx';
+import InitialSyncPanel from '../static/admin-page/src/components/InitialSyncPanel.jsx';
+
+jest.mock('@forge/bridge', () => ({
+  invoke: jest.fn()
+}), { virtual: true });
+
+jest.mock('@atlaskit/css-reset', () => ({}), { virtual: true });
+
+jest.mock('@atlaskit/tokens', () => ({
+  token: (_name, fallback) => fallback
+}), { virtual: true });
+
+jest.mock('@atlaskit/button', () => {
+  const ReactMock = require('react');
+  const Button = ({ children, isDisabled, isLoading, appearance, spacing, ...props }) => ReactMock.createElement(
+    'button',
+    { ...props, disabled: Boolean(isDisabled) },
+    children
+  );
+  return {
+    __esModule: true,
+    default: Button,
+    LoadingButton: Button
+  };
+}, { virtual: true });
+
+jest.mock('@atlaskit/icon/glyph/check-circle', () => {
+  const ReactMock = require('react');
+  return { __esModule: true, default: () => ReactMock.createElement('span', null, 'ok') };
+}, { virtual: true });
+
+jest.mock('@atlaskit/icon/glyph/error', () => {
+  const ReactMock = require('react');
+  return { __esModule: true, default: () => ReactMock.createElement('span', null, 'error') };
+}, { virtual: true });
+
+jest.mock('@atlaskit/icon/glyph/warning', () => {
+  const ReactMock = require('react');
+  return { __esModule: true, default: () => ReactMock.createElement('span', null, 'warning') };
+}, { virtual: true });
+
+jest.mock('@atlaskit/form', () => {
+  const ReactMock = require('react');
+  const Form = ({ children, ...props }) => ReactMock.createElement('form', props, children);
+  const Field = ({ children }) => children({ fieldProps: {} });
+  return { __esModule: true, default: Form, Field };
+}, { virtual: true });
+
+jest.mock('@atlaskit/textfield', () => {
+  const ReactMock = require('react');
+  return {
+    __esModule: true,
+    default: ({ value, isDisabled, isInvalid, ...props }) => ReactMock.createElement('input', {
+      ...props,
+      value: value === undefined ? '' : value,
+      disabled: Boolean(isDisabled)
+    })
+  };
+}, { virtual: true });
+
+jest.mock('@atlaskit/tabs', () => {
+  const ReactMock = require('react');
+  const Tabs = ({ children }) => ReactMock.createElement('div', null, children);
+  const TabList = ({ children }) => ReactMock.createElement('div', null, children);
+  const Tab = ({ children }) => ReactMock.createElement('div', null, children);
+  const TabPanel = ({ children }) => ReactMock.createElement('div', null, children);
+  return { __esModule: true, default: Tabs, Tab, TabList, TabPanel };
+}, { virtual: true });
+
+jest.mock('@atlaskit/select', () => {
+  const ReactMock = require('react');
+  return {
+    __esModule: true,
+    default: ({ value, placeholder, children }) => ReactMock.createElement(
+      'div',
+      null,
+      value?.label || placeholder || '',
+      children
+    )
+  };
+}, { virtual: true });
+
+
+jest.mock('@atlaskit/spinner', () => {
+  const ReactMock = require('react');
+  return {
+    __esModule: true,
+    default: () => ReactMock.createElement('span', null, 'Loading')
+  };
+}, { virtual: true });
+
+jest.mock('@atlaskit/section-message', () => {
+  const ReactMock = require('react');
+  return {
+    __esModule: true,
+    default: ({ children, title }) => ReactMock.createElement(
+      'section',
+      null,
+      title || null,
+      children
+    )
+  };
+}, { virtual: true });
+
+jest.mock('@atlaskit/checkbox', () => {
+  const ReactMock = require('react');
+  return {
+    __esModule: true,
+    default: ({ label, isChecked, isDisabled, isInvalid, ...props }) => ReactMock.createElement(
+      'label',
+      null,
+      ReactMock.createElement('input', { ...props, type: 'checkbox', checked: Boolean(isChecked), disabled: Boolean(isDisabled), readOnly: true }),
+      label || null
+    )
+  };
+}, { virtual: true });
+
+jest.mock('@atlaskit/modal-dialog', () => {
+  const ReactMock = require('react');
+  const Wrapper = ({ children }) => ReactMock.createElement('div', null, children);
+  return {
+    __esModule: true,
+    default: Wrapper,
+    ModalTransition: Wrapper,
+    ModalHeader: Wrapper,
+    ModalTitle: Wrapper,
+    ModalBody: Wrapper,
+    ModalFooter: Wrapper
+  };
+}, { virtual: true });
+
+jest.mock('@atlaskit/lozenge', () => {
+  const ReactMock = require('react');
+  return {
+    __esModule: true,
+    default: ({ children }) => ReactMock.createElement('span', null, children)
+  };
+}, { virtual: true });
+
+const ORG = {
+  id: 'org-1',
+  name: 'Runtime Test Org',
+  remoteUrl: 'https://remote.example.invalid',
+  remoteEmail: 'sync@example.invalid',
+  remoteProjectKey: 'REMOTE',
+  allowedProjects: ['LOCAL'],
+  syncDirection: 'push',
+  hasRemoteApiToken: true
+};
+
+let container;
+let root;
+let syncOptionsFixture;
+let recurringStatusFixture;
+let scheduledConfigFixture;
+let pilotStatusFixture;
+
+function defaultInvoke(name) {
+  switch (name) {
+    case 'getOrganizations':
+      return [ORG];
+    case 'getUserMappings':
+      return { mappings: {} };
+    case 'getFieldMappings':
+    case 'getStatusMappings':
+    case 'getIssueTypeMappings':
+    case 'getProjectMappings':
+      return {};
+    case 'getSyncOptions':
+      return syncOptionsFixture;
+    case 'getRejectedFields':
+      return { fields: [] };
+    case 'getLastSyncTime':
+      return { lastSync: '2026-10-22T09:15:00.000Z' };
+    case 'getScheduledSyncStats':
+      return {
+        lastRun: '2026-10-22T09:00:00.000Z',
+        issuesChecked: 8,
+        issuesUpdated: 2,
+        issuesAlreadyCurrent: 3,
+        issuesSkipped: 2,
+        issuesFailed: 1,
+        lastSuccessfulJiraWrite: '2026-10-22T08:59:00.000Z',
+        errors: [],
+        events: []
+      };
+    case 'getWebhookSyncStats':
+      return {
+        totalSyncs: 4,
+        issuesCreated: 1,
+        issuesUpdated: 2,
+        commentsSynced: 1,
+        issuesSkipped: 1,
+        loopsPrevented: 0,
+        lastSync: '2026-10-22T09:10:00.000Z',
+        lastSuccessfulJiraWrite: '2026-10-22T09:09:00.000Z',
+        errors: [],
+        byOrg: {}
+      };
+    case 'getApiUsageStats':
+      return {
+        totalCalls: 10,
+        successfulCalls: 9,
+        failedCalls: 1,
+        rateLimitHits: 0,
+        successRate: 90,
+        callsThisHour: 10,
+        estimatedHourlyLimit: 36000,
+        quotaUsagePercent: 0,
+        byEndpoint: {},
+        history: [],
+        lastUpdated: '2026-10-22T09:12:00.000Z'
+      };
+    case 'getPilotStatus':
+      return pilotStatusFixture;
+    case 'getScheduledSyncConfig':
+      return scheduledConfigFixture;
+    case 'getDeletedCounterparts':
+      return { success: true, items: [] };
+    case 'getInitialSyncStatus':
+      return { success: true, status: null };
+    case 'getRecurringReconciliationStatus':
+      return recurringStatusFixture;
+    case 'setupWizard':
+      return { success: false, error: 'Guided setup is not configured in this test.' };
+    default:
+      return { success: true };
+  }
+}
+
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+}
+
+async function render(element) {
+  await act(async () => {
+    root.render(element);
+  });
+  await flush();
+  await flush();
+}
+
+function findButton(label) {
+  return Array.from(container.querySelectorAll('button'))
+    .find(button => button.textContent.trim() === label);
+}
+
+beforeEach(() => {
+  global.IS_REACT_ACT_ENVIRONMENT = true;
+  syncOptionsFixture = {
+    syncComments: true,
+    syncAttachments: false,
+    propagateAttachmentDeletions: false,
+    maxAttachmentSizeBytes: null,
+    syncLinks: true,
+    syncCrossReference: true,
+    recreateDeletedIssues: false,
+    automaticReplacementAfterDeletion: false
+  };
+  pilotStatusFixture = {
+    success: true,
+    paused: false,
+    pausedAt: null,
+    pausedBy: null,
+    reasonCode: null,
+    organizations: []
+  };
+  recurringStatusFixture = {
+    success: true,
+    settings: {
+      recurringReconciliationEnabled: false,
+      reconciliationIntervalMinutes: 60,
+      reconciliationCommentOnReview: true,
+      reconciliationFailureThreshold: 3
+    },
+    schedule: {
+      nextRunAt: null,
+      lastCompletedAt: null,
+      isDue: false
+    },
+    activeJob: null,
+    lastJob: null,
+    attention: [],
+    attentionSummary: { notificationRequired: 0 }
+  };
+  scheduledConfigFixture = {
+    enabled: true,
+    syncScope: 'recent',
+    intervalMinutes: 60,
+    lastRun: '2026-10-22T09:00:00.000Z'
+  };
+  invoke.mockReset();
+  invoke.mockImplementation(async (name) => defaultInvoke(name));
+
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+  delete global.IS_REACT_ACT_ENVIRONMENT;
+});
+
+describe('v2.1.0-rc3 admin runtime', () => {
+  test('renders the complete App and every tab without a Configuration scope crash', async () => {
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Jira Sync Connector');
+    expect(text).toContain(ADMIN_UI_VERSION);
+    expect(text).toContain('Sync Activity');
+    expect(text).toContain('Configuration');
+    expect(text).toContain('Guided Setup');
+    expect(text).toContain('Mappings');
+    expect(text).toContain('Recovery');
+    expect(text).toContain('Diagnostics');
+    expect(text).toContain('Security & Info');
+    expect(text).toContain('Background Maintenance');
+    expect(text).not.toContain('v2.0.0');
+  });
+
+  test('uses only non-pilot write-control wording and displays Synchronization Write Control', async () => {
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Synchronization Write Control');
+    expect(text).toContain('Write Status');
+    expect(text).not.toMatch(/Corporate Pilot|Pilot Status|Pilot Controls|Pause Jira Writes|Resume Jira Writes/i);
+  });
+
+  test('keeps both pause and resume resolvers wired to the renamed write controls', async () => {
+    await render(React.createElement(App));
+
+    await act(async () => {
+      findButton('Pause Synchronization').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const pauseConfirm = Array.from(container.querySelectorAll('button'))
+      .filter(button => button.textContent.trim() === 'Pause Synchronization')
+      .at(-1);
+    await act(async () => {
+      pauseConfirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith('pausePilot', { reasonCode: 'emergency_stop' });
+
+    pilotStatusFixture = {
+      ...pilotStatusFixture,
+      paused: true,
+      pausedAt: '2026-10-22T09:20:00.000Z',
+      pausedBy: 'admin-1',
+      reasonCode: 'emergency_stop'
+    };
+    await act(async () => {
+      findButton('Refresh Stats').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    await flush();
+
+    await act(async () => {
+      findButton('Resume Synchronization').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const resumeConfirm = Array.from(container.querySelectorAll('button'))
+      .filter(button => button.textContent.trim() === 'Resume Synchronization')
+      .at(-1);
+    await act(async () => {
+      resumeConfirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith('resumePilot');
+    expect(container.textContent).not.toMatch(/Corporate Pilot|Pilot Status|Pilot Controls/i);
+  });
+
+  test('shows webhook statistics and one compact migration notice while legacy scheduling is active', async () => {
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Webhook Sync Statistics (connector-wide)');
+    expect(text).toContain('Last webhook sync attempt');
+    expect(text).toContain('Last successful Jira write');
+    expect(text).toContain('Legacy scheduled synchronization is active');
+    expect(text).toContain('continues unchanged');
+    expect(text).not.toContain('Legacy Scheduled Sync Statistics');
+    expect(text).not.toContain('Legacy Scheduled Sync Timeline');
+    expect(text).not.toContain('Last scheduled sync attempt');
+    expect(text).not.toContain('Last successful scheduled Jira write');
+    expect(text).not.toContain('Run Now');
+    expect(text).not.toContain('Run Scheduled Sync Now');
+  });
+
+  test('hides legacy scheduling panels and the migration notice when recurring reconciliation is enabled', async () => {
+    recurringStatusFixture = {
+      ...recurringStatusFixture,
+      settings: {
+        ...recurringStatusFixture.settings,
+        recurringReconciliationEnabled: true
+      }
+    };
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Recurring Source Reconciliation');
+    expect(text).toContain('ENABLED');
+    expect(text).not.toContain('Legacy scheduled synchronization is active');
+    expect(text).not.toContain('Legacy Scheduled Sync Statistics');
+    expect(text).not.toContain('Legacy Scheduled Sync Timeline');
+  });
+
+  test('explains disabled automatic reconciliation while webhook synchronization remains active', async () => {
+    scheduledConfigFixture = {
+      enabled: false,
+      syncScope: 'recent',
+      intervalMinutes: 60,
+      lastRun: null
+    };
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Automatic source reconciliation is disabled');
+    expect(text).toContain('Real-time webhook synchronization remains active');
+    expect(text).not.toContain('Legacy scheduled synchronization is active');
+    expect(text).not.toContain('Legacy Scheduled Sync Statistics');
+    expect(text).not.toContain('Legacy Scheduled Sync Timeline');
+  });
+
+  test('keeps Pending Links separate under Background Maintenance and retains all synchronization surfaces', async () => {
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text.indexOf('Background Maintenance')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('Pending Links')).toBeGreaterThan(text.indexOf('Background Maintenance'));
+    expect(text).toContain('Hourly maintenance');
+    expect(text).not.toContain('Auto hourly');
+    expect(text).toContain('Manual Sync');
+    expect(text).toContain('Recurring Source Reconciliation');
+    expect(text).toContain('Synchronization Write Control');
+    expect(text).toContain('Pause Synchronization');
+    expect(text).toContain('Resume Synchronization');
+    expect(text).toContain('Webhook Sync Statistics (connector-wide)');
+    expect(invoke).toHaveBeenCalledWith('getWebhookSyncStats');
+    expect(invoke).toHaveBeenCalledWith('getPilotStatus');
+    expect(invoke).toHaveBeenCalledWith('getRecurringReconciliationStatus', { orgId: ORG.id });
+  });
+
+  test('keeps attachment settings Off by default without a size control', async () => {
+    await render(React.createElement(App));
+
+    expect(container.textContent).not.toContain('Maximum attachment size (MB)');
+  });
+
+  test('shows Jira attachment settings when the attachment limit is null', async () => {
+    syncOptionsFixture = {
+      ...syncOptionsFixture,
+      syncAttachments: true,
+      maxAttachmentSizeBytes: null
+    };
+    await render(React.createElement(App));
+
+    expect(container.textContent).toContain('Maximum attachment size (MB)');
+    expect(container.textContent).toContain('Configured maximum: Jira attachment settings');
+    expect(container.querySelector('input[name="maxAttachmentSizeBytes"]').value).toBe('');
+  });
+
+  test('treats a missing attachment limit field as Jira attachment settings', async () => {
+    syncOptionsFixture = {
+      ...syncOptionsFixture,
+      syncAttachments: true
+    };
+    delete syncOptionsFixture.maxAttachmentSizeBytes;
+    await render(React.createElement(App));
+
+    expect(container.querySelector('input[name="maxAttachmentSizeBytes"]').value).toBe('');
+    expect(container.textContent).toContain('Configured maximum: Jira attachment settings');
+  });
+
+  test('shows a configured attachment limit in megabytes', async () => {
+    syncOptionsFixture = {
+      ...syncOptionsFixture,
+      syncAttachments: true,
+      maxAttachmentSizeBytes: 5 * 1024 * 1024
+    };
+    await render(React.createElement(App));
+
+    expect(container.querySelector('input[name="maxAttachmentSizeBytes"]').value).toBe('5');
+    expect(container.textContent).toContain('Configured maximum: 5 MB');
+  });
+
+  test('hides approval and Start for a zero-work initial-sync preview while keeping Preview and Refresh', async () => {
+    invoke.mockImplementation(async (name) => {
+      if (name === 'getInitialSyncStatus') return { success: true, status: null };
+      if (name === 'previewInitialSync') {
+        return {
+          success: true,
+          preview: {
+            previewChecksum: 'preview-checksum',
+            counts: {
+              eligible: 0,
+              alreadyMapped: 3,
+              blockedByValidation: 0,
+              mappingConflicts: 0
+            },
+            classification: {
+              eligible: { count: 0, issueKeys: [], reasons: {} },
+              alreadyMapped: { count: 3, issueKeys: ['LOCAL-1'], reasons: {} },
+              blockedByValidation: { count: 0, issueKeys: [], reasons: {} },
+              mappingConflicts: { count: 0, issueKeys: [], reasons: {} }
+            }
+          }
+        };
+      }
+      return defaultInvoke(name);
+    });
+
+    await render(React.createElement(InitialSyncPanel, {
+      selectedOrg: ORG,
+      showMessage: jest.fn()
+    }));
+
+    const previewButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Preview Scope');
+    expect(previewButton).toBeTruthy();
+
+    await act(async () => {
+      previewButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const text = container.textContent;
+    expect(text).toContain('No eligible issues were found. No issues will be created, and there is nothing to approve or start.');
+    expect(text).not.toContain('Start Approved Initial Sync');
+    expect(text).not.toContain('I approve this exact previewed scope');
+    expect(text).toContain('Preview Scope');
+    expect(text).toContain('Refresh Status');
+  });
+});

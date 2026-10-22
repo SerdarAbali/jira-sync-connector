@@ -66,7 +66,7 @@ const attentionLabel = (record) => {
   return 'OPEN';
 };
 
-const RecurringReconciliation = ({ selectedOrg, showMessage }) => {
+const RecurringReconciliation = ({ selectedOrg, showMessage, onSettingsSaved }) => {
   const orgId = selectedOrg?.id || null;
   const [status, setStatus] = useState(null);
   const [draft, setDraft] = useState({
@@ -122,6 +122,7 @@ const RecurringReconciliation = ({ selectedOrg, showMessage }) => {
       });
       if (result?.success) {
         setDraft(result.settings);
+        onSettingsSaved?.(result.settings);
         showMessage?.(
           result.settings.recurringReconciliationEnabled
             ? 'Recurring source reconciliation enabled. The next hourly heartbeat will evaluate the due run.'
@@ -199,11 +200,11 @@ const RecurringReconciliation = ({ selectedOrg, showMessage }) => {
       <div style={{ marginTop: token('space.200', '16px') }}>
         <SectionMessage appearance="warning">
           <p style={{ margin: 0, fontSize: '13px' }}>
-            This feature scans only the configured local Jira scope, creates remote issues that are still unmapped,
-            and updates outdated mapped counterparts. Remote Jira is never scanned, and this is not full bidirectional reconciliation.
-            It reuses the safe initial-sync preview, classification, ledgers, create path and existing safe update path.
-            Mapped issues are never sent to the create path. The existing hourly recovery heartbeat schedules work;
-            a new run cannot be enqueued until the active one reaches a terminal state.
+            This optional recurring run updates outdated mapped counterparts and creates remote counterparts for local
+            issues that are still unmapped. Remote Jira is never scanned, and this is not full bidirectional reconciliation.
+            It looks only at the local projects and JQL configured for this organization. Mapped issues are never sent to
+            the create path. The existing hourly recovery heartbeat schedules work; a new run cannot be enqueued until
+            the active run reaches a terminal state.
           </p>
         </SectionMessage>
       </div>
@@ -299,10 +300,10 @@ const RecurringReconciliation = ({ selectedOrg, showMessage }) => {
         <div style={{ marginTop: token('space.300', '24px'), borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: token('space.200', '16px') }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
             <div>
-              <h5 style={{ margin: 0 }}>Schedule and Last Run</h5>
+              <h5 style={{ margin: 0 }}>Schedule and Last Completed Run</h5>
               <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
-                Next run: {schedule?.nextRunAt ? formatDateTimeEuro(schedule.nextRunAt) : (schedule?.isDue ? 'Due on the next hourly heartbeat' : 'Not scheduled')}
-                {' • '}Last completed: {formatDateTimeEuro(schedule?.lastCompletedAt)}
+                Next reconciliation run: {schedule?.nextRunAt ? formatDateTimeEuro(schedule.nextRunAt) : (schedule?.isDue ? 'Due on the next hourly heartbeat' : 'Not scheduled')}
+                {' • '}Last completed reconciliation run: {formatDateTimeEuro(schedule?.lastCompletedAt)}
               </p>
             </div>
             {job && <Lozenge appearance={job.state === 'completed' ? 'success' : job.state === 'failed' ? 'removed' : job.state === 'running' || job.state === 'queued' ? 'inprogress' : 'default'}>
@@ -311,10 +312,10 @@ const RecurringReconciliation = ({ selectedOrg, showMessage }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.150', '12px') }}>
-            <div style={metricCard('#00875A')}><strong>{job?.counts?.created || 0}</strong><div style={{ fontSize: '12px' }}>Created this job</div></div>
-            <div style={metricCard('#36B37E')}><strong>{job?.counts?.updated || 0}</strong><div style={{ fontSize: '12px' }}>Updated existing</div></div>
+            <div style={metricCard('#00875A')}><strong>{job?.counts?.created || 0}</strong><div style={{ fontSize: '12px' }}>Created by this run</div></div>
+            <div style={metricCard('#36B37E')}><strong>{job?.counts?.updated || 0}</strong><div style={{ fontSize: '12px' }}>Mapped issues updated</div></div>
             <div style={metricCard('#36B37E')}><strong>{job?.counts?.alreadyMapped || 0}</strong><div style={{ fontSize: '12px' }}>Already mapped</div></div>
-            <div style={metricCard('#FF991F')}><strong>{job?.counts?.skipped || 0}</strong><div style={{ fontSize: '12px' }}>Skipped / attention</div></div>
+            <div style={metricCard('#FF991F')}><strong>{job?.counts?.skipped || 0}</strong><div style={{ fontSize: '12px' }}>Skipped</div></div>
             <div style={metricCard('#DE350B')}><strong>{job?.counts?.failed || 0}</strong><div style={{ fontSize: '12px' }}>Failed</div></div>
             <div style={metricCard('#6554C0')}><strong>{summary.open || 0}</strong><div style={{ fontSize: '12px' }}>Open attention</div></div>
             <div style={metricCard('#DE350B')}><strong>{summary.notificationRequired || 0}</strong><div style={{ fontSize: '12px' }}>Notifications due</div></div>
@@ -367,8 +368,8 @@ const RecurringReconciliation = ({ selectedOrg, showMessage }) => {
                   <code style={{ fontSize: '11px' }}>{record.reasonCode}</code>
                 </div>
                 <p style={{ margin: '6px 0 0 0', fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
-                  {record.attempts} attempt(s) • first {formatDateTimeEuro(record.firstSeenAt)} • last {formatDateTimeEuro(record.lastSeenAt)}
-                  {record.acknowledgedAt ? ` • acknowledged ${formatDateTimeEuro(record.acknowledgedAt)}` : ''}
+                  {record.attempts} attempt(s) • First seen {formatDateTimeEuro(record.firstSeenAt)} • Last seen {formatDateTimeEuro(record.lastSeenAt)}
+                  {record.acknowledgedAt ? ` • Acknowledged ${formatDateTimeEuro(record.acknowledgedAt)}` : ''}
                 </p>
                 {record.state !== 'resolved' && (
                   <div style={{ display: 'flex', gap: token('space.100', '8px'), marginTop: token('space.100', '8px'), flexWrap: 'wrap' }}>

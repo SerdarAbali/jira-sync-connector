@@ -17,7 +17,10 @@ const documentation = fs.readFileSync(DOC_PATH, 'utf8');
 describe('Recurring reconciliation admin UI', () => {
   test('is rendered for the selected organization from Sync Activity', () => {
     expect(app).toContain("import RecurringReconciliation from './components/RecurringReconciliation'");
-    expect(app).toContain('<RecurringReconciliation selectedOrg={selectedOrg} showMessage={showMessage} />');
+    expect(app).toContain('<RecurringReconciliation');
+    expect(app).toContain('selectedOrg={selectedOrg}');
+    expect(app).toContain('showMessage={showMessage}');
+    expect(app).toContain('onSettingsSaved={() => setSchedulerRefreshToken(token => token + 1)}');
   });
 
   test('labels the feature as local-to-remote only and not bidirectional', () => {
@@ -25,8 +28,9 @@ describe('Recurring reconciliation admin UI', () => {
     expect(panel).toContain('Remote Jira is never scanned');
     expect(panel).toContain('not full bidirectional reconciliation');
     expect(panel).toContain('updates outdated mapped counterparts');
-    expect(panel).toContain('Mapped issues are never sent to the create path');
-    expect(panel).toContain('Updated existing');
+    expect(panel).toContain('Mapped issues are never sent to');
+    expect(panel).toContain('the create path');
+    expect(panel).toContain('Mapped issues updated');
     expect(panel).toContain('Default is off');
   });
 

@@ -10,6 +10,7 @@ import { removePendingLink, getPendingLinks, listPendingLinkIssueKeys, recordPen
 import { getFullIssue } from '../jira/local-client.js';
 import { updateRemoteIssue } from '../sync/issue-sync.js';
 import { syncIssueLinks, remoteLinkMatches, fetchRemoteIssueLinks } from '../sync/link-sync.js';
+import { getReconciliationSettings } from '../sync/reconciliation-settings.js';
 
 async function checkIfIssueNeedsSync(issueKey, issue, config, mappings, syncOptions = {}, orgId = null) {
   // Check if issue was created by remote sync
@@ -325,8 +326,11 @@ function createEmptyScheduledStats(reason) {
     issuesChecked: 0,
     issuesCreated: 0,
     issuesUpdated: 0,
+    issuesAlreadyCurrent: 0,
     issuesSkipped: 0,
+    issuesFailed: 0,
     issuesRecreated: 0,
+    lastSuccessfulJiraWrite: null,
     errors: [],
     events: [],
     disabled: true,
@@ -345,6 +349,23 @@ function getScheduledConfigIssue(config) {
     return 'invalid-sync-scope';
   }
   return null;
+}
+
+/**
+ * Recurring reconciliation is the primary background sync path. When an
+ * organization has opted in, the legacy scheduled-sync path must not also write
+ * for that organization. Settings read failures fail closed rather than
+ * assuming the legacy path is safe.
+ */
+async function getLegacyScheduledSkipReason(orgId) {
+  try {
+    const settings = await getReconciliationSettings(orgId);
+    return settings.recurringReconciliationEnabled
+      ? 'recurring-reconciliation-enabled'
+      : null;
+  } catch {
+    return 'reconciliation-settings-unavailable';
+  }
 }
 
 export async function performScheduledSync() {
@@ -380,8 +401,11 @@ export async function performScheduledSync() {
     issuesChecked: 0,
     issuesCreated: 0,
     issuesUpdated: 0,
+    issuesAlreadyCurrent: 0,
     issuesSkipped: 0,
+    issuesFailed: 0,
     issuesRecreated: 0,
+    lastSuccessfulJiraWrite: null,
     errors: [],
     events: []
   };
@@ -399,6 +423,19 @@ export async function performScheduledSync() {
       const orgId = org.id || 'legacy';
       const orgName = org.name || 'Legacy';
       console.log(`\n🏢 Processing organization: ${orgName}`);
+      const legacySkipReason = await getLegacyScheduledSkipReason(orgId);
+      if (legacySkipReason) {
+        console.log(`⏭️ Skipping legacy scheduled sync for ${orgName}: ${legacySkipReason}`);
+        stats.issuesSkipped++;
+        recordEvent(stats, {
+          type: 'skip',
+          orgName,
+          reason: legacySkipReason
+        });
+        continue;
+      }
+
+
       
       const allowedProjects = Array.isArray(org.allowedProjects)
         ? org.allowedProjects.filter(Boolean)
@@ -545,7 +582,11 @@ export async function performScheduledSync() {
           
           if (!syncCheck.needsSync) {
             console.log(`⏭️ ${issueKey} - ${syncCheck.reason}`);
-            stats.issuesSkipped++;
+            if (syncCheck.reason === 'already-synced') {
+              stats.issuesAlreadyCurrent++;
+            } else {
+              stats.issuesSkipped++;
+            }
             continue;
           }
           
@@ -553,7 +594,11 @@ export async function performScheduledSync() {
             console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
             const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
             if (syncDetails?.skipped) {
-              stats.issuesSkipped++;
+              if (syncDetails.status === 'ALREADY_CURRENT') {
+                stats.issuesAlreadyCurrent++;
+              } else {
+                stats.issuesSkipped++;
+              }
               recordEvent(stats, {
                 type: 'skip',
                 issueKey,
@@ -575,6 +620,7 @@ export async function performScheduledSync() {
             }
             
             stats.issuesUpdated++;
+            stats.lastSuccessfulJiraWrite = new Date().toISOString();
             recordEvent(stats, {
               type: 'update',
               issueKey,
@@ -588,6 +634,7 @@ export async function performScheduledSync() {
           
         } catch (error) {
           console.error(`Error syncing ${issueKey}:`, error);
+          stats.issuesFailed++;
           recordScheduledError(stats, `${issueKey}: ${error.message}`);
           recordEvent(stats, {
             type: 'error',
@@ -608,6 +655,7 @@ export async function performScheduledSync() {
       
     } catch (error) {
       console.error(`Error processing org ${orgName}:`, error);
+      stats.issuesFailed++;
       recordScheduledError(stats, `${orgName}: ${error.message}`);
       recordEvent(stats, {
         type: 'error',

@@ -194,6 +194,7 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
   };
 
   const counts = preview?.counts || null;
+  const zeroEligibleWork = Boolean(preview) && counts?.eligible === 0;
   const jobCounts = status?.counts || null;
   const progress = status?.progress || null;
   const progressPercent = progress && progress.total > 0
@@ -234,14 +235,16 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
           >
             Preview Scope
           </Button>
-          <Button
-            appearance="primary"
-            onClick={handleStart}
-            isLoading={actionLoading === 'start'}
-            isDisabled={!preview || !approved || actionLoading !== '' || !!activeJob}
-          >
-            Start Approved Initial Sync
-          </Button>
+          {!zeroEligibleWork && (
+            <Button
+              appearance="primary"
+              onClick={handleStart}
+              isLoading={actionLoading === 'start'}
+              isDisabled={!preview || !approved || actionLoading !== '' || !!activeJob}
+            >
+              Start Approved Initial Sync
+            </Button>
+          )}
           <Button appearance="subtle" onClick={loadStatus} isLoading={statusLoading}>
             Refresh Status
           </Button>
@@ -273,11 +276,19 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
           <KeyGroup title="Blocked issue keys" group={preview.classification.blockedByValidation} appearance="moved" />
           <KeyGroup title="Mapping-conflict issue keys" group={preview.classification.mappingConflicts} appearance="removed" />
           <div style={{ marginTop: token('space.200', '16px') }}>
-            <Checkbox
-              label="I approve this exact previewed scope. I understand this creates issues that are not yet mapped."
-              isChecked={approved}
-              onChange={(event) => setApproved(event.target.checked)}
-            />
+            {zeroEligibleWork ? (
+              <SectionMessage appearance="info">
+                <p style={{ margin: 0, fontSize: '13px' }}>
+                  No eligible issues were found. No issues will be created, and there is nothing to approve or start.
+                </p>
+              </SectionMessage>
+            ) : (
+              <Checkbox
+                label="I approve this exact previewed scope. I understand this creates issues that are not yet mapped."
+                isChecked={approved}
+                onChange={(event) => setApproved(event.target.checked)}
+              />
+            )}
           </div>
         </div>
       )}

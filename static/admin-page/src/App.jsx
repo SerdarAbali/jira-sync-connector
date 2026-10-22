@@ -59,6 +59,10 @@ const DEFAULT_ISSUE_IMPORT_OPTIONS = {
   skipIfRemoteExists: false
 };
 
+// Authoritative administrator-UI version. Release metadata is derived from
+// this value; no final v2.1.0 tag exists for this release candidate.
+export const ADMIN_UI_VERSION = 'v2.1.0-rc3';
+
 // Utility function for date formatting (European style)
 const formatDateTimeEuro = (timestamp, options = {}) => {
   if (!timestamp) return 'Not available';
@@ -78,23 +82,14 @@ const formatDateTimeEuro = (timestamp, options = {}) => {
   }
 };
 
-const formatHelsinkiTime = (timestamp) => formatDateTimeEuro(timestamp, { timeZone: 'Europe/Helsinki' });
-
-const formatDuration = (ms) => {
-  if (!ms || ms < 60000) {
-    return 'under 1m';
-  }
-  const totalMinutes = Math.floor(ms / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  return `${minutes}m`;
-};
+const isLegacyScheduledActive = (config) => Boolean(
+  config
+  && config.enabled === true
+  && ['recent', 'all'].includes(config.syncScope)
+);
 
 
-const App = () => {
+export const App = () => {
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState(null);
   const [activeTab, setActiveTab] = useState(0);
@@ -168,25 +163,8 @@ const App = () => {
   const [scanningDeleted, setScanningDeleted] = useState(false);
   const [scanProgress, setScanProgress] = useState(null); // Track scan progress across multiple runs
 
-  // Scheduled sync manual trigger
-  const [scheduledSyncLoading, setScheduledSyncLoading] = useState(false);
-
-  const handleTriggerScheduledSync = async () => {
-    setScheduledSyncLoading(true);
-    try {
-      const result = await invoke('triggerScheduledSync');
-      if (result.success) {
-        showMessage('Scheduled sync triggered successfully', 'success');
-        await loadStats();
-      } else {
-        showMessage(`Error: ${result.error}`, 'error');
-      }
-    } catch (error) {
-      showMessage('Error: ' + error.message, 'error');
-    } finally {
-      setScheduledSyncLoading(false);
-    }
-  };
+  // Scheduled sync manual triggering was removed. Recurring reconciliation is
+  // scheduled by the existing hourly recovery heartbeat.
 
   // Connection test
   const [testingConnection, setTestingConnection] = useState(false);
@@ -1138,7 +1116,7 @@ const App = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: token('space.200', '16px'), flex: 1, minWidth: '320px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h3 style={{ margin: 0, fontSize: '18px' }}>Jira Sync Connector</h3>
-            <Lozenge appearance="new" isBold>v2.0.0</Lozenge>
+            <Lozenge appearance="new" isBold>{ADMIN_UI_VERSION}</Lozenge>
           </div>
           <div style={{ width: '250px' }}>
             <Select
@@ -1233,7 +1211,7 @@ const App = () => {
                     <span>{selectedOrg.remoteUrl || 'Add Jira details to start syncing.'}</span>
                     {lastSyncTime && (
                       <span style={{ color: '#6B778C' }}>
-                        • Last sync: {formatDateTimeEuro(lastSyncTime)}
+                        • Latest sync activity: {formatDateTimeEuro(lastSyncTime)}
                       </span>
                     )}
                   </div>
@@ -1312,8 +1290,6 @@ const App = () => {
                     scanProgress={scanProgress}
                     resetScanProgress={resetScanProgress}
                     handleCancelBulkSync={handleCancelBulkSync}
-                    handleTriggerScheduledSync={handleTriggerScheduledSync}
-                    scheduledSyncLoading={scheduledSyncLoading}
                     showMessage={showMessage}
                   />
                 </div>
@@ -1331,6 +1307,8 @@ const App = () => {
                     handleSaveProjectFilter={handleSaveProjectFilter}
                     syncOptions={syncOptions}
                     setSyncOptions={setSyncOptions}
+                    attachmentMaxMb={attachmentMaxMb}
+                    setAttachmentMaxMb={setAttachmentMaxMb}
                     handleSaveSyncOptions={handleSaveSyncOptions}
                     saving={saving}
                     handleExportSettings={handleExportSettings}
@@ -1672,7 +1650,8 @@ const App = () => {
 const ConfigurationPanel = ({
   selectedOrg, localProjects, loadProjects, dataLoading,
   toggleProjectSelection, handleSaveProjectFilter, syncOptions,
-  setSyncOptions, handleSaveSyncOptions, saving,
+  setSyncOptions, attachmentMaxMb, setAttachmentMaxMb,
+  handleSaveSyncOptions, saving,
   handleExportSettings, handleImportSettings, exportingSettings, importingSettings,
   onRefreshOrganizations, notify
 }) => {
@@ -1985,7 +1964,7 @@ const ConfigurationPanel = ({
           >
             <div>
               <h4 style={{ margin: '0 0 4px 0' }}>Project Filter</h4>
-              <div style={{ color: '#6B778C', fontSize: '13px' }}>Control which projects participate in scheduled syncs.</div>
+              <div style={{ color: '#6B778C', fontSize: '13px' }}>Control which projects participate in source synchronization.</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px') }}>
               <Lozenge appearance="inprogress">
@@ -2356,12 +2335,17 @@ const SyncActivityPanel = ({
   organizations, onExportIssues, issueExporting, onIssueImportClick, issueImporting,
   selectedOrg, syncOptions, handleScanForDeletedIssues, scanningDeleted,
   scanProgress, resetScanProgress, handleCancelBulkSync,
-  handleTriggerScheduledSync, scheduledSyncLoading, showMessage
+  showMessage
 }) => {
-  const [eventsExpanded, setEventsExpanded] = useState(false);
   const [pilotConfirmAction, setPilotConfirmAction] = useState(null);
   const [pilotActionLoading, setPilotActionLoading] = useState(false);
   const [pilotActionError, setPilotActionError] = useState('');
+  const [schedulerState, setSchedulerState] = useState({
+    loaded: false,
+    recurringEnabled: false,
+    legacyActive: false
+  });
+  const [schedulerRefreshToken, setSchedulerRefreshToken] = useState(0);
   const [exportJql, setExportJql] = useState('');
   const [exportMode, setExportMode] = useState('predefined'); // 'predefined' or 'custom'
   const [selectedPredefined, setSelectedPredefined] = useState(null);
@@ -2377,6 +2361,42 @@ const SyncActivityPanel = ({
   useEffect(() => {
     loadStats();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadSchedulerState = async () => {
+      if (!selectedOrg?.id) {
+        if (!cancelled) {
+          setSchedulerState({ loaded: false, recurringEnabled: false, legacyActive: false });
+        }
+        return;
+      }
+
+      const [recurringResult, legacyConfig] = await Promise.all([
+        invoke('getRecurringReconciliationStatus', { orgId: selectedOrg.id }).catch(() => null),
+        invoke('getScheduledSyncConfig').catch(() => null)
+      ]);
+
+      if (cancelled) return;
+
+      if (recurringResult?.success !== true) {
+        setSchedulerState({ loaded: false, recurringEnabled: false, legacyActive: false });
+        return;
+      }
+
+      const recurringEnabled = recurringResult.settings?.recurringReconciliationEnabled === true;
+      setSchedulerState({
+        loaded: true,
+        recurringEnabled,
+        legacyActive: !recurringEnabled && isLegacyScheduledActive(legacyConfig)
+      });
+    };
+
+    loadSchedulerState();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedOrg?.id, schedulerRefreshToken]);
 
   const executePilotAction = async () => {
     if (!pilotConfirmAction || pilotActionLoading) return;
@@ -2396,10 +2416,10 @@ const SyncActivityPanel = ({
         );
         await loadStats();
       } else {
-        setPilotActionError(result?.error || 'Unable to update pilot pause state');
+        setPilotActionError(result?.error || 'Unable to update synchronization write state');
       }
     } catch {
-      setPilotActionError('Unable to update pilot pause state');
+      setPilotActionError('Unable to update synchronization write state');
     } finally {
       setPilotActionLoading(false);
     }
@@ -2510,99 +2530,12 @@ const SyncActivityPanel = ({
     });
   };
 
-  const getNextRunInfo = () => {
-    const lastRun = syncStats?.scheduled?.lastRun;
-    if (!lastRun) return { state: 'pending' };
-    const next = new Date(lastRun);
-    next.setHours(next.getHours() + 1);
-    const now = new Date();
-    if (next <= now) {
-      return { state: 'overdue', next, overdueMs: now - next };
-    }
-    return { state: 'scheduled', next };
-  };
-
-  const scheduledEvents = Array.isArray(syncStats?.scheduled?.events) ? syncStats.scheduled.events : [];
-  const hasScheduledEvents = scheduledEvents.length > 0;
-  const nextRunInfo = getNextRunInfo();
-
-  const eventTypeMeta = {
-    create: { label: 'Created', appearance: 'success' },
-    recreate: { label: 'Recreated', appearance: 'new' },
-    update: { label: 'Updated', appearance: 'moved' },
-    error: { label: 'Error', appearance: 'removed' },
-    'link-synced': { label: 'Link Synced', appearance: 'success' },
-    'link-error': { label: 'Link Error', appearance: 'removed' },
-    'link-pending': { label: 'Link Pending', appearance: 'inprogress' },
-    'link-dropped': { label: 'Link Dropped', appearance: 'default' }
-  };
-
-  const formatSyncDetails = (details) => {
-    if (!details) return '';
-    const parts = [];
-    if (details.fields) parts.push('fields');
-    if (details.status) parts.push('status');
-    
-    // Comments: show new count or total if all already synced
-    if (details.comments > 0) {
-      parts.push(`${details.comments} comment${details.comments > 1 ? 's' : ''}`);
-    } else if (details.commentsTotal > 0) {
-      parts.push(`${details.commentsTotal} comment${details.commentsTotal > 1 ? 's' : ''} ✓`);
-    }
-    
-    // Links: show new count or total if all already synced
-    if (details.links > 0) {
-      parts.push(`${details.links} link${details.links > 1 ? 's' : ''}`);
-    } else if (details.linksTotal > 0) {
-      parts.push(`${details.linksTotal} link${details.linksTotal > 1 ? 's' : ''} ✓`);
-    }
-    
-    // Attachments: show new count or total if all already synced
-    if (details.attachments > 0) {
-      parts.push(`${details.attachments} attachment${details.attachments > 1 ? 's' : ''}`);
-    } else if (details.attachmentsTotal > 0) {
-      parts.push(`${details.attachmentsTotal} attachment${details.attachmentsTotal > 1 ? 's' : ''} ✓`);
-    }
-    
-    return parts.length > 0 ? ` (${parts.join(', ')})` : '';
-  };
-
-  const describeScheduledEvent = (event) => {
-    switch (event.type) {
-      case 'create':
-        return `Created ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'}${formatSyncDetails(event.details)}`;
-      case 'recreate':
-        return `Recreated ${event.issueKey || 'issue'} as ${event.remoteKey || 'remote issue'} (was ${event.previousRemoteKey || 'deleted'})${formatSyncDetails(event.details)}`;
-      case 'update':
-        return `Updated ${event.issueKey || 'issue'} → ${event.remoteKey || 'remote key'}${formatSyncDetails(event.details)}`;
-      case 'link-synced':
-        return `Linked ${event.issueKey || 'issue'} with ${event.linkedIssueKey || 'peer'}`;
-      case 'link-error':
-        return `Link error on ${event.issueKey || 'issue'}`;
-      case 'link-pending':
-        return `Link pending for ${event.issueKey || 'issue'}`;
-      case 'link-dropped':
-        return `Dropped pending link for ${event.issueKey || 'issue'}`;
-      case 'error':
-        return `Sync error${event.issueKey ? ' on ' + event.issueKey : ''}`;
-      default:
-        return 'Scheduled event';
-    }
-  };
-
-  const formatDirection = (direction) => {
-    if (!direction) return null;
-    if (direction === 'outward') return 'Outward (source → target)';
-    if (direction === 'inward') return 'Inward (target → source)';
-    return direction;
-  };
-
   return (
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: token('space.300', '24px') }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h3 style={{ margin: 0 }}>Sync Activity</h3>
-          <p style={{ margin: '4px 0 0 0', color: '#6B778C', fontSize: '13px' }}>Monitor sync statistics, scheduled jobs, and webhook activity.</p>
+          <p style={{ margin: '4px 0 0 0', color: '#6B778C', fontSize: '13px' }}>Monitor synchronization statistics, scheduling, and webhook activity.</p>
         </div>
         <Button appearance="subtle" onClick={loadStats} isLoading={statsLoading} style={lozengeButtonStyle}>
           Refresh Stats
@@ -2611,10 +2544,10 @@ const SyncActivityPanel = ({
 
       {syncStats?.pilot && (
         <div style={surfaceCard()} data-testid="pilot-pause-status">
-          <h4 style={{ margin: '0 0 12px 0' }}>Corporate Pilot Status</h4>
+          <h4 style={{ margin: '0 0 12px 0' }}>Synchronization Write Control</h4>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px') }}>
             <StatCard
-              label="Jira Writes"
+              label="Write Status"
               value={syncStats.pilot.paused ? 'PAUSED' : 'ACTIVE'}
               color={syncStats.pilot.paused ? '#DE350B' : '#00875A'}
             />
@@ -2644,7 +2577,7 @@ const SyncActivityPanel = ({
               isDisabled={pilotActionLoading || syncStats.pilot.paused}
               isLoading={pilotActionLoading && pilotConfirmAction === 'pause'}
             >
-              Pause Jira Writes
+              Pause Synchronization
             </Button>
             <Button
               appearance="primary"
@@ -2655,7 +2588,7 @@ const SyncActivityPanel = ({
               isDisabled={pilotActionLoading || !syncStats.pilot.paused}
               isLoading={pilotActionLoading && pilotConfirmAction === 'resume'}
             >
-              Resume Jira Writes
+              Resume Synchronization
             </Button>
           </div>
           {pilotActionError && (
@@ -2687,15 +2620,39 @@ const SyncActivityPanel = ({
       <InitialSyncPanel selectedOrg={selectedOrg} showMessage={showMessage} />
 
       <div style={{ marginTop: token('space.300', '24px') }}>
-        <RecurringReconciliation selectedOrg={selectedOrg} showMessage={showMessage} />
+        <RecurringReconciliation
+          selectedOrg={selectedOrg}
+          showMessage={showMessage}
+          onSettingsSaved={() => setSchedulerRefreshToken(token => token + 1)}
+        />
       </div>
+
+      {schedulerState.loaded && !schedulerState.recurringEnabled && schedulerState.legacyActive && (
+        <SectionMessage appearance="information" title="Legacy scheduled synchronization is active">
+          <p style={{ margin: 0, fontSize: '13px' }}>
+            Existing legacy scheduling continues unchanged for {selectedOrg?.name || 'this organization'} until you
+            migrate. Enable Recurring Source Reconciliation in the panel above to use the recurring scheduler. The two
+            schedulers never run for the same organization.
+          </p>
+        </SectionMessage>
+      )}
+
+      {schedulerState.loaded && !schedulerState.recurringEnabled && !schedulerState.legacyActive && (
+        <SectionMessage appearance="information" title="Automatic source reconciliation is disabled">
+          <p style={{ margin: 0, fontSize: '13px' }}>
+            Real-time webhook synchronization remains active for {selectedOrg?.name || 'this organization'}.
+            Enable Recurring Source Reconciliation in the panel above to add periodic source reconciliation and
+            pending-link recovery.
+          </p>
+        </SectionMessage>
+      )}
 
       <ModalTransition>
         {pilotConfirmAction && (
           <ModalDialog onClose={() => { if (!pilotActionLoading) setPilotConfirmAction(null); }}>
             <ModalHeader>
               <ModalTitle>
-                {pilotConfirmAction === 'pause' ? 'Pause Jira Writes?' : 'Resume Jira Writes?'}
+                {pilotConfirmAction === 'pause' ? 'Pause Synchronization?' : 'Resume Synchronization?'}
               </ModalTitle>
             </ModalHeader>
             <ModalBody>
@@ -2745,7 +2702,7 @@ const SyncActivityPanel = ({
                 isLoading={pilotActionLoading}
                 isDisabled={pilotActionLoading}
               >
-                {pilotConfirmAction === 'pause' ? 'Pause Jira Writes' : 'Resume Jira Writes'}
+                {pilotConfirmAction === 'pause' ? 'Pause Synchronization' : 'Resume Synchronization'}
               </Button>
             </ModalFooter>
           </ModalDialog>
@@ -2758,7 +2715,10 @@ const SyncActivityPanel = ({
           {/* Webhook Stats */}
           {syncStats.webhook && (
             <div style={surfaceCard()}>
-              <h4 style={{ margin: '0 0 16px 0' }}>Webhook Sync Statistics</h4>
+              <h4 style={{ margin: '0 0 16px 0' }}>Webhook Sync Statistics (connector-wide)</h4>
+              <p style={{ margin: '0 0 12px 0', fontSize: '12px', color: '#6B778C' }}>
+                These totals cover every organization. Per-organization values appear under By Organization.
+              </p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px'), marginBottom: token('space.200', '16px') }}>
                 <StatCard label="Total Syncs" value={syncStats.webhook.totalSyncs || 0} color="#0052CC" />
                 <StatCard label="Issues Created" value={syncStats.webhook.issuesCreated || 0} color="#00875A" />
@@ -2769,7 +2729,12 @@ const SyncActivityPanel = ({
               </div>
               {syncStats.webhook.lastSync && (
                 <div style={{ fontSize: '12px', color: '#6B778C' }}>
-                  Last sync: {formatDateTimeEuro(syncStats.webhook.lastSync)}
+                  Last webhook sync attempt: {formatDateTimeEuro(syncStats.webhook.lastSync)}
+                </div>
+              )}
+              {syncStats.webhook.lastSuccessfulJiraWrite && (
+                <div style={{ fontSize: '12px', color: '#6B778C', marginTop: '4px' }}>
+                  Last successful Jira write from webhook sync: {formatDateTimeEuro(syncStats.webhook.lastSuccessfulJiraWrite)}
                 </div>
               )}
 
@@ -2842,36 +2807,6 @@ const SyncActivityPanel = ({
                   >
                     Clear Errors
                   </Button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Scheduled Sync Stats */}
-          {syncStats.scheduled && (
-            <div style={surfaceCard()}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h4 style={{ margin: 0 }}>Scheduled Sync Statistics</h4>
-                <Button 
-                  appearance="subtle" 
-                  onClick={handleTriggerScheduledSync} 
-                  isLoading={scheduledSyncLoading}
-                  style={lozengeButtonStyle}
-                  title="Manually trigger the hourly sync job"
-                >
-                  Run Now
-                </Button>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.200', '16px'), marginBottom: token('space.200', '16px') }}>
-                <StatCard label="Issues Checked" value={syncStats.scheduled.issuesChecked || 0} color="#0052CC" />
-                <StatCard label="Issues Created" value={syncStats.scheduled.issuesCreated || 0} color="#00875A" />
-                <StatCard label="Issues Updated" value={syncStats.scheduled.issuesUpdated || 0} color="#0052CC" />
-                <StatCard label="Issues Recreated" value={syncStats.scheduled.issuesRecreated || 0} color="#6554C0" />
-                <StatCard label="Issues Skipped" value={syncStats.scheduled.issuesSkipped || 0} color="#FF991F" />
-              </div>
-              {syncStats.scheduled.lastRun && (
-                <div style={{ fontSize: '12px', color: '#6B778C' }}>
-                  Last run: {formatDateTimeEuro(syncStats.scheduled.lastRun)}
                 </div>
               )}
             </div>
@@ -3021,195 +2956,66 @@ const SyncActivityPanel = ({
 
               {syncStats.apiUsage.lastUpdated && (
                 <div style={{ fontSize: '12px', color: '#6B778C', marginTop: token('space.200', '16px') }}>
-                  Last updated: {formatDateTimeEuro(syncStats.apiUsage.lastUpdated)}
+                  API usage last recorded: {formatDateTimeEuro(syncStats.apiUsage.lastUpdated)}
                 </div>
               )}
             </div>
           )}
 
-          {/* Hourly Sync Timeline */}
-          {syncStats?.scheduled && (
-            <div style={surfaceCard({ background: token('color.background.neutral.subtle', '#F4F5F7') })}>
-              <h4 style={{ margin: '0 0 8px 0' }}>Hourly Sync Timeline</h4>
-              <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
-                Timestamps are shown in Helsinki time (Europe/Helsinki).
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.200', '16px') }}>
-                <div>
-                  <div style={{ fontSize: '12px', color: '#6B778C' }}>Last automatic run</div>
-                  <div style={{ fontSize: '16px', fontWeight: 'bold' }}>{formatHelsinkiTime(syncStats.scheduled.lastRun)}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '12px', color: '#6B778C' }}>Next scheduled run</div>
-                  <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
-                    {(() => {
-                      if (nextRunInfo.state === 'pending') {
-                        return 'Pending first schedule';
-                      }
-                      if (nextRunInfo.state === 'scheduled') {
-                        return formatHelsinkiTime(nextRunInfo.next);
-                      }
-                      if (nextRunInfo.state === 'overdue') {
-                        return (
-                          <span style={{ color: '#DE350B' }}>
-                            Overdue by {formatDuration(nextRunInfo.overdueMs)}
-                          </span>
-                        );
-                      }
-                      return '—';
-                    })()}
-                  </div>
-                </div>
-              </div>
-              <div style={{ marginTop: '12px', fontSize: '12px', color: '#6B778C' }}>
-                Runs every 60 minutes; next run is calculated from the last completed execution.
-              </div>
-              {nextRunInfo.state === 'overdue' && (
-                <div style={{ marginTop: token('space.100', '8px') }}>
-                  <SectionMessage appearance="warning" title="Scheduler overdue">
-                    <p>
-                      The hourly Forge trigger has not reported a completion for {formatDuration(nextRunInfo.overdueMs)}.
-                      The job should resume automatically, but you can trigger a manual sync if updates are urgent.
-                    </p>
-                    <div style={{ marginTop: '8px' }}>
-                      <Button 
-                        appearance="warning" 
-                        onClick={handleTriggerScheduledSync} 
-                        isLoading={scheduledSyncLoading}
-                        style={lozengeButtonStyle}
-                      >
-                        Run Scheduled Sync Now
-                      </Button>
-                    </div>
-                  </SectionMessage>
-                </div>
-              )}
-              <div style={{ marginTop: token('space.300', '24px') }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.150', '12px') }}>
-                  <strong style={{ fontSize: '13px' }}>Recent events ({scheduledEvents.length})</strong>
-                  {hasScheduledEvents && (
-                    <Button
-                      appearance="subtle"
-                      onClick={() => setEventsExpanded(!eventsExpanded)}
-                      style={lozengeButtonStyle}
-                    >
-                      {eventsExpanded ? 'Hide Log' : 'Show Log'}
-                    </Button>
-                  )}
-                </div>
-                {!hasScheduledEvents && (
-                  <div style={{ fontSize: '12px', color: '#6B778C' }}>
-                    No events recorded yet. The next hourly run will populate this log.
-                  </div>
-                )}
-                {hasScheduledEvents && eventsExpanded && (
-                  <div style={{ borderRadius: token('border.radius', '8px'), border: `1px solid ${token('color.border', '#DFE1E6')}`, background: token('color.background.neutral', '#FFFFFF'), maxHeight: '320px', overflowY: 'auto' }}>
-                    {scheduledEvents.map((event, index) => {
-                      const meta = eventTypeMeta[event.type] || { label: event.type || 'Event', appearance: 'default' };
-                      const detailPairs = [
-                        event.issueKey ? { label: 'Issue', value: event.issueKey } : null,
-                        event.remoteKey ? { label: 'Remote', value: event.remoteKey } : null,
-                        event.linkedIssueKey ? { label: 'Linked', value: event.linkedIssueKey } : null,
-                        event.direction ? { label: 'Direction', value: formatDirection(event.direction) } : null
-                      ].filter(Boolean);
-
-                      return (
-                        <div
-                          key={`${event.timestamp || 'event'}-${index}`}
-                          style={{
-                            padding: token('space.200', '16px'),
-                            borderBottom: index === scheduledEvents.length - 1 ? 'none' : `1px solid ${token('color.border', '#DFE1E6')}`
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: token('space.150', '12px') }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
-                              <Lozenge appearance={meta.appearance} isBold>{meta.label}</Lozenge>
-                              <div style={{ fontWeight: 600, fontSize: '13px' }}>{describeScheduledEvent(event)}</div>
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#6B778C', whiteSpace: 'nowrap' }}>
-                              {event.timestamp ? formatHelsinkiTime(event.timestamp) : '—'}
-                            </div>
-                          </div>
-                          {detailPairs.length > 0 && (
-                            <div style={{ marginTop: token('space.150', '12px'), fontSize: '12px', color: '#6B778C', display: 'flex', flexWrap: 'wrap', gap: token('space.150', '12px') }}>
-                              {detailPairs.map(({ label, value }) => (
-                                <div key={`${label}-${value}`} style={{ minWidth: '120px' }}>
-                                  <strong>{label}:</strong> {value}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          {event.message && (
-                            <div style={{
-                              marginTop: token('space.150', '12px'),
-                              fontSize: '12px',
-                              color: '#172B4D',
-                              background: token('color.background.neutral.subtle', '#F4F5F7'),
-                              borderRadius: token('border.radius', '6px'),
-                              padding: token('space.150', '12px'),
-                              fontFamily: 'monospace',
-                              whiteSpace: 'pre-wrap',
-                              wordBreak: 'break-word'
-                            }}>
-                              {event.message}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </>
       )}
 
-      {/* Quick Actions Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: token('space.300', '24px') }}>
-        {/* Manual Sync - Compact */}
-        <div style={surfaceCard()}>
-          <h4 style={{ margin: '0 0 4px 0' }}>Manual Sync</h4>
-          <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
-            Sync a specific issue to the selected organization.
-          </p>
-          <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <TextField
-                value={manualIssueKey}
-                onChange={(event) => setManualIssueKey(event.target.value)}
-                onKeyDown={(event) => event.key === 'Enter' && handleManualSync()}
-                placeholder="e.g., PROJ-123"
-                width="100%"
-              />
+      {/* Background Maintenance */}
+      <div style={{ marginTop: token('space.300', '24px') }}>
+        <h4 style={{ margin: '0 0 4px 0' }}>Background Maintenance</h4>
+        <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 16px 0' }}>
+          Targeted repair actions for manual issue sync and pending links. These actions do not change sync scope or mappings.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: token('space.300', '24px') }}>
+          {/* Manual Sync - Compact */}
+          <div style={surfaceCard()}>
+            <h4 style={{ margin: '0 0 4px 0' }}>Manual Sync</h4>
+            <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
+              Sync a specific issue to the selected organization.
+            </p>
+            <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'flex-end' }}>
+              <div style={{ flex: 1 }}>
+                <TextField
+                  value={manualIssueKey}
+                  onChange={(event) => setManualIssueKey(event.target.value)}
+                  onKeyDown={(event) => event.key === 'Enter' && handleManualSync()}
+                  placeholder="e.g., PROJ-123"
+                  width="100%"
+                />
+              </div>
+              <Button
+                appearance="subtle"
+                onClick={handleManualSync}
+                isLoading={manualSyncLoading}
+                isDisabled={!manualIssueKey.trim()}
+                style={lozengeButtonStyle}
+              >
+                Sync Now
+              </Button>
             </div>
-            <Button
-              appearance="subtle"
-              onClick={handleManualSync}
-              isLoading={manualSyncLoading}
-              isDisabled={!manualIssueKey.trim()}
-              style={lozengeButtonStyle}
-            >
-              Sync Now
+          </div>
+
+          {/* Pending Link Sync - Compact */}
+          <div style={surfaceCard({
+            background: token('color.background.accent.green.subtlest', '#E3FCEF'),
+            border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
+          })}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.100', '8px') }}>
+              <h4 style={{ margin: 0, color: '#006644' }}>Pending Links</h4>
+              <Lozenge appearance="success">Hourly maintenance</Lozenge>
+            </div>
+            <p style={{ fontSize: '13px', color: '#006644', margin: '0 0 12px 0' }}>
+              Retry syncing pending links across all orgs.
+            </p>
+            <Button appearance="subtle" onClick={handleRetryPendingLinks} style={lozengeButtonStyle}>
+              Retry All Pending Links
             </Button>
           </div>
-        </div>
-
-        {/* Pending Link Sync - Compact */}
-        <div style={surfaceCard({
-          background: token('color.background.accent.green.subtlest', '#E3FCEF'),
-          border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
-        })}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: token('space.100', '8px') }}>
-            <h4 style={{ margin: 0, color: '#006644' }}>Pending Links</h4>
-            <Lozenge appearance="success">Auto hourly</Lozenge>
-          </div>
-          <p style={{ fontSize: '13px', color: '#006644', margin: '0 0 12px 0' }}>
-            Retry syncing pending links across all orgs.
-          </p>
-          <Button appearance="subtle" onClick={handleRetryPendingLinks} style={lozengeButtonStyle}>
-            Retry All Pending Links
-          </Button>
         </div>
       </div>
 
@@ -3421,7 +3227,7 @@ const ImportSettingsModal = ({ importData, sections, onToggleSection, onConfirm,
     { key: 'userMappings', label: 'User mappings' },
     { key: 'fieldMappings', label: 'Field mappings' },
     { key: 'statusMappings', label: 'Status mappings' },
-    { key: 'scheduledSync', label: 'Scheduled sync config (global)' }
+    { key: 'scheduledSync', label: 'Legacy scheduled synchronization configuration (global)' }
   ];
   const hasSelection = sectionOptions.some(option => sections?.[option.key]);
 

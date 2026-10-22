@@ -119,11 +119,11 @@ If no projects are selected, all projects sync (backward compatible).
 
 ### Sync Activity Tab
 
-Statistics: Displays counts for issues synced, created, updated, recreated, and any errors.
+Statistics: Webhook totals are connector-wide and show created, updated, comments synced, loops prevented, skipped safety outcomes, and a precise last-successful-Jira-write timestamp. Legacy scheduled totals show Checked, Updated, Already Current, Skipped, and Failed.
 
-Hourly Sync Timeline: Shows last run time and next scheduled run.
+Legacy Scheduled Sync Timeline: Shows the last scheduled attempt and the next hourly heartbeat estimate.
 
-Quick Actions:
+Background Maintenance:
 - Manual Sync: Force sync a specific issue by key
 - Retry Pending Links: Retry any issue links waiting for both issues to exist
 - Scan Deleted (when enabled): Scan all synced issues and recreate any that were deleted in target org

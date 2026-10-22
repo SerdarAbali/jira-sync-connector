@@ -1,15 +1,12 @@
-import { performScheduledSync } from '../services/scheduled/scheduled-sync.js';
-
 /**
- * Async consumer to run the scheduled sync logic manually.
- * This runs with a 900s (15m) timeout via the Async Events API.
+ * The legacy manual scheduled-sync queue consumer is intentionally fail-closed.
+ * Recurring reconciliation uses the existing hourly recovery heartbeat; queued
+ * events from older deployments must not force a legacy scheduled run.
  */
-export async function run(event, context) {
-  console.log('🚀 Manually triggered scheduled sync started via Async Queue');
-  try {
-    await performScheduledSync();
-    console.log('✅ Manually triggered scheduled sync finished');
-  } catch (error) {
-    console.error('❌ Manually triggered scheduled sync failed:', error);
-  }
+export async function run() {
+  console.warn('Manual scheduled sync is disabled; no sync work was started');
+  return {
+    success: false,
+    code: 'SCHEDULED_SYNC_MANUAL_TRIGGER_DISABLED'
+  };
 }

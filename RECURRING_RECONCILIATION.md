@@ -47,6 +47,7 @@ The marker is filtered in both outbound comment copying and inbound comment proc
 
 ## Operational notes
 
+- Recurring reconciliation is the primary background path for an opted-in organization. The legacy scheduled sync skips that organization, and a settings read failure fails closed rather than falling back to legacy writes.
 - The feature uses the existing hourly `initial-sync-recovery` scheduled function. There is no guaranteed exact-minute execution.
 - If a queued or running job is older than the recovery age, the hourly heartbeat re-enqueues the same job. The lease and job identifier still prevent duplicate Jira creates.
 - If preview or candidate processing fails definitively, the job fails and the next run is scheduled from the failure time. If the queue cannot accept an initial or continuation event, the job is marked failed, `nextRunAt` is not advanced, and the organization remains due for the next hourly heartbeat. Completed Jira writes are not reversed.

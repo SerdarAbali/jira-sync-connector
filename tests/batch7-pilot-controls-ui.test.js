@@ -17,11 +17,14 @@ describe('Batch 7 pilot pause UI controls', () => {
   const syncActivity = componentScope('SyncActivityPanel');
 
   test('the status panel exposes Pause and Resume controls', () => {
-    expect(syncActivity).toContain('Pause Jira Writes');
-    expect(syncActivity).toContain('Resume Jira Writes');
+    expect(syncActivity).toContain('Synchronization Write Control');
+    expect(syncActivity).toContain('Write Status');
+    expect(syncActivity).toContain('Pause Synchronization');
+    expect(syncActivity).toContain('Resume Synchronization');
     expect(syncActivity).toContain('pilotConfirmAction');
-    expect(syncActivity).toContain('Pause Jira Writes?');
-    expect(syncActivity).toContain('Resume Jira Writes?');
+    expect(syncActivity).toContain('Pause Synchronization?');
+    expect(syncActivity).toContain('Resume Synchronization?');
+    expect(syncActivity).not.toMatch(/Corporate Pilot|Pilot Status|Pilot Controls|Pause Jira Writes|Resume Jira Writes/);
   });
 
   test('controls require confirmation and use the fixed emergency_stop reason code', () => {

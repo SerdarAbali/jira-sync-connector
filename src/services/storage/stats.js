@@ -2,6 +2,75 @@ import * as kvsStore from './kvs.js';
 import { MAX_AUDIT_LOG_ENTRIES, MAX_ERROR_ENTRIES, MAX_HOURLY_HISTORY } from '../../constants.js';
 import { sanitizeAuditEntry, sanitizeErrorEntry, boundHistory, safeErrorForLog } from '../../utils/redaction.js';
 
+const NORMAL_SKIP_REASON_KEYS = new Set([
+  'loop-prevention',
+  'app-authored',
+  'connector-authored',
+  'already-syncing',
+  'already-in-progress',
+  'already-current',
+  'echo',
+  'duplicate',
+  'stale',
+  'locked',
+  'issue-lease-held',
+  'lease-contended'
+]);
+
+const NORMAL_SKIP_ERRORS = new Set([
+  'ALREADY_SYNCING',
+  'ALREADY_IN_PROGRESS',
+  'ALREADY_CURRENT',
+  'SYNC_ALREADY_IN_PROGRESS',
+  'SYNC_STALE_EVENT',
+  'DUPLICATE',
+  'SKIPPED_ECHO',
+  'SYNC_ECHO_SKIPPED',
+  'SKIPPED_LOCKED',
+  'SYNC_LOCKED',
+  'ISSUE_LEASE_HELD',
+  'LEASE_CONTENDED'
+]);
+
+const NORMAL_SKIP_PATTERN = /(?:already syncing|issue currently syncing|loop prevention|connector-generated|authored by syncapp|app-authored)/i;
+
+function normalizeSkipKey(value) {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[\s_]+/g, '-')
+    : '';
+}
+
+/**
+ * Normal safety outcomes are skips, not operational errors. This classifier is
+ * shared by live tracking and the resolver so legacy stored entries are also
+ * removed from the administrator-facing error history.
+ */
+export function isNormalSyncSkip({ type = null, error = null, details = null } = {}) {
+  if (type === 'skip') {
+    return true;
+  }
+  if (NORMAL_SKIP_REASON_KEYS.has(normalizeSkipKey(details?.reason))) {
+    return true;
+  }
+  if (typeof error !== 'string' || error.trim() === '') {
+    return false;
+  }
+  if (NORMAL_SKIP_ERRORS.has(error.trim().toUpperCase())) {
+    return true;
+  }
+  return NORMAL_SKIP_PATTERN.test(error);
+}
+
+export function isNormalWebhookSkipEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return false;
+  }
+  return isNormalSyncSkip({
+    error: entry.error,
+    details: entry.details
+  });
+}
+
 // Track API usage and rate limits
 export async function trackApiCall(endpoint, success, isRateLimited = false, orgId = null) {
   try {
@@ -202,14 +271,27 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
       loopsPrevented: 0,
       errors: [],
       lastSync: null,
+      lastSuccessfulJiraWrite: null,
       byOrg: {} // Track stats per org
     };
 
     stats.totalSyncs++;
     stats.lastSync = new Date().toISOString();
+    stats.errors = Array.isArray(stats.errors) ? stats.errors : [];
+    stats.byOrg = stats.byOrg && typeof stats.byOrg === 'object' && !Array.isArray(stats.byOrg)
+      ? stats.byOrg
+      : {};
+    if (!Object.prototype.hasOwnProperty.call(stats, 'lastSuccessfulJiraWrite')) {
+      stats.lastSuccessfulJiraWrite = null;
+    }
 
-    // Check if this is a loop prevention skip (not a real error)
-    const isLoopPrevention = type === 'skip' && error === 'Already syncing';
+    const normalSkip = !success && isNormalSyncSkip({ type, error, details });
+    const isLoopPrevention = normalSkip && (
+      type === 'skip'
+      || normalizeSkipKey(details?.reason) === 'loop-prevention'
+      || normalizeSkipKey(details?.reason) === 'app-authored'
+      || NORMAL_SKIP_PATTERN.test(typeof error === 'string' ? error : '')
+    );
 
     // Track per-org stats if orgId provided
     if (orgId) {
@@ -221,18 +303,25 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
           commentsSynced: 0,
           issuesSkipped: 0,
           loopsPrevented: 0,
-          lastSync: null
+          lastSync: null,
+          lastSuccessfulJiraWrite: null
         };
       }
       stats.byOrg[orgId].totalSyncs++;
       stats.byOrg[orgId].lastSync = new Date().toISOString();
-      
+
       if (success) {
         if (type === 'create') stats.byOrg[orgId].issuesCreated++;
         else if (type === 'update') stats.byOrg[orgId].issuesUpdated++;
         else if (type === 'comment') stats.byOrg[orgId].commentsSynced++;
-      } else if (isLoopPrevention) {
-        stats.byOrg[orgId].loopsPrevented = (stats.byOrg[orgId].loopsPrevented || 0) + 1;
+        if (['create', 'update', 'comment'].includes(type)) {
+          stats.byOrg[orgId].lastSuccessfulJiraWrite = new Date().toISOString();
+        }
+      } else if (normalSkip) {
+        stats.byOrg[orgId].issuesSkipped++;
+        if (isLoopPrevention) {
+          stats.byOrg[orgId].loopsPrevented = (stats.byOrg[orgId].loopsPrevented || 0) + 1;
+        }
       } else {
         stats.byOrg[orgId].issuesSkipped++;
       }
@@ -243,10 +332,15 @@ export async function trackWebhookSync(type, success, error = null, orgId = null
       if (type === 'create') stats.issuesCreated++;
       else if (type === 'update') stats.issuesUpdated++;
       else if (type === 'comment') stats.commentsSynced++;
-    } else if (isLoopPrevention) {
-      // Loop prevention is a feature, not an error - track separately
-      stats.loopsPrevented = (stats.loopsPrevented || 0) + 1;
-      // Don't add to error list
+      if (['create', 'update', 'comment'].includes(type)) {
+        stats.lastSuccessfulJiraWrite = new Date().toISOString();
+      }
+    } else if (normalSkip) {
+      // Normal safety outcomes are skips, not errors.
+      stats.issuesSkipped++;
+      if (isLoopPrevention) {
+        stats.loopsPrevented = (stats.loopsPrevented || 0) + 1;
+      }
     } else {
       stats.issuesSkipped++;
       if (error) {

@@ -1,4 +1,3 @@
-import { Queue } from '@forge/events';
 import * as kvsStore from '../services/storage/kvs.js';
 import { getRemoteKey, getOrganizationsWithTokens } from '../services/storage/mappings.js';
 import { getFullIssue } from '../services/jira/local-client.js';
@@ -252,20 +251,14 @@ export function defineSyncResolvers(resolver) {
     }
   });
 
-  // Resolver to manually trigger scheduled sync (for testing)
+  // Manual scheduled-sync triggers are intentionally disabled. Recurring
+  // reconciliation is scheduled by the existing hourly recovery heartbeat.
   resolver.define('triggerScheduledSync', async () => {
-    try {
-      console.log('🔄 Manual trigger of scheduled sync requested via Async Queue');
-
-      const queue = new Queue({ key: 'manual-sync-queue' });
-      await queue.push({ body: { trigger: 'manual', timestamp: Date.now() } });
-
-      console.log('✅ Manual scheduled sync queued successfully');
-      return { success: true, message: 'Scheduled sync started in background. It may take a few minutes to complete.' };
-    } catch (error) {
-      console.error('❌ Manual scheduled sync queue failed:', error);
-      return { success: false, error: error.message };
-    }
+    return {
+      success: false,
+      code: 'SCHEDULED_SYNC_MANUAL_TRIGGER_DISABLED',
+      error: 'Manual scheduled sync is disabled. Recurring reconciliation runs from the hourly recovery heartbeat when enabled.'
+    };
   });
 }
 

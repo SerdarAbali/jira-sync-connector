@@ -1,5 +1,5 @@
 import * as kvsStore from '../services/storage/kvs.js';
-import { getApiUsageStats, resetApiUsageStats } from '../services/storage/stats.js';
+import { getApiUsageStats, resetApiUsageStats, isNormalWebhookSkipEntry } from '../services/storage/stats.js';
 import { MAX_ERROR_ENTRIES } from '../constants.js';
 import { sanitizeErrorEntry, safeErrorSummary, boundHistory, safeErrorForLog } from '../utils/redaction.js';
 
@@ -12,6 +12,16 @@ export function defineStatsResolvers(resolver) {
         Array.isArray(stats.errors) ? stats.errors.map(error => safeErrorSummary(error)) : [],
         MAX_ERROR_ENTRIES
       );
+      // Preserve legacy stored fields while exposing the current counters.
+      stats.issuesAlreadyCurrent = Number.isSafeInteger(stats.issuesAlreadyCurrent)
+        ? stats.issuesAlreadyCurrent
+        : 0;
+      stats.issuesFailed = Number.isSafeInteger(stats.issuesFailed)
+        ? stats.issuesFailed
+        : 0;
+      stats.lastSuccessfulJiraWrite = typeof stats.lastSuccessfulJiraWrite === 'string'
+        ? stats.lastSuccessfulJiraWrite
+        : null;
       return stats;
     }
     return {
@@ -19,7 +29,11 @@ export function defineStatsResolvers(resolver) {
       issuesChecked: 0,
       issuesCreated: 0,
       issuesUpdated: 0,
+      issuesAlreadyCurrent: 0,
       issuesSkipped: 0,
+      issuesFailed: 0,
+      issuesRecreated: 0,
+      lastSuccessfulJiraWrite: null,
       errors: [],
       events: []
     };
@@ -30,9 +44,16 @@ export function defineStatsResolvers(resolver) {
     if (stats) {
       const safeStats = { ...stats };
       safeStats.errors = boundHistory(
-        Array.isArray(stats.errors) ? stats.errors.map(sanitizeErrorEntry) : [],
+        Array.isArray(stats.errors)
+          ? stats.errors
+            .filter(error => !isNormalWebhookSkipEntry(error))
+            .map(sanitizeErrorEntry)
+          : [],
         MAX_ERROR_ENTRIES
       );
+      safeStats.lastSuccessfulJiraWrite = typeof stats.lastSuccessfulJiraWrite === 'string'
+        ? stats.lastSuccessfulJiraWrite
+        : null;
       return safeStats;
     }
     return {
@@ -42,7 +63,8 @@ export function defineStatsResolvers(resolver) {
       commentsSynced: 0,
       issuesSkipped: 0,
       errors: [],
-      lastSync: null
+      lastSync: null,
+      lastSuccessfulJiraWrite: null
     };
   });
 

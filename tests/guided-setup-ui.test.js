@@ -120,7 +120,7 @@ describe('guided setup admin UI', () => {
     expect(wizard).not.toContain('systemTest');
     expect(resolver).not.toContain('runSystemTest');
     expect(app).toContain("invoke('pausePilot'");
-    expect(app).toContain('Pause Jira Writes');
+    expect(app).toContain('Pause Synchronization');
   });
 
   test('review activation presents only safe metadata fields', () => {
