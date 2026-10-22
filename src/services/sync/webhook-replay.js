@@ -58,7 +58,8 @@ export function buildWebhookFingerprint(payload, orgId) {
     identityKind = commentId ? 'comment-created' : null;
   } else if (event === 'attachment_created' || event === 'jira:attachment_created' || event === 'attachment_deleted' || event === 'jira:attachment_deleted') {
     identityKind = attachmentId ? 'attachment-event' : null;
-  } else if (event === 'jira:issue_link_created' || event === 'jira:issue_link_deleted') {
+  } else if (event === 'jira:issue_link_created' || event === 'jira:issue_link_deleted'
+    || event === 'issuelink_created' || event === 'issuelink_deleted') {
     identityKind = issueLinkId ? 'issue-link-event' : null;
   } else {
     identityKind = (issueId || issueKey) ? 'generic' : null;

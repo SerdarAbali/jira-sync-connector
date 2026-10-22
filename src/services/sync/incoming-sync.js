@@ -45,9 +45,9 @@ const BLOCKED_FIELD_KEYS = new Set([
   'progress',
   'watches'
 ]);
-import api, { route } from '@forge/api';
+import api, { fetch, route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
-import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
+import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLinkMapping, removeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { logAuditEntry } from '../storage/stats.js';
@@ -195,6 +195,8 @@ export async function processIncomingWebhook(payload, auth) {
   if (!issue) {
       if (isAttachmentEvent(webhookEvent)) {
         console.log(`${LOG_EMOJI.WARNING} Attachment webhook missing issue payload`);
+      } else if (isIssueLinkEvent(webhookEvent)) {
+        console.log(`${LOG_EMOJI.WARNING} Issue-link webhook does not contain a top-level issue payload`);
       } else {
         return { status: 400, body: { error: 'No issue in payload' } };
       }
@@ -227,10 +229,10 @@ export async function processIncomingWebhook(payload, auth) {
       await handleRemoteIssueDeleted(issue, context);
     } else if (webhookEvent === 'comment_created') {
       await handleRemoteCommentCreated(payload, context);
-    } else if (webhookEvent === 'jira:issue_link_created') {
-      await handleRemoteIssueLinkCreated(payload, context);
-    } else if (webhookEvent === 'jira:issue_link_deleted') {
-      console.log(`ℹ️ Inbound link deletion coming soon`);
+    } else if (webhookEvent === 'jira:issue_link_created' || webhookEvent === 'issuelink_created') {
+      routeResult = await handleRemoteIssueLinkCreated(payload, context);
+    } else if (webhookEvent === 'jira:issue_link_deleted' || webhookEvent === 'issuelink_deleted') {
+      routeResult = await handleRemoteIssueLinkDeleted(payload, context);
     } else if (webhookEvent === 'attachment_created' || webhookEvent === 'jira:attachment_created') {
         console.log(`${LOG_EMOJI.ATTACHMENT} Routing attachment event for ${payload.issue?.key || 'unknown issue'}`);
       await handleRemoteAttachmentCreated(payload, context);
@@ -254,8 +256,7 @@ export async function processIncomingWebhook(payload, auth) {
     }
 
     const responseBody = { message: 'Processed' };
-    if (routeResult?.code === ISSUE_CREATE_CODES.RECONCILIATION_REQUIRED
-        || routeResult?.code === ISSUE_CREATE_CODES.IN_PROGRESS) {
+    if (typeof routeResult?.code === 'string') {
       responseBody.code = routeResult.code;
     }
     return { status: 200, body: responseBody };
@@ -1386,35 +1387,170 @@ async function handleRemoteAttachmentCreated(payload, context) {
   return { status: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT', code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT' };
 }
 
+async function fetchRemoteIssueKeyById(org, issueId) {
+  const normalizedId = issueId === undefined || issueId === null ? '' : String(issueId);
+  if (!/^\d+$/.test(normalizedId)) {
+    return null;
+  }
+
+  const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
+
+  try {
+    const response = await fetch(
+      `${org.remoteUrl}/rest/api/3/issue/${normalizedId}?fields=issuelinks`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      console.log(`${LOG_EMOJI.WARNING} Could not resolve remote issue ID ${normalizedId}`);
+      return null;
+    }
+
+    const issue = await response.json();
+    return issue?.key || null;
+  } catch (error) {
+    console.log(`${LOG_EMOJI.WARNING} Error resolving remote issue ID ${normalizedId}`);
+    return null;
+  }
+}
+
+/**
+ * Jira system webhooks deliver issue links as numeric source/destination IDs
+ * with an issueLinkType. Forge events deliver outward/inward issue objects and
+ * type. Normalize both shapes without inferring anything from issue content.
+ */
+async function resolveIncomingIssueLink(payload, context) {
+  const link = payload?.issueLink;
+  if (!link || typeof link !== 'object') {
+    return null;
+  }
+
+  const remoteOutwardKey = link.outwardIssue?.key
+    || link.sourceIssueKey
+    || await fetchRemoteIssueKeyById(context.org, link.sourceIssueId ?? payload.sourceIssueId);
+  const remoteInwardKey = link.inwardIssue?.key
+    || link.destinationIssueKey
+    || await fetchRemoteIssueKeyById(context.org, link.destinationIssueId ?? payload.destinationIssueId);
+
+  if (!remoteOutwardKey || !remoteInwardKey) {
+    return null;
+  }
+
+  return {
+    id: link.id ?? payload.issueLinkId ?? null,
+    remoteOutwardKey,
+    remoteInwardKey,
+    linkTypeName: link.type?.name
+      || link.issueLinkType?.name
+      || payload.issueLinkType?.name
+      || null
+  };
+}
+
+function linkConnectsIssues(link, sourceKey, destinationKey, linkTypeName) {
+  if (!link || !link.type) {
+    return false;
+  }
+  if (linkTypeName && link.type.name !== linkTypeName) {
+    return false;
+  }
+
+  const outwardKey = link.outwardIssue?.key;
+  const inwardKey = link.inwardIssue?.key;
+  const endpoints = [outwardKey, inwardKey].filter(Boolean);
+
+  if (!endpoints.includes(destinationKey)) {
+    return false;
+  }
+
+  return endpoints.includes(sourceKey) || endpoints.length === 1;
+}
+
+async function findMappedLocalLink(sourceKey, destinationKey, linkTypeName, orgId) {
+  const localLinks = await fetchLocalIssueLinks(sourceKey);
+  if (!localLinks) {
+    return null;
+  }
+
+  const candidates = localLinks.filter(link => linkConnectsIssues(
+    link,
+    sourceKey,
+    destinationKey,
+    linkTypeName
+  ));
+
+  for (const candidate of candidates) {
+    if (candidate?.id === undefined || candidate?.id === null) {
+      continue;
+    }
+
+    const localLinkId = String(candidate.id);
+    const storedMapping = await getLinkMapping(localLinkId, orgId);
+    if (storedMapping) {
+      return { localLinkId };
+    }
+  }
+
+  return null;
+}
+
+async function deleteLocalIssueLink(localLinkId) {
+  await assertPilotWritesAllowed('link_delete_local');
+
+  let response;
+  try {
+    // Deliberately a single attempt. A DELETE timeout or 5xx may mean Jira
+    // already deleted the link, so the caller must not auto-retry.
+    response = await api.asApp().requestJira(
+      route`/rest/api/3/issueLink/${localLinkId}`,
+      { method: 'DELETE' }
+    );
+  } catch (error) {
+    console.error(`${LOG_EMOJI.ERROR} Local issue-link DELETE outcome is ambiguous`);
+    return { outcome: 'ambiguous' };
+  }
+
+  if (response?.ok || response?.status === 204) {
+    return { outcome: 'deleted' };
+  }
+  if (response?.status === 404) {
+    return { outcome: 'already_deleted' };
+  }
+  if (!response || response.status >= 500) {
+    return { outcome: 'ambiguous' };
+  }
+
+  return { outcome: 'failed', status: response.status };
+}
+
 async function handleRemoteIssueLinkCreated(payload, context) {
   if (!shouldSyncIncomingLinks(context.syncOptions)) {
     console.log(`⏭️ Incoming links disabled for ${context.orgId || 'organization'}`);
     return;
   }
 
-  const link = payload.issueLink;
+  const link = await resolveIncomingIssueLink(payload, context);
   if (!link) {
-    console.log(`${LOG_EMOJI.WARNING} Link event missing issueLink payload`);
+    console.log(`${LOG_EMOJI.WARNING} Link event missing usable issueLink payload`);
     return;
   }
 
-  const linkTypeName = link?.type?.name || 'Relates';
-  if (!link?.type?.name) {
+  const linkTypeName = link.linkTypeName || 'Relates';
+  if (!link.linkTypeName) {
     console.log(`${LOG_EMOJI.WARNING} Link event missing type name, defaulting to Relates`);
   }
-  const remoteOutwardKey = link.outwardIssue?.key;
-  const remoteInwardKey = link.inwardIssue?.key;
 
-  if (!remoteOutwardKey || !remoteInwardKey) {
-    console.log(`${LOG_EMOJI.WARNING} Link event missing outward/inward issue keys`);
-    return;
-  }
-
-  const localOutwardKey = await getLocalKey(remoteOutwardKey, context.orgId);
-  const localInwardKey = await getLocalKey(remoteInwardKey, context.orgId);
+  const localOutwardKey = await getLocalKey(link.remoteOutwardKey, context.orgId);
+  const localInwardKey = await getLocalKey(link.remoteInwardKey, context.orgId);
 
   if (!localOutwardKey || !localInwardKey) {
-    console.log(`${LOG_EMOJI.WARNING} Cannot sync link ${remoteOutwardKey} ⇄ ${remoteInwardKey} - missing local mapping(s)`);
+    console.log(`${LOG_EMOJI.WARNING} Cannot sync link ${link.remoteOutwardKey} ⇄ ${link.remoteInwardKey} - missing local mapping(s)`);
     return;
   }
 
@@ -1435,6 +1571,57 @@ async function handleRemoteIssueLinkCreated(payload, context) {
   }
 
   await recordInboundLinkMapping(localOutwardKey, localInwardKey, linkTypeName, context.orgId);
+}
+
+async function handleRemoteIssueLinkDeleted(payload, context) {
+  if (!shouldSyncIncomingLinks(context.syncOptions)) {
+    console.log(`⏭️ Incoming links disabled for ${context.orgId || 'organization'}`);
+    return;
+  }
+
+  const link = await resolveIncomingIssueLink(payload, context);
+  if (!link) {
+    console.log(`${LOG_EMOJI.WARNING} Link deletion event missing usable issueLink payload`);
+    return;
+  }
+
+  const localSourceKey = await getLocalKey(link.remoteOutwardKey, context.orgId);
+  const localDestinationKey = await getLocalKey(link.remoteInwardKey, context.orgId);
+
+  if (!localSourceKey || !localDestinationKey) {
+    console.log(`${LOG_EMOJI.WARNING} Cannot delete link ${link.remoteOutwardKey} ⇄ ${link.remoteInwardKey} - missing issue mapping(s)`);
+    return;
+  }
+
+  // A link can only be removed through its stored local link mapping. Issue
+  // keys alone, summaries, or pending-link retries are never sufficient.
+  const mappedLink = await findMappedLocalLink(
+    localSourceKey,
+    localDestinationKey,
+    link.linkTypeName,
+    context.orgId
+  );
+
+  if (!mappedLink) {
+    console.log(`${LOG_EMOJI.INFO} No stored link mapping for ${localSourceKey} ⇄ ${localDestinationKey}; no local DELETE attempted`);
+    return;
+  }
+
+  const deletion = await deleteLocalIssueLink(mappedLink.localLinkId);
+
+  if (deletion.outcome === 'deleted' || deletion.outcome === 'already_deleted') {
+    await removeLinkMapping(mappedLink.localLinkId, context.orgId);
+    console.log(`${LOG_EMOJI.SUCCESS} Removed local issue link ${mappedLink.localLinkId} (${deletion.outcome})`);
+    return;
+  }
+
+  if (deletion.outcome === 'ambiguous') {
+    console.warn(`${LOG_EMOJI.WARNING} Local issue-link DELETE is ambiguous; mapping retained for reconciliation`);
+    return { code: 'LINK_DELETE_AMBIGUOUS' };
+  }
+
+  console.error(`${LOG_EMOJI.ERROR} Local issue-link DELETE failed; mapping retained`);
+  return { code: 'LINK_DELETE_FAILED' };
 }
 
 async function syncIncomingLinksForIssue(remoteIssue, localIssueKey, context) {
@@ -1636,6 +1823,11 @@ function shouldSkipUpdateForAttachmentOnly(payload) {
 function isAttachmentEvent(webhookEvent) {
   return webhookEvent === 'attachment_created' || webhookEvent === 'jira:attachment_created' ||
          webhookEvent === 'attachment_deleted' || webhookEvent === 'jira:attachment_deleted';
+}
+
+function isIssueLinkEvent(webhookEvent) {
+  return webhookEvent === 'jira:issue_link_created' || webhookEvent === 'jira:issue_link_deleted' ||
+         webhookEvent === 'issuelink_created' || webhookEvent === 'issuelink_deleted';
 }
 
 async function fetchLocalIssueLinks(issueKey) {

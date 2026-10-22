@@ -16,6 +16,8 @@ const KNOWN_WEBHOOK_EVENTS = new Set([
   'comment_created',
   'jira:issue_link_created',
   'jira:issue_link_deleted',
+  'issuelink_created',
+  'issuelink_deleted',
   'attachment_created',
   'jira:attachment_created',
   'attachment_deleted',
