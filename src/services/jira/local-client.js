@@ -59,7 +59,7 @@ export async function downloadAttachment(attachmentUrl) {
     // URL format: https://serdarjiraone.atlassian.net/rest/api/3/attachment/content/10004
     const matches = attachmentUrl.match(/\/attachment\/content\/(\d+)/);
     if (!matches || !matches[1]) {
-      console.error('Could not extract attachment ID from URL:', attachmentUrl);
+      console.error('Could not extract attachment ID from the supplied reference');
       return null;
     }
     

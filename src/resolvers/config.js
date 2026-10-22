@@ -16,10 +16,58 @@ const DEFAULT_SYNC_OPTIONS = {
   syncComments: true,
   syncAttachments: false,
   syncLinks: true,
-  recreateDeletedIssues: false
+  syncCrossReference: true,
+  recreateDeletedIssues: false,
+  propagateAttachmentDeletions: false,
+  maxAttachmentSizeBytes: null
 };
 const DEFAULT_USER_MAPPING_CONFIG = { autoMapUsers: true, fallbackUser: 'unassigned' };
 const WEBHOOK_SECRET_ENTROPY_BYTES = 32;
+const SYNC_OPTION_BOOLEAN_KEYS = [
+  'syncComments',
+  'syncAttachments',
+  'syncLinks',
+  'syncCrossReference',
+  'recreateDeletedIssues',
+  'propagateAttachmentDeletions',
+  'forceCheckAttachments',
+  'forceCheckLinks'
+];
+
+function normalizeSyncOptions(options = {}) {
+  const normalized = { ...DEFAULT_SYNC_OPTIONS };
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    return normalized;
+  }
+  for (const key of SYNC_OPTION_BOOLEAN_KEYS) {
+    if (typeof options[key] === 'boolean') {
+      normalized[key] = options[key];
+    }
+  }
+  if (Number.isSafeInteger(options.maxAttachmentSizeBytes)
+      && options.maxAttachmentSizeBytes > 0) {
+    normalized.maxAttachmentSizeBytes = options.maxAttachmentSizeBytes;
+  }
+  return normalized;
+}
+
+function validateSyncOptionsInput(options) {
+  const input = validateObject(options, 'options');
+  const next = { ...input };
+  for (const key of SYNC_OPTION_BOOLEAN_KEYS) {
+    if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+      throw new Error(`${key} must be a boolean`);
+    }
+  }
+  if (input.maxAttachmentSizeBytes !== undefined
+      && input.maxAttachmentSizeBytes !== null
+      && (!Number.isSafeInteger(input.maxAttachmentSizeBytes)
+        || input.maxAttachmentSizeBytes <= 0)) {
+    throw new Error('maxAttachmentSizeBytes must be a positive integer or null');
+  }
+  return normalizeSyncOptions({ ...DEFAULT_SYNC_OPTIONS, ...next });
+}
+
 
 function tokenSecretKey(orgId) {
   return `secret:${orgId}:token`;
@@ -603,38 +651,28 @@ export function defineConfigResolvers(resolver) {
     const orgId = payload?.orgId;
     const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
     const options = await kvsStore.get(key);
-    // Default options - syncCrossReference defaults to true for backward compatibility
-    const defaults = {
-      syncComments: true,
-      syncAttachments: false,
-      syncLinks: true,
-      syncCrossReference: true,
-      recreateDeletedIssues: false
-    };
-    // Merge stored options with defaults to ensure all keys exist. Attachment
-    // sync is always reported disabled for the corporate pilot.
-    return options
-      ? { ...defaults, ...options, syncAttachments: false }
-      : defaults;
+    // A missing record means a new organization: attachments default Off.
+    // Stored preferences, including a previously enabled attachment toggle,
+    // are preserved across upgrades.
+    return normalizeSyncOptions(options || {});
   });
 
   resolver.define('saveSyncOptions', async ({ payload }) => {
     try {
       const orgId = payload?.orgId;
       if (orgId) validateOrgId(orgId);
-      
-      // Validate options
-      const options = validateObject(payload.options, 'options');
-      const storedOptions = { ...options, syncAttachments: false };
-      
+
+      const storedOptions = validateSyncOptionsInput(payload.options);
       const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
       await kvsStore.set(key, storedOptions);
       return {
         success: true,
         message: 'Sync options saved',
         attachmentSync: {
-          enabled: false,
-          code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT'
+          enabled: storedOptions.syncAttachments === true,
+          propagateDeletions: storedOptions.syncAttachments === true
+            && storedOptions.propagateAttachmentDeletions === true,
+          maxAttachmentSizeBytes: storedOptions.maxAttachmentSizeBytes
         }
       };
     } catch (error) {
@@ -642,6 +680,7 @@ export function defineConfigResolvers(resolver) {
       return { success: false, error: error.message };
     }
   });
+
 
   resolver.define('exportOrgSettings', async ({ payload }) => {
     try {

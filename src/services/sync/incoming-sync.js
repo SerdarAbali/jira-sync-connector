@@ -54,6 +54,8 @@ import { logAuditEntry } from '../storage/stats.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
+import { syncRemoteAttachmentsToLocal, propagateAttachmentDeletion, getAttachmentSyncPolicy } from './attachment-sync.js';
+import { isValidAttachmentId, isValidIssueKey } from '../../utils/attachment-url.js';
 import { transitionLocalIssue } from './transition-sync.js';
 import { mapUserToLocal } from '../../utils/mapping.js';
 import { secureCompare } from '../../utils/secure-compare.js';
@@ -234,10 +236,10 @@ export async function processIncomingWebhook(payload, auth) {
     } else if (webhookEvent === 'jira:issue_link_deleted' || webhookEvent === 'issuelink_deleted') {
       routeResult = await handleRemoteIssueLinkDeleted(payload, context);
     } else if (webhookEvent === 'attachment_created' || webhookEvent === 'jira:attachment_created') {
-        console.log(`${LOG_EMOJI.ATTACHMENT} Routing attachment event for ${payload.issue?.key || 'unknown issue'}`);
-      await handleRemoteAttachmentCreated(payload, context);
+      console.log(`${LOG_EMOJI.ATTACHMENT} Routing attachment event for ${payload.issue?.key || 'unknown issue'}`);
+      routeResult = await handleRemoteAttachmentCreated(payload, context);
     } else if (webhookEvent === 'attachment_deleted' || webhookEvent === 'jira:attachment_deleted') {
-      console.log(`ℹ️ Inbound attachment deletion coming soon`);
+      routeResult = await handleRemoteAttachmentDeleted(payload, context);
     } else {
       console.log(`ℹ️ Ignoring event: ${webhookEvent}`);
     }
@@ -545,10 +547,24 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   }
   await processPendingChildIssues(remoteIssue.key, context);
 
-  // Attachment synchronization is disabled backend-side for the corporate
-  // pilot. No attachment content URL from a webhook is ever fetched.
-  if (resolvedRemoteIssue.fields.attachment && resolvedRemoteIssue.fields.attachment.length > 0) {
-    console.log(`${LOG_EMOJI.ATTACHMENT} ATTACHMENT_SYNC_DISABLED_FOR_PILOT (${resolvedRemoteIssue.fields.attachment.length} attachment(s) skipped)`);
+  // Attachments use a canonical metadata and content lookup keyed by the
+  // validated source attachment ID. Any URL, filename or size supplied by the
+  // webhook payload is ignored.
+  if (Array.isArray(resolvedRemoteIssue.fields.attachment)
+      && resolvedRemoteIssue.fields.attachment.length > 0) {
+    try {
+      await syncRemoteAttachmentsToLocal(
+        remoteIssue.key,
+        localKey,
+        resolvedRemoteIssue,
+        org,
+        null,
+        orgId,
+        { syncOptions: context.syncOptions }
+      );
+    } catch {
+      console.warn(`${LOG_EMOJI.WARNING} Attachment synchronization deferred for a mapped issue`);
+    }
   }
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
@@ -1606,12 +1622,77 @@ async function applyParentMapping(targetFields, remoteFields, context) {
 }
 
 async function handleRemoteAttachmentCreated(payload, context) {
-  console.log(`${LOG_EMOJI.ATTACHMENT} Handling attachment_created event for ${payload.issue?.key || 'unknown issue'} (attachment ${payload.attachment?.id || 'unknown'})`);
+  const attachmentId = payload?.attachment?.id ?? payload?.attachmentId;
+  if (!isValidAttachmentId(attachmentId)) {
+    return { status: 'ATTACHMENT_ID_INVALID', code: 'INVALID_ATTACHMENT_ID' };
+  }
 
-  // Backend enforcement: never fetch a webhook-supplied attachment URL and
-  // never send the configured Jira credentials to it.
-  console.log(`⏭️ ATTACHMENT_SYNC_DISABLED_FOR_PILOT (${context.orgId || 'organization'})`);
-  return { status: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT', code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT' };
+  const remoteKey = isValidIssueKey(payload?.issue?.key)
+    ? payload.issue.key
+    : await fetchRemoteIssueKeyById(context.org, payload?.issue?.id);
+  if (!remoteKey) {
+    return { status: 'ATTACHMENT_ISSUE_UNRESOLVED', code: 'ATTACHMENT_ISSUE_UNRESOLVED' };
+  }
+
+  const localKey = await getLocalKey(remoteKey, context.orgId);
+  if (!localKey) {
+    return { status: 'ATTACHMENT_ISSUE_UNMAPPED', code: 'ATTACHMENT_ISSUE_NOT_MAPPED' };
+  }
+
+  if (!getAttachmentSyncPolicy(context.syncOptions).enabled) {
+    return { status: 'ATTACHMENT_SYNC_DISABLED', code: 'ATTACHMENT_SYNC_DISABLED' };
+  }
+
+  try {
+    await syncRemoteAttachmentsToLocal(
+      remoteKey,
+      localKey,
+      { key: remoteKey, fields: { attachment: [{ id: String(attachmentId) }] } },
+      context.org,
+      null,
+      context.orgId,
+      {
+        syncOptions: context.syncOptions,
+        attachmentIds: [String(attachmentId)]
+      }
+    );
+    return { status: 'ATTACHMENT_SYNCED', code: 'ATTACHMENT_SYNCED' };
+  } catch {
+    return {
+      status: 'ATTACHMENT_RECONCILIATION_REQUIRED',
+      code: 'ATTACHMENT_RECONCILIATION_REQUIRED'
+    };
+  }
+}
+
+async function handleRemoteAttachmentDeleted(payload, context) {
+  const attachmentId = payload?.attachment?.id ?? payload?.attachmentId;
+  if (!isValidAttachmentId(attachmentId)) {
+    return { status: 'ATTACHMENT_ID_INVALID', code: 'INVALID_ATTACHMENT_ID' };
+  }
+
+  const remoteKey = isValidIssueKey(payload?.issue?.key)
+    ? payload.issue.key
+    : await fetchRemoteIssueKeyById(context.org, payload?.issue?.id);
+  if (!remoteKey) {
+    return { status: 'ATTACHMENT_ISSUE_UNRESOLVED', code: 'ATTACHMENT_ISSUE_UNRESOLVED' };
+  }
+
+  const localKey = await getLocalKey(remoteKey, context.orgId);
+  if (!localKey) {
+    return { status: 'ATTACHMENT_ISSUE_UNMAPPED', code: 'ATTACHMENT_ISSUE_NOT_MAPPED' };
+  }
+
+  const result = await propagateAttachmentDeletion({
+    direction: 'remote-to-local',
+    sourceAttachmentId: String(attachmentId),
+    localKey,
+    remoteKey,
+    config: context.org,
+    orgId: context.orgId,
+    syncOptions: context.syncOptions
+  });
+  return { status: result.status, code: result.status };
 }
 
 async function fetchRemoteIssueKeyById(org, issueId) {

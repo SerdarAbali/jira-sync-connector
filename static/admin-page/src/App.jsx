@@ -143,10 +143,13 @@ const App = () => {
   const [syncOptions, setSyncOptions] = useState({
     syncComments: true,
     syncAttachments: false,
+    propagateAttachmentDeletions: false,
+    maxAttachmentSizeBytes: null,
     syncLinks: true,
     syncCrossReference: true,
     recreateDeletedIssues: false
   });
+  const [attachmentMaxMb, setAttachmentMaxMb] = useState('');
 
   // Stats
   const [syncStats, setSyncStats] = useState(null);
@@ -258,6 +261,11 @@ const App = () => {
       if (issueTypeMappingData) setIssueTypeMappings(issueTypeMappingData);
       if (projectMappingData) setProjectMappings(projectMappingData);
       if (syncOptionsData) setSyncOptions(syncOptionsData);
+      setAttachmentMaxMb(
+        Number.isSafeInteger(syncOptionsData?.maxAttachmentSizeBytes)
+          ? String(syncOptionsData.maxAttachmentSizeBytes / (1024 * 1024))
+          : ''
+      );
       if (lastSyncData?.lastSync) setLastSyncTime(lastSyncData.lastSync);
       if (rejectedFieldData?.fields) setRejectedFieldIds(rejectedFieldData.fields);
     } catch (error) {
@@ -687,10 +695,24 @@ const App = () => {
   const handleSaveSyncOptions = async () => {
     if (!selectedOrgId) return;
 
+    let maxAttachmentSizeBytes = null;
+    if (attachmentMaxMb.trim() !== '') {
+      const megabytes = Number(attachmentMaxMb);
+      if (!Number.isFinite(megabytes) || megabytes <= 0) {
+        showMessage('Maximum attachment size must be a positive number of megabytes, or blank to use Jira settings.', 'error');
+        return;
+      }
+      maxAttachmentSizeBytes = Math.round(megabytes * 1024 * 1024);
+    }
+
     setSaving(true);
     try {
-      const result = await invoke('saveSyncOptions', { orgId: selectedOrgId, options: syncOptions });
+      const result = await invoke('saveSyncOptions', {
+        orgId: selectedOrgId,
+        options: { ...syncOptions, maxAttachmentSizeBytes }
+      });
       if (result.success) {
+        setSyncOptions(previous => ({ ...previous, maxAttachmentSizeBytes }));
         showMessage('Sync options saved', 'success');
       } else {
         showMessage(`Error: ${result.error}`, 'error');
@@ -1802,13 +1824,19 @@ const ConfigurationPanel = ({
         <div style={surfaceCard({ display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') })}>
           <h4 style={{ margin: 0 }}>Sync Options</h4>
           <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
-            <SectionMessage appearance="warning">
+            <SectionMessage appearance={syncOptions.syncAttachments ? 'information' : 'warning'}>
               <p style={{ margin: 0, fontSize: '13px' }}>
-                Attachment synchronization is disabled for the corporate pilot. The backend rejects attachment payloads even if an older or modified UI sends them.
+                {syncOptions.syncAttachments
+                  ? 'Attachment synchronization is On. Transfers use Jira attachment IDs, the smaller of both Jira attachment limits, and any lower limit set below.'
+                  : 'Attachment synchronization is Off. New organizations start with this setting off.'}
+              </p>
+              <p style={{ margin: '6px 0 0 0', fontSize: '12px' }}>
+                Jira malware scanning is not performed by this connector. Rejected size, type, filename, mapping and permission cases are reported as safe status categories.
               </p>
             </SectionMessage>
             {[
               { key: 'syncComments', label: 'Sync Comments' },
+              { key: 'syncAttachments', label: 'Synchronize attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
               { key: 'syncCrossReference', label: 'Add Cross-Reference in Description (show linked issue keys in both orgs)' },
               { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (re-sync issues deleted in target org)' }
@@ -1821,6 +1849,47 @@ const ConfigurationPanel = ({
                 onChange={(event) => setSyncOptions({ ...syncOptions, [option.key]: event.target.checked })}
               />
             ))}
+            {syncOptions.syncAttachments && (
+              <div style={{
+                marginLeft: token('space.300', '24px'),
+                paddingLeft: token('space.200', '16px'),
+                borderLeft: `2px solid ${token('color.border', '#DFE1E6')}`,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: token('space.100', '8px')
+              }}>
+                <Checkbox
+                  label="Propagate attachment deletions"
+                  name="propagateAttachmentDeletions"
+                  isChecked={!!syncOptions.propagateAttachmentDeletions}
+                  onChange={(event) => setSyncOptions({
+                    ...syncOptions,
+                    propagateAttachmentDeletions: event.target.checked
+                  })}
+                />
+                <div style={{ fontSize: '12px', color: '#6B778C' }}>
+                  Off by default. When off, counterpart attachments and mapping history are retained. When on, only the explicitly mapped counterpart attachment is deleted; Jira issues are never deleted.
+                </div>
+                <label style={{ fontSize: '12px', fontWeight: 600 }}>
+                  Maximum attachment size (MB)
+                  <TextField
+                    name="maxAttachmentSizeBytes"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={attachmentMaxMb}
+                    placeholder="Use Jira attachment settings"
+                    onChange={(event) => setAttachmentMaxMb(event.target.value)}
+                    style={{ marginTop: '4px' }}
+                  />
+                </label>
+                <div style={{ fontSize: '12px', color: '#6B778C' }}>
+                  {attachmentMaxMb.trim() === ''
+                    ? 'Configured maximum: Jira attachment settings (no lower connector limit).'
+                    : `Configured maximum: ${attachmentMaxMb} MB, or the lower Jira attachment limit.`}
+                </div>
+              </div>
+            )}
           </div>
           <Button
             appearance="subtle"

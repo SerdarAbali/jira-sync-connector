@@ -91,7 +91,8 @@ async function runLegacyBulkSync(event, context) {
       const effectiveSyncOptions = syncOptions || {
         syncComments: true,
         syncAttachments: false,
-        syncLinks: true
+        syncLinks: true,
+        propagateAttachmentDeletions: false
       };
       
       // Add dryRun to sync options
@@ -100,7 +101,7 @@ async function runLegacyBulkSync(event, context) {
       }
 
       console.log(`⚙️ Sync options for ${org.id || 'organization'}:`, JSON.stringify({
-        syncAttachments: effectiveSyncOptions.syncAttachments !== false,
+        syncAttachments: effectiveSyncOptions.syncAttachments === true,
         syncLinks: effectiveSyncOptions.syncLinks !== false,
         syncComments: effectiveSyncOptions.syncComments !== false,
         dryRun: !!effectiveSyncOptions.dryRun,
@@ -387,8 +388,17 @@ async function runLegacyBulkSync(event, context) {
                   try {
                     const fullIssue = await getFullIssue(localKey);
                     if (fullIssue) {
-                      if (effectiveSyncOptions.syncAttachments !== false) {
-                        await syncAttachments(localKey, remoteKey, fullIssue, orgWithToken, null, orgWithToken.id, true);
+                      if (effectiveSyncOptions.syncAttachments === true) {
+                        await syncAttachments(
+                          localKey,
+                          remoteKey,
+                          fullIssue,
+                          orgWithToken,
+                          null,
+                          orgWithToken.id,
+                          true,
+                          { syncOptions: effectiveSyncOptions }
+                        );
                       }
                       if (effectiveSyncOptions.syncLinks !== false) {
                         await syncIssueLinks(localKey, remoteKey, fullIssue, orgWithToken, null, orgWithToken.id, true);

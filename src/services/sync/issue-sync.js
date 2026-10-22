@@ -830,9 +830,9 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
         await transitionRemoteIssue(result.key, issue.fields.status.name, org, mappings.statusMappings, syncResult);
       }
 
-      // Attachment synchronization is disabled backend-side for the corporate
-      // pilot. Caller options cannot override this policy.
-      const attachmentEnabled = false;
+      // Attachment synchronization is opt-in per organization and remains
+      // subject to size, mapping, pause and operation-ledger controls.
+      const attachmentEnabled = syncOptions?.syncAttachments === true;
       const linksEnabled = syncOptions?.syncLinks !== false;
       const commentsEnabled = syncOptions?.syncComments !== false;
       const forceAttachmentCheck = syncOptions?.forceCheckAttachments ?? true;
@@ -856,7 +856,8 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           org,
           syncResult,
           orgId,
-          forceAttachmentCheck
+          forceAttachmentCheck,
+          { syncOptions }
         );
         syncDetails.attachments = Object.keys(attachmentMapping).length;
       } else {
@@ -1174,16 +1175,25 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
       });
     }
 
-    // Attachment synchronization is disabled backend-side for the corporate
-    // pilot. Caller options cannot override this policy.
-    const attachmentEnabled = false;
+    // Attachment synchronization is opt-in per organization and remains
+    // subject to size, mapping, pause and operation-ledger controls.
+    const attachmentEnabled = syncOptions?.syncAttachments === true;
     const linksEnabled = syncOptions?.syncLinks !== false && !syncOptions?.dryRun;
     const commentsEnabled = syncOptions?.syncComments !== false && !syncOptions?.dryRun;
 
     let attachmentMapping = {};
     if (attachmentEnabled) {
       const forceCheckAttachments = syncOptions?.forceCheckAttachments || false;
-      attachmentMapping = await syncAttachments(localKey, remoteKey, issue, org, syncResult, orgId, forceCheckAttachments);
+      attachmentMapping = await syncAttachments(
+        localKey,
+        remoteKey,
+        issue,
+        org,
+        syncResult,
+        orgId,
+        forceCheckAttachments,
+        { syncOptions }
+      );
       // Count newly synced attachments (those in the mapping)
       syncDetails.attachments = Object.keys(attachmentMapping).length;
     } else if (syncOptions?.dryRun) {

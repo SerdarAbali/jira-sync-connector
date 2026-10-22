@@ -104,11 +104,11 @@ describe('Forge resolver handler regression', () => {
     expect(Object.keys(handler)).toHaveLength(0);
   });
 
-  test('all 54 registered names have explicit policy entries', () => {
+  test('all registered names have explicit policy entries', () => {
     const registered = [...registeredResolverNames].sort();
     const classified = Object.keys(RESOLVER_POLICIES).sort();
 
-    expect(registered).toHaveLength(58);
+    expect(registered).toHaveLength(59);
     expect(registered).toEqual(classified);
   });
 

@@ -1,7 +1,8 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
 import { getOrgName, getFullIssue } from '../services/jira/local-client.js';
-import { getAllRemoteKeys, getRemoteKey, getLocalKey, storeMapping } from '../services/storage/mappings.js';
+import { getAllRemoteKeys, getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens } from '../services/storage/mappings.js';
+import { reconcileAttachmentOperation } from '../services/sync/attachment-sync.js';
 import {
   getIssueCreateOperation,
   resolveIssueCreateOperation,
@@ -417,8 +418,7 @@ export function defineDataResolvers(resolver) {
               id: attachment.id,
               filename: attachment.filename,
               mimeType: attachment.mimeType,
-              size: attachment.size,
-              content: attachment.content
+              size: attachment.size
             }));
           }
 
@@ -754,6 +754,61 @@ export function defineDataResolvers(resolver) {
     }
   });
 
+
+  // Administrator-only attachment reconciliation. The destination attachment
+  // ID must be supplied explicitly. This resolver uploads and deletes nothing.
+  resolver.define('reconcileAttachment', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      const direction = payload?.direction;
+      const sourceAttachmentId = payload?.sourceAttachmentId;
+      const destinationAttachmentId = payload?.destinationAttachmentId;
+      if (typeof orgId !== 'string' || orgId.length === 0
+          || (direction !== ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE
+            && direction !== ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL)
+          || !/^[1-9][0-9]{0,63}$/.test(String(sourceAttachmentId || ''))
+          || !/^[1-9][0-9]{0,63}$/.test(String(destinationAttachmentId || ''))) {
+        return {
+          success: false,
+          code: 'INVALID_ATTACHMENT_RECONCILIATION_REQUEST',
+          error: 'orgId, direction, sourceAttachmentId and destinationAttachmentId are required'
+        };
+      }
+
+      const organizations = await getOrganizationsWithTokens();
+      const org = organizations.find(candidate => candidate.id === orgId);
+      if (!org) {
+        return { success: false, code: 'ORGANIZATION_NOT_FOUND' };
+      }
+      if (!org.remoteApiToken) {
+        return { success: false, code: 'CREDENTIALS_UNAVAILABLE' };
+      }
+
+      const result = await reconcileAttachmentOperation({
+        orgId,
+        direction,
+        sourceAttachmentId: String(sourceAttachmentId),
+        destinationAttachmentId: String(destinationAttachmentId),
+        config: org
+      });
+
+      if (!result.success) {
+        return {
+          success: false,
+          code: result.code || 'ATTACHMENT_RECONCILIATION_FAILED'
+        };
+      }
+      return {
+        success: true,
+        code: result.code,
+        idempotent: result.idempotent === true,
+        operation: result.operation,
+        message: 'Attachment reconciled without uploading or deleting content.'
+      };
+    } catch {
+      return { success: false, code: 'ATTACHMENT_RECONCILIATION_FAILED' };
+    }
+  });
 
   // Auto-match mappings by display name
   resolver.define('autoMatchMappings', async ({ payload }) => {

@@ -37,6 +37,20 @@ modules:
       events:
         - avi:jira:deleted:issue
 
+    - key: attachment-created
+      function: attachment-trigger
+      events:
+        - avi:jira:created:attachment
+      filter:
+        ignoreSelf: true
+
+    - key: attachment-deleted
+      function: attachment-trigger
+      events:
+        - avi:jira:deleted:attachment
+      filter:
+        ignoreSelf: true
+
   scheduledTrigger:
     - key: scheduled-sync
       interval: hour
@@ -50,6 +64,10 @@ modules:
     - key: manual-sync-consumer
       queue: manual-sync-queue
       function: manual-sync-func
+
+    - key: attachment-sync-consumer
+      queue: attachment-sync-queue
+      function: attachment-sync-func
 
   webtrigger:
     - key: incoming-webhook
@@ -73,6 +91,9 @@ modules:
     - key: issue-deleted-trigger
       handler: index.runIssueDeleted
 
+    - key: attachment-trigger
+      handler: index.runAttachment
+
     - key: scheduled-sync-function
       handler: index.runScheduledSync
       timeoutSeconds: 900
@@ -84,6 +105,10 @@ modules:
     - key: manual-sync-func
       handler: index.runManualScheduledSync
       timeoutSeconds: 900
+
+    - key: attachment-sync-func
+      handler: index.runAttachmentSyncQueue
+      timeoutSeconds: 300
 
     - key: incoming-webhook-func
       handler: index.runIncomingWebhook

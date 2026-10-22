@@ -64,6 +64,7 @@ export const RESOLVER_POLICIES = Object.freeze({
   exportIssues: 'ADMIN_READ',
   importIssues: 'DESTRUCTIVE',
   reconcileIssueCreate: 'ADMIN_WRITE',
+  reconcileAttachment: 'ADMIN_WRITE',
   autoMatchMappings: 'ADMIN_READ',
   checkIssueMapping: 'ADMIN_READ',
 

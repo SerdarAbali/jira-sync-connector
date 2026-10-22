@@ -34,7 +34,7 @@ describe('Batch 8 canonical attachment URL', () => {
     expect(buildCanonicalAttachmentUrl({
       jiraOrigin: 'https://jira.example/some/base/path',
       attachmentId: '12345'
-    })).toBe('https://jira.example/rest/api/3/attachment/content/12345');
+    })).toBe('https://jira.example/rest/api/3/attachment/content/12345?redirect=false');
     expect(normalizeJiraOrigin('https://jira.example/some/base/path'))
       .toBe('https://jira.example');
     expect(() => normalizeJiraOrigin('https://jira.example.evil.test@evil.example/path'))
@@ -59,7 +59,7 @@ describe('Batch 8 canonical attachment URL', () => {
     expect(result).toEqual(Buffer.from('file'));
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://jira.example/rest/api/3/attachment/content/42',
+      'https://jira.example/rest/api/3/attachment/content/42?redirect=false',
       expect.objectContaining({ method: 'GET' })
     );
   });

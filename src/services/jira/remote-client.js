@@ -1,7 +1,7 @@
 import { fetch } from '@forge/api';
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { LOG_EMOJI } from '../../constants.js';
-import { buildCanonicalAttachmentUrl } from '../../utils/attachment-url.js';
+import { buildCanonicalAttachmentUrl, buildAttachmentUploadUrl } from '../../utils/attachment-url.js';
 
 export async function getRemoteIssue(remoteKey, config, fields = []) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -87,6 +87,7 @@ export async function downloadRemoteAttachment(attachmentId, config) {
     const response = await retryWithBackoff(async () => {
       return await fetch(url, {
         method: 'GET',
+        redirect: 'error',
         headers: {
           'Authorization': `Basic ${auth}`,
           'Accept': '*/*'
@@ -128,9 +129,10 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
     
     const response = await executeWriteOnce(async () => {
       return await fetch(
-        `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/attachments`,
+        buildAttachmentUploadUrl({ jiraOrigin: config.remoteUrl, issueKey: remoteKey }),
         {
           method: 'POST',
+          redirect: 'error',
           headers: {
             'Authorization': `Basic ${auth}`,
             'Content-Type': `multipart/form-data; boundary=${boundary}`,
@@ -154,7 +156,7 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
       return null;
     }
   } catch (error) {
-    console.error(`Error uploading attachment ${filename}:`, error);
+    console.error('Error uploading attachment: operation_failed');
     return null;
   }
 }

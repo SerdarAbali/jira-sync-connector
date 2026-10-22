@@ -407,8 +407,8 @@ describe('Batch 8 explicit-key create reconciliation', () => {
 });
 
 
-describe('Batch 8 backend attachment block', () => {
-  test('syncAttachments ignores caller options and performs no download or upload', async () => {
+describe('Batch 8 backend attachment default-off policy', () => {
+  test('syncAttachments defaults off and performs no download or upload', async () => {
     const issue = {
       key: 'LOCAL-1',
       fields: {
@@ -429,15 +429,87 @@ describe('Batch 8 backend attachment block', () => {
     expect(result).toEqual({});
     expect(getAttachmentSyncPolicy()).toEqual(expect.objectContaining({
       enabled: false,
-      code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT'
+      code: 'ATTACHMENT_SYNC_DISABLED'
     }));
     expect(getRemoteIssueAttachments).not.toHaveBeenCalled();
     expect(downloadAttachment).not.toHaveBeenCalled();
     expect(uploadAttachment).not.toHaveBeenCalled();
-    expect(syncResult.addWarning).toHaveBeenCalledWith('ATTACHMENT_SYNC_DISABLED_FOR_PILOT');
   });
 
-  test('an attachment webhook never fetches its supplied URL with Jira credentials', async () => {
+  test('a mapped attachment webhook uses only canonical Jira URLs', async () => {
+    seedOrg();
+    mockStore.set('syncOptions:org-1', { syncAttachments: true });
+    getLocalKey.mockResolvedValue('LOCAL-1');
+    getFullIssue.mockResolvedValue({
+      key: 'LOCAL-1',
+      fields: { project: { key: 'LOCAL' } }
+    });
+
+    mockRequestJira.mockImplementation(async (path, options = {}) => {
+      if (String(path).includes('/attachment/meta')) {
+        return { ok: true, status: 200, json: async () => ({ enabled: true, uploadLimit: 1000 }) };
+      }
+      if (String(path).includes('/issue/LOCAL-1/attachments')
+          && String(options.method).toUpperCase() === 'POST') {
+        expect(options.body.toString('utf8')).toContain('actual.pdf');
+        expect(options.body.toString('utf8')).not.toContain('evil.example');
+        return { ok: true, status: 200, json: async () => [{ id: '99' }] };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+
+    mockFetch.mockImplementation(async url => {
+      const target = String(url);
+      expect(target.startsWith('https://remote.example/')).toBe(true);
+      expect(target).not.toContain('evil.example');
+      if (target.includes('/attachment/meta')) {
+        return { ok: true, status: 200, json: async () => ({ enabled: true, uploadLimit: 1000 }) };
+      }
+      if (target.includes('/attachment/content/42')) {
+        return {
+          ok: true,
+          status: 200,
+          url: target,
+          arrayBuffer: async () => Uint8Array.from(Buffer.from('data')).buffer
+        };
+      }
+      if (target.includes('/attachment/42')) {
+        return {
+          ok: true,
+          status: 200,
+          url: target,
+          json: async () => ({
+            id: 42,
+            filename: 'actual.pdf',
+            mimeType: 'application/pdf',
+            size: 4
+          })
+        };
+      }
+      throw new Error(`unexpected URL ${target}`);
+    });
+
+    const result = await processIncomingWebhook({
+      webhookEvent: 'attachment_created',
+      timestamp: 1780000090000,
+      issue: { key: 'REMOTE-1', fields: {} },
+      attachment: {
+        id: '42',
+        filename: 'evil.exe',
+        size: 999999,
+        content: 'https://evil.example/steal'
+      }
+    }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
+
+    expect(result).toEqual({
+      status: 200,
+      body: { message: 'Processed', code: 'ATTACHMENT_SYNCED' }
+    });
+    expect(mockFetch).toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
+  });
+  test('an unmapped attachment webhook never fetches its supplied URL', async () => {
+
     seedOrg();
 
     const result = await processIncomingWebhook({
@@ -451,7 +523,10 @@ describe('Batch 8 backend attachment block', () => {
       }
     }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
 
-    expect(result).toEqual({ status: 200, body: { message: 'Processed' } });
+    expect(result).toEqual({
+      status: 200,
+      body: { message: 'Processed', code: 'ATTACHMENT_ISSUE_NOT_MAPPED' }
+    });
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockRequestJira).not.toHaveBeenCalled();
     expect(downloadRemoteAttachment).not.toHaveBeenCalled();
@@ -532,47 +607,67 @@ describe('Batch 8 remote-to-local webhook create', () => {
 });
 
 
-describe('Batch 8 sync-option backend enforcement', () => {
-  test('saveSyncOptions forces attachment sync off even for a modified client', async () => {
+describe('Batch 8 attachment sync-option preservation', () => {
+  test('saveSyncOptions stores an explicitly enabled attachment toggle', async () => {
     const definitions = {};
     defineConfigResolvers({ define: (name, fn) => { definitions[name] = fn; } });
 
     const saved = await definitions.saveSyncOptions({
       payload: {
         orgId: 'org-1',
-        options: { syncAttachments: true, syncComments: false }
+        options: {
+          syncAttachments: true,
+          propagateAttachmentDeletions: true,
+          maxAttachmentSizeBytes: 2097152,
+          syncComments: false
+        }
       }
     });
 
     expect(saved).toEqual(expect.objectContaining({
       success: true,
       attachmentSync: {
-        enabled: false,
-        code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT'
+        enabled: true,
+        propagateDeletions: true,
+        maxAttachmentSizeBytes: 2097152
       }
     }));
     expect(mockStore.get('syncOptions:org-1')).toEqual(expect.objectContaining({
-      syncAttachments: false,
+      syncAttachments: true,
+      propagateAttachmentDeletions: true,
+      maxAttachmentSizeBytes: 2097152,
       syncComments: false
     }));
 
     const readBack = await definitions.getSyncOptions({ payload: { orgId: 'org-1' } });
-    expect(readBack.syncAttachments).toBe(false);
+    expect(readBack.syncAttachments).toBe(true);
+    expect(readBack.propagateAttachmentDeletions).toBe(true);
   });
 
-  test('getSyncOptions reports attachment sync disabled even for legacy stored true', async () => {
+  test('getSyncOptions preserves a legacy stored attachment preference', async () => {
     const definitions = {};
     defineConfigResolvers({ define: (name, fn) => { definitions[name] = fn; } });
     mockStore.set('syncOptions:org-1', { syncAttachments: true, syncComments: true });
 
     const options = await definitions.getSyncOptions({ payload: { orgId: 'org-1' } });
 
+    expect(options.syncAttachments).toBe(true);
+    expect(options.propagateAttachmentDeletions).toBe(false);
+  });
+
+  test('new organizations default attachment options to Off', async () => {
+    const definitions = {};
+    defineConfigResolvers({ define: (name, fn) => { definitions[name] = fn; } });
+
+    const options = await definitions.getSyncOptions({ payload: { orgId: 'org-new' } });
+
     expect(options.syncAttachments).toBe(false);
+    expect(options.propagateAttachmentDeletions).toBe(false);
   });
 });
 
 
-describe('Batch 8 admin UI pilot blockers', () => {
+describe('Batch 8 admin UI attachment controls', () => {
   const source = require('fs').readFileSync(
     require('path').join(process.cwd(), 'static/admin-page/src/App.jsx'),
     'utf8'
@@ -584,10 +679,12 @@ describe('Batch 8 admin UI pilot blockers', () => {
     expect(source).toContain('Force re-create is disabled. Imports never delete mappings or create replacement issues.');
   });
 
-  test('attachment sync is not user-toggleable and defaults off', () => {
-    expect(source).not.toContain("{ key: 'syncAttachments', label: 'Sync Attachments' }");
+  test('attachment sync and deletion propagation are restored and default off', () => {
+    expect(source).toContain("label: 'Synchronize attachments'");
+    expect(source).toContain('label="Propagate attachment deletions"');
     expect(source).toContain('syncAttachments: false');
-    expect(source).toContain('Attachment synchronization is disabled for the corporate pilot.');
+    expect(source).toContain('propagateAttachmentDeletions: false');
+    expect(source).toContain('Jira malware scanning is not performed by this connector.');
   });
 });
 

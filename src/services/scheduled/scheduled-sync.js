@@ -459,11 +459,13 @@ export async function performScheduledSync() {
         syncComments: true,
         syncAttachments: false,
         syncLinks: true,
-        recreateDeletedIssues: false
+        recreateDeletedIssues: false,
+        propagateAttachmentDeletions: false
       };
       
       // Always force check links during scheduled sync to catch missing links
       effectiveSyncOptions.forceCheckLinks = true;
+      effectiveSyncOptions.forceCheckAttachments = true;
 
       // Scheduled creation and recreation are intentionally disabled for
       // corporate pilot safety. Scheduled sync may only update issues that

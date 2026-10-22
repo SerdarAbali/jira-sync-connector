@@ -251,20 +251,71 @@ export async function addToMappingIndex(localKey, remoteKey, orgId = null) {
   return false; // Already existed
 }
 
-export async function storeAttachmentMapping(localAttachmentId, remoteAttachmentId, orgId = null) {
-  const key = orgId ? `${orgId}:attachment-mapping:${localAttachmentId}` : `attachment-mapping:${localAttachmentId}`;
+export async function storeAttachmentMapping(localAttachmentId, remoteAttachmentId, orgId = null, direction = null) {
+  const key = attachmentMappingKey(localAttachmentId, orgId, direction);
   await kvsStore.set(key, remoteAttachmentId);
 }
 
-export async function getAttachmentMapping(localAttachmentId, orgId = null) {
-  const key = orgId ? `${orgId}:attachment-mapping:${localAttachmentId}` : `attachment-mapping:${localAttachmentId}`;
-  return await kvsStore.get(key);
+export async function getAttachmentMapping(localAttachmentId, orgId = null, direction = null) {
+  const key = attachmentMappingKey(localAttachmentId, orgId, direction);
+  const mapping = await kvsStore.get(key);
+  if (mapping || direction !== 'local-to-remote') {
+    return mapping;
+  }
+  // Read-only compatibility for mappings written before direction-scoped keys.
+  return await kvsStore.get(attachmentMappingKey(localAttachmentId, orgId, null));
 }
 
-export async function removeAttachmentMapping(localAttachmentId, orgId = null) {
-  const key = orgId ? `${orgId}:attachment-mapping:${localAttachmentId}` : `attachment-mapping:${localAttachmentId}`;
-  await kvsStore.del(key);
+export async function removeAttachmentMapping(localAttachmentId, orgId = null, direction = null) {
+  const keys = [attachmentMappingKey(localAttachmentId, orgId, direction)];
+  if (direction === 'local-to-remote') {
+    keys.push(attachmentMappingKey(localAttachmentId, orgId, null));
+  }
+  await Promise.all(keys.map(key => kvsStore.del(key)));
 }
+
+function attachmentMappingKey(attachmentId, orgId, direction) {
+  const scope = orgId ? `${orgId}:` : '';
+  if (direction === 'local-to-remote' || direction === 'remote-to-local') {
+    return `${scope}attachment-mapping:${direction}:${attachmentId}`;
+  }
+  return `${scope}attachment-mapping:${attachmentId}`;
+}
+
+/**
+ * Persist deletion/mapping history without filenames, URLs or content. This is
+ * retained when deletion propagation is Off and after an enabled deletion
+ * removes the active mapping.
+ */
+export async function storeAttachmentMappingHistory({
+  orgId = null,
+  direction,
+  sourceAttachmentId,
+  destinationAttachmentId,
+  localKey = null,
+  remoteKey = null,
+  outcome = 'retained',
+  now = new Date().toISOString()
+}) {
+  if (direction !== 'local-to-remote' && direction !== 'remote-to-local') {
+    return null;
+  }
+  const scope = orgId ? String(orgId) : 'legacy';
+  const key = `attachment-mapping-history:${scope}:${direction}:${sourceAttachmentId}`;
+  const record = {
+    orgId: orgId || null,
+    direction,
+    sourceAttachmentId: String(sourceAttachmentId),
+    destinationAttachmentId: String(destinationAttachmentId),
+    localKey,
+    remoteKey,
+    outcome,
+    recordedAt: now
+  };
+  await kvsStore.set(key, record);
+  return record;
+}
+
 
 export async function storeLinkMapping(localLinkId, remoteLinkId, orgId = null) {
   const key = orgId ? `${orgId}:link-mapping:${localLinkId}` : `link-mapping:${localLinkId}`;
