@@ -368,7 +368,7 @@ describe('Batch 7 pause blocks Jira write categories', () => {
 
     expect(result).toEqual({});
     expect(uploadRemoteAttachment).not.toHaveBeenCalled();
-    expect(getRemoteIssueAttachments).toHaveBeenCalled();
+    expect(getRemoteIssueAttachments).not.toHaveBeenCalled();
   });
 
   test('inbound webhook writes are acknowledged and dropped for every covered event', async () => {

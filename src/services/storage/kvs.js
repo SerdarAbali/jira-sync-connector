@@ -41,6 +41,17 @@ export async function set(key, value, options = {}) {
 }
 
 /**
+ * Atomically create a persistent key only if it does not already exist.
+ * Forge KVS FAIL_IF_EXISTS is the production guarantee; no TTL is applied so
+ * create-operation records survive until an administrator reconciles them.
+ */
+export async function createIfNotExists(key, value) {
+  return await kvs.set(key, value, {
+    keyPolicy: 'FAIL_IF_EXISTS'
+  });
+}
+
+/**
  * Atomically create a key only if it does not already exist, with a native KVS
  * TTL. Returns normally on creation; rejects when the key already exists.
  * Used for webhook replay markers.

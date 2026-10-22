@@ -13,6 +13,8 @@ import { getFullIssue, getFullComment, getOrgName } from '../src/services/jira/l
 import { isSyncing, markSyncing, clearSyncFlag } from '../src/services/storage/flags.js';
 import { trackWebhookSync, trackApiCall } from '../src/services/storage/stats.js';
 
+const mockOperationStore = new Map();
+
 jest.mock('@forge/api', () => {
   const requestJira = jest.fn();
   return {
@@ -24,10 +26,26 @@ jest.mock('@forge/api', () => {
 });
 
 jest.mock('../src/services/storage/kvs.js', () => ({
-  get: jest.fn(),
-  set: jest.fn(),
-  getSecret: jest.fn(),
-  del: jest.fn()
+  get: jest.fn(async key => (mockOperationStore.has(key) ? mockOperationStore.get(key) : null)),
+  set: jest.fn(async (key, value) => { mockOperationStore.set(key, value); }),
+  del: jest.fn(),
+  createIfNotExists: jest.fn(async (key, value) => {
+    if (mockOperationStore.has(key)) {
+      const error = new Error('key already exists');
+      error.code = 'KEY_ALREADY_EXISTS';
+      throw error;
+    }
+    mockOperationStore.set(key, value);
+  }),
+  setIfNotExists: jest.fn(async (key, value) => {
+    if (mockOperationStore.has(key)) {
+      const error = new Error('key already exists');
+      error.code = 'KEY_ALREADY_EXISTS';
+      throw error;
+    }
+    mockOperationStore.set(key, value);
+  }),
+  getSecret: jest.fn()
 }));
 
 jest.mock('../src/services/storage/mappings.js', () => ({
@@ -99,6 +117,7 @@ const issue = {
 describe('Pilot safety: ambiguous non-idempotent writes are attempted once', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockOperationStore.clear();
     api.asApp().requestJira.mockResolvedValue({ ok: true, json: async () => [] });
     fetch.mockRejectedValue(new Error('simulated network timeout'));
     getOrganizationsWithTokens.mockResolvedValue([org]);
@@ -109,6 +128,7 @@ describe('Pilot safety: ambiguous non-idempotent writes are attempted once', () 
     getOrgName.mockResolvedValue('Local Org');
     isSyncing.mockResolvedValue(false);
     kvsStore.get.mockImplementation(async (key) => {
+      if (mockOperationStore.has(key)) return mockOperationStore.get(key);
       if (key === 'syncConfig') return null;
       if (key === 'syncOptions:org-1') return { syncComments: true };
       return null;

@@ -1,6 +1,7 @@
 import { fetch } from '@forge/api';
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { LOG_EMOJI } from '../../constants.js';
+import { buildCanonicalAttachmentUrl } from '../../utils/attachment-url.js';
 
 export async function getRemoteIssue(remoteKey, config, fields = []) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -60,6 +61,48 @@ export async function getRemoteIssueAttachments(remoteKey, config) {
   } catch (error) {
     console.error(`Error getting remote attachments for ${remoteKey}:`, error);
     return [];
+  }
+}
+
+export async function downloadRemoteAttachment(attachmentId, config) {
+  if (!config?.remoteUrl) {
+    console.error('Cannot download attachment: remote Jira origin is not configured');
+    return null;
+  }
+
+  let url;
+  try {
+    url = buildCanonicalAttachmentUrl({
+      jiraOrigin: config.remoteUrl,
+      attachmentId
+    });
+  } catch {
+    console.error('Cannot download attachment: invalid attachment reference');
+    return null;
+  }
+
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+
+  try {
+    const response = await retryWithBackoff(async () => {
+      return await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': '*/*'
+        }
+      });
+    }, `Download attachment ${attachmentId}`);
+
+    if (!response.ok) {
+      console.error(`Failed to download attachment ${attachmentId}: ${response.status}`);
+      return null;
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    console.error(`Error downloading attachment ${attachmentId}:`, error);
+    return null;
   }
 }
 

@@ -30,6 +30,16 @@ import {
 } from './sync-state.js';
 import { recordSyncDecision } from './sync-observability.js';
 import { assertPilotWritesAllowed } from './pilot-pause.js';
+import {
+  beginIssueCreateOperation,
+  markIssueCreateSubmissionStarted,
+  markIssueCreateSucceeded,
+  markIssueCreateUnknown,
+  markIssueCreateFailedDefinitive,
+  isDefinitiveCreateRejection,
+  ISSUE_CREATE_CODES,
+  ISSUE_CREATE_DIRECTIONS
+} from './issue-create-operation.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
@@ -737,22 +747,77 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       await markSyncing(issue.key);
       await assertPilotWritesAllowed('issue_create_remote');
 
-      const response = await executeWriteOnce(async () => {
-      return await fetch(`${org.remoteUrl}/rest/api/3/issue?notifyUsers=false`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(remoteIssue)
+      const createClaim = await beginIssueCreateOperation({
+        orgId,
+        direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+        sourceKey: issue.key
       });
-    }, `Create issue ${issue.key}`);
 
-    if (response.ok) {
-      const result = await response.json();
-      console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
+      if (!createClaim.allowed) {
+        console.warn(`${LOG_EMOJI.WARNING} Issue create blocked for ${issue.key} (${orgId || 'legacy'}): ${createClaim.code}`);
+        if (syncResult) syncResult.addWarning(createClaim.code);
+        await recordSyncDecision({
+          decision: createClaim.code === ISSUE_CREATE_CODES.RECONCILIATION_REQUIRED
+            ? SYNC_DECISIONS.AMBIGUOUS_WRITE
+            : SYNC_DECISIONS.SKIPPED_LOCKED,
+          orgId,
+          localKey: issue.key,
+          direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+          reason: createClaim.code
+        });
+        await clearSyncFlag(issue.key);
+        return null;
+      }
 
-      await storeMapping(issue.key, result.key, orgId);
+      const submission = await markIssueCreateSubmissionStarted(createClaim.operation);
+      if (!submission.ok) {
+        if (syncResult) syncResult.addWarning(submission.code);
+        await clearSyncFlag(issue.key);
+        return null;
+      }
+
+      let response;
+      try {
+        response = await executeWriteOnce(async () => {
+          return await fetch(`${org.remoteUrl}/rest/api/3/issue?notifyUsers=false`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(remoteIssue)
+          });
+        }, `Create issue ${issue.key}`);
+      } catch (error) {
+        await markIssueCreateUnknown(submission.operation);
+        throw error;
+      }
+
+      if (response.ok) {
+        let result;
+        try {
+          result = await response.json();
+          if (!result?.key) {
+            throw new Error('Create response did not include an issue key');
+          }
+        } catch (error) {
+          await markIssueCreateUnknown(submission.operation);
+          throw error;
+        }
+
+        const operationResolution = await markIssueCreateSucceeded({
+          operation: submission.operation,
+          targetKey: result.key
+        });
+        if (!operationResolution.success) {
+          if (syncResult) syncResult.addWarning(operationResolution.code);
+          await clearSyncFlag(issue.key);
+          return null;
+        }
+
+        console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
+
+        await storeMapping(issue.key, result.key, orgId);
       await setLastSyncedLocalUpdated(issue.key, issue.fields.updated, orgId);
 
       // Process any pending links that were waiting for this issue to be synced
@@ -762,7 +827,9 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
         await transitionRemoteIssue(result.key, issue.fields.status.name, org, mappings.statusMappings, syncResult);
       }
 
-      const attachmentEnabled = syncOptions?.syncAttachments !== false;
+      // Attachment synchronization is disabled backend-side for the corporate
+      // pilot. Caller options cannot override this policy.
+      const attachmentEnabled = false;
       const linksEnabled = syncOptions?.syncLinks !== false;
       const commentsEnabled = syncOptions?.syncComments !== false;
       const forceAttachmentCheck = syncOptions?.forceCheckAttachments ?? true;
@@ -969,6 +1036,15 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       await clearSyncFlag(issue.key);
       return { key: result.key, details: syncDetails };
     } else {
+      const responseStatus = Number(response.status);
+      if (isDefinitiveCreateRejection(responseStatus)) {
+        await markIssueCreateFailedDefinitive(submission.operation, {
+          reasonCode: 'JIRA_HTTP_REJECTED'
+        });
+      } else {
+        await markIssueCreateUnknown(submission.operation);
+        if (syncResult) syncResult.addWarning(ISSUE_CREATE_CODES.RECONCILIATION_REQUIRED);
+      }
       console.error(`${LOG_EMOJI.ERROR} Create failed`);
       if (syncResult) syncResult.addError(`Create failed: ${formatHttpFailure(response.status)}`);
       await clearSyncFlag(issue.key);
@@ -1095,7 +1171,9 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
       });
     }
 
-    const attachmentEnabled = syncOptions?.syncAttachments !== false && !syncOptions?.dryRun;
+    // Attachment synchronization is disabled backend-side for the corporate
+    // pilot. Caller options cannot override this policy.
+    const attachmentEnabled = false;
     const linksEnabled = syncOptions?.syncLinks !== false && !syncOptions?.dryRun;
     const commentsEnabled = syncOptions?.syncComments !== false && !syncOptions?.dryRun;
 

@@ -90,7 +90,7 @@ async function runLegacyBulkSync(event, context) {
 
       const effectiveSyncOptions = syncOptions || {
         syncComments: true,
-        syncAttachments: true,
+        syncAttachments: false,
         syncLinks: true
       };
       

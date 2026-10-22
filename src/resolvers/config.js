@@ -14,7 +14,7 @@ import {
 
 const DEFAULT_SYNC_OPTIONS = {
   syncComments: true,
-  syncAttachments: true,
+  syncAttachments: false,
   syncLinks: true,
   recreateDeletedIssues: false
 };
@@ -606,13 +606,16 @@ export function defineConfigResolvers(resolver) {
     // Default options - syncCrossReference defaults to true for backward compatibility
     const defaults = {
       syncComments: true,
-      syncAttachments: true,
+      syncAttachments: false,
       syncLinks: true,
       syncCrossReference: true,
       recreateDeletedIssues: false
     };
-    // Merge stored options with defaults to ensure all keys exist
-    return options ? { ...defaults, ...options } : defaults;
+    // Merge stored options with defaults to ensure all keys exist. Attachment
+    // sync is always reported disabled for the corporate pilot.
+    return options
+      ? { ...defaults, ...options, syncAttachments: false }
+      : defaults;
   });
 
   resolver.define('saveSyncOptions', async ({ payload }) => {
@@ -622,10 +625,18 @@ export function defineConfigResolvers(resolver) {
       
       // Validate options
       const options = validateObject(payload.options, 'options');
+      const storedOptions = { ...options, syncAttachments: false };
       
       const key = orgId ? `syncOptions:${orgId}` : 'syncOptions';
-      await kvsStore.set(key, options);
-      return { success: true, message: 'Sync options saved' };
+      await kvsStore.set(key, storedOptions);
+      return {
+        success: true,
+        message: 'Sync options saved',
+        attachmentSync: {
+          enabled: false,
+          code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT'
+        }
+      };
     } catch (error) {
       console.error('Error saving sync options:', error);
       return { success: false, error: error.message };

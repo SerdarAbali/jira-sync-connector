@@ -368,7 +368,7 @@ export async function performScheduledSync() {
 
       const effectiveSyncOptions = orgSyncOptions || legacySyncOptions || {
         syncComments: true,
-        syncAttachments: true,
+        syncAttachments: false,
         syncLinks: true,
         recreateDeletedIssues: false
       };

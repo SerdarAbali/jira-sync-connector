@@ -52,7 +52,6 @@ const DEFAULT_IMPORT_SECTIONS = {
 const ISSUE_EXPORT_LIMIT = 250;
 const DEFAULT_ISSUE_IMPORT_OPTIONS = {
   refreshFromSource: true,
-  forceRecreate: false,
   skipIfRemoteExists: false
 };
 
@@ -143,7 +142,7 @@ const App = () => {
   // Sync options
   const [syncOptions, setSyncOptions] = useState({
     syncComments: true,
-    syncAttachments: true,
+    syncAttachments: false,
     syncLinks: true,
     syncCrossReference: true,
     recreateDeletedIssues: false
@@ -1803,9 +1802,13 @@ const ConfigurationPanel = ({
         <div style={surfaceCard({ display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') })}>
           <h4 style={{ margin: 0 }}>Sync Options</h4>
           <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.100', '8px') }}>
+            <SectionMessage appearance="warning">
+              <p style={{ margin: 0, fontSize: '13px' }}>
+                Attachment synchronization is disabled for the corporate pilot. The backend rejects attachment payloads even if an older or modified UI sends them.
+              </p>
+            </SectionMessage>
             {[
               { key: 'syncComments', label: 'Sync Comments' },
-              { key: 'syncAttachments', label: 'Sync Attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
               { key: 'syncCrossReference', label: 'Add Cross-Reference in Description (show linked issue keys in both orgs)' },
               { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (re-sync issues deleted in target org)' }
@@ -3378,12 +3381,11 @@ const IssueImportModal = ({ data, options, onOptionChange, onConfirm, onClose, i
               onChange={(event) => onOptionChange('refreshFromSource', event.target.checked)}
               isDisabled={disabled}
             />
-            <Checkbox
-              label="Force re-create remote issues (ignore existing mappings)"
-              isChecked={options.forceRecreate}
-              onChange={(event) => onOptionChange('forceRecreate', event.target.checked)}
-              isDisabled={disabled}
-            />
+            <SectionMessage appearance="info">
+              <p style={{ margin: 0, fontSize: '13px' }}>
+                Force re-create is disabled. Imports never delete mappings or create replacement issues.
+              </p>
+            </SectionMessage>
             <Checkbox
               label="Skip issues that already have a remote copy"
               isChecked={options.skipIfRemoteExists}

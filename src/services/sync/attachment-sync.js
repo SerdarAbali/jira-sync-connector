@@ -8,6 +8,16 @@ import { assertPilotWritesAllowed } from './pilot-pause.js';
 // Lock timeout for attachment sync (30 seconds)
 const ATTACHMENT_LOCK_TTL_MS = 30000;
 
+export const ATTACHMENT_SYNC_DISABLED_CODE = 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT';
+
+export function getAttachmentSyncPolicy() {
+  return Object.freeze({
+    enabled: false,
+    code: ATTACHMENT_SYNC_DISABLED_CODE,
+    reason: 'Attachment synchronization is disabled for the corporate pilot'
+  });
+}
+
 function normalizeAttachmentMappingValue(mapping) {
   if (!mapping) {
     return null;
@@ -72,16 +82,26 @@ async function releaseAttachmentLock(attachmentId, orgId) {
 export async function syncAttachments(localIssueKey, remoteIssueKey, issue, config, syncResult = null, orgId = null, forceCheck = false) {
   const attachmentMapping = {}; // localId -> remoteId
 
+  // Backend enforcement: no caller option or UI payload can enable attachment
+  // synchronization during the corporate pilot. This check happens before any
+  // remote metadata request, content download, or upload.
+  const attachmentPolicy = getAttachmentSyncPolicy();
+  if (!attachmentPolicy.enabled) {
+    console.log(`${LOG_EMOJI.SKIP} ${attachmentPolicy.code}`);
+    if (syncResult) syncResult.addWarning(attachmentPolicy.code);
+    return attachmentMapping;
+  }
+
   if (!issue.fields.attachment || issue.fields.attachment.length === 0) {
     console.log(`No attachments to sync for ${localIssueKey}`);
     return attachmentMapping;
   }
 
-  console.log(`${LOG_EMOJI.ATTACHMENT} Found ${issue.fields.attachment.length} attachment(s) on ${localIssueKey}`);
-
   // Get existing attachments on remote issue to prevent duplicates
   let remoteAttachments = await getRemoteIssueAttachments(remoteIssueKey, config);
   console.log(`${LOG_EMOJI.INFO} Remote issue ${remoteIssueKey} has ${remoteAttachments.length} existing attachment(s)`);
+
+  console.log(`${LOG_EMOJI.ATTACHMENT} Found ${issue.fields.attachment.length} attachment(s) on ${localIssueKey}`);
 
   for (const attachment of issue.fields.attachment) {
     try {

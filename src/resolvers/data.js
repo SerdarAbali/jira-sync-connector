@@ -1,7 +1,15 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
 import { getOrgName, getFullIssue } from '../services/jira/local-client.js';
-import { getAllRemoteKeys, getRemoteKey, removeMapping } from '../services/storage/mappings.js';
+import { getAllRemoteKeys, getRemoteKey, getLocalKey, storeMapping } from '../services/storage/mappings.js';
+import {
+  getIssueCreateOperation,
+  resolveIssueCreateOperation,
+  isValidCreateSourceKey,
+  ISSUE_CREATE_CODES,
+  ISSUE_CREATE_DIRECTIONS,
+  ISSUE_CREATE_STATES
+} from '../services/sync/issue-create-operation.js';
 import { getRejectedFields, clearRejectedField } from '../services/storage/rejected-fields.js';
 import { createIssueForOrg, updateIssueForOrg } from '../services/sync/issue-sync.js';
 import { formatHttpFailure } from '../utils/http-error.js';
@@ -463,6 +471,21 @@ export function defineDataResolvers(resolver) {
       const options = payload?.options || {};
       const snapshots = payload?.snapshots || {};
 
+      if (options.forceRecreate) {
+        return {
+          success: false,
+          code: 'FORCE_RECREATE_DISABLED',
+          error: 'Force re-create is disabled. Imports do not delete mappings or create replacement issues.',
+          results: {
+            processed: 0,
+            created: 0,
+            updated: 0,
+            skipped: 0,
+            errors: []
+          }
+        };
+      }
+
       if (!orgId) {
         return { success: false, error: 'orgId is required' };
       }
@@ -492,7 +515,6 @@ export function defineDataResolvers(resolver) {
         statusMappings: statusMappings || {}
       };
 
-      const forceRecreate = !!options.forceRecreate;
       const skipIfRemoteExists = !!options.skipIfRemoteExists;
       const refreshFromSource = options.refreshFromSource !== false;
 
@@ -534,11 +556,6 @@ export function defineDataResolvers(resolver) {
             }
           }
 
-          if (remoteKey && forceRecreate) {
-            await removeMapping(issueKey, remoteKey, storageOrgId);
-            remoteKey = null;
-          }
-
           if (remoteKey && skipIfRemoteExists) {
             results.skipped++;
             continue;
@@ -567,6 +584,176 @@ export function defineDataResolvers(resolver) {
       return { success: false, error: safeErrorSummary(error.message) };
     }
   });
+
+  // Administrator-only recovery for an ambiguous issue create. The caller
+  // must supply an explicit Jira issue key; summary matching is never used.
+  // This resolver performs no Jira create or delete operation.
+  resolver.define('reconcileIssueCreate', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      const direction = payload?.direction;
+      const sourceKey = payload?.sourceKey;
+      const jiraIssueKey = payload?.jiraIssueKey;
+
+      if (typeof orgId !== 'string' || orgId.length === 0
+          || (direction !== ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE
+            && direction !== ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL)
+          || !isValidCreateSourceKey(sourceKey)
+          || !isValidCreateSourceKey(jiraIssueKey)) {
+        return {
+          success: false,
+          code: 'INVALID_RECONCILIATION_REQUEST',
+          error: 'orgId, direction, sourceKey and an explicit jiraIssueKey are required'
+        };
+      }
+
+      const orgs = await kvsStore.get('organizations') || [];
+      const org = orgs.find(candidate => candidate.id === orgId);
+      if (!org) {
+        return { success: false, code: 'ORGANIZATION_NOT_FOUND', error: 'Organization not found' };
+      }
+
+      const storageOrgId = org.id === 'legacy' ? null : org.id;
+      const operation = await getIssueCreateOperation({ orgId: storageOrgId, direction, sourceKey });
+      if (!operation) {
+        return {
+          success: false,
+          code: ISSUE_CREATE_CODES.NOT_FOUND,
+          error: 'No create operation exists for this organization and source issue'
+        };
+      }
+
+      if (operation.state === ISSUE_CREATE_STATES.SUCCEEDED && operation.targetKey !== jiraIssueKey) {
+        return {
+          success: false,
+          code: ISSUE_CREATE_CODES.TARGET_MISMATCH,
+          error: 'The operation was already reconciled to a different issue'
+        };
+      }
+
+      // Reject known mapping conflicts before reading the explicit target. A
+      // conflict must never result in an outbound Jira request or mapping write.
+      if (direction === ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE) {
+        const mappedRemote = await getRemoteKey(sourceKey, storageOrgId);
+        if (mappedRemote && mappedRemote !== jiraIssueKey) {
+          return { success: false, code: 'MAPPING_CONFLICT', error: 'Source issue is already mapped to another issue' };
+        }
+        const mappedLocal = await getLocalKey(jiraIssueKey, storageOrgId);
+        if (mappedLocal && mappedLocal !== sourceKey) {
+          return { success: false, code: 'MAPPING_CONFLICT', error: 'Target issue is already mapped to another source' };
+        }
+      } else {
+        const mappedLocal = await getLocalKey(sourceKey, storageOrgId);
+        if (mappedLocal && mappedLocal !== jiraIssueKey) {
+          return { success: false, code: 'MAPPING_CONFLICT', error: 'Source issue is already mapped to another issue' };
+        }
+        const mappedRemote = await getRemoteKey(jiraIssueKey, storageOrgId);
+        if (mappedRemote && mappedRemote !== sourceKey) {
+          return { success: false, code: 'MAPPING_CONFLICT', error: 'Target issue is already mapped to another source' };
+        }
+      }
+
+      let actualProjectKey;
+      if (direction === ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE) {
+        const sourceIssue = await getFullIssue(sourceKey);
+        const sourceProjectKey = sourceIssue?.fields?.project?.key;
+        if (!sourceProjectKey) {
+          return { success: false, code: 'SOURCE_ISSUE_NOT_FOUND', error: 'Source issue could not be verified' };
+        }
+
+        const projectMappings = await kvsStore.get(
+          storageOrgId ? `projectMappings:${storageOrgId}` : 'projectMappings'
+        );
+        const expectedProjectKey = projectMappings?.[sourceProjectKey] || org.remoteProjectKey;
+        if (!expectedProjectKey) {
+          return { success: false, code: 'TARGET_PROJECT_NOT_CONFIGURED', error: 'No remote project is configured' };
+        }
+        const token = await kvsStore.getSecret(`secret:${org.id}:token`);
+        if (!token || !org.remoteUrl || !org.remoteEmail) {
+          return { success: false, code: 'TARGET_PROJECT_NOT_CONFIGURED', error: 'Remote Jira credentials are incomplete' };
+        }
+
+        const auth = Buffer.from(`${org.remoteEmail}:${token}`).toString('base64');
+        const response = await fetch(
+          `${org.remoteUrl}/rest/api/3/issue/${jiraIssueKey}?fields=project`,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Accept': 'application/json'
+            }
+          }
+        );
+        if (!response.ok) {
+          return { success: false, code: 'TARGET_ISSUE_NOT_FOUND', error: 'The explicit Jira issue could not be read' };
+        }
+        const data = await response.json();
+        actualProjectKey = data?.fields?.project?.key;
+        if (actualProjectKey !== expectedProjectKey) {
+          return {
+            success: false,
+            code: 'TARGET_PROJECT_MISMATCH',
+            error: 'The explicit Jira issue is not in the configured target project'
+          };
+        }
+      } else {
+        const allowedProjects = Array.isArray(org.allowedProjects)
+          ? org.allowedProjects.filter(Boolean)
+          : [];
+        if (allowedProjects.length === 0) {
+          return { success: false, code: 'TARGET_PROJECT_NOT_CONFIGURED', error: 'No local project is configured' };
+        }
+
+        const response = await api.asApp().requestJira(
+          route`/rest/api/3/issue/${jiraIssueKey}?fields=project`
+        );
+        if (!response.ok) {
+          return { success: false, code: 'TARGET_ISSUE_NOT_FOUND', error: 'The explicit Jira issue could not be read' };
+        }
+        const data = await response.json();
+        actualProjectKey = data?.fields?.project?.key;
+        if (!allowedProjects.includes(actualProjectKey)) {
+          return {
+            success: false,
+            code: 'TARGET_PROJECT_MISMATCH',
+            error: 'The explicit Jira issue is not in a configured local project'
+          };
+        }
+      }
+
+
+      const resolution = await resolveIssueCreateOperation({
+        operation,
+        targetKey: jiraIssueKey
+      });
+      if (!resolution.success) {
+        return {
+          success: false,
+          code: resolution.code || ISSUE_CREATE_CODES.NOT_FOUND,
+          error: 'The create operation could not be resolved'
+        };
+      }
+
+      if (direction === ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE) {
+        await storeMapping(sourceKey, jiraIssueKey, storageOrgId);
+      } else {
+        await storeMapping(jiraIssueKey, sourceKey, storageOrgId);
+      }
+
+      return {
+        success: true,
+        code: resolution.code,
+        operationId: operation.operationId,
+        sourceKey,
+        targetKey: jiraIssueKey,
+        projectKey: actualProjectKey,
+        message: 'Create operation reconciled without creating or deleting any issue.'
+      };
+    } catch (error) {
+      return { success: false, code: 'RECONCILIATION_FAILED', error: safeErrorSummary(error.message) };
+    }
+  });
+
 
   // Auto-match mappings by display name
   resolver.define('autoMatchMappings', async ({ payload }) => {

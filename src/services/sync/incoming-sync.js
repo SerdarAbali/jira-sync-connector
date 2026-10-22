@@ -1,8 +1,3 @@
-const DEFAULT_USER_MAPPING_CONFIG = {
-  autoMapUsers: true,
-  fallbackUser: null
-};
-
 const BASE_REMOTE_FIELDS = [
   'summary',
   'description',
@@ -52,16 +47,15 @@ const BLOCKED_FIELD_KEYS = new Set([
 ]);
 import api, { route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
-import { getLocalKey, storeMapping, ensureMappingPair, storeAttachmentMapping, getAttachmentMapping, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
+import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { logAuditEntry } from '../storage/stats.js';
-import { LOG_EMOJI, MAX_ATTACHMENT_SIZE } from '../../constants.js';
+import { LOG_EMOJI } from '../../constants.js';
 import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { transitionLocalIssue } from './transition-sync.js';
 import { mapUserToLocal } from '../../utils/mapping.js';
-import { uploadAttachment, getFullIssue } from '../jira/local-client.js';
 import { secureCompare } from '../../utils/secure-compare.js';
 import { claimWebhookEvent, markWebhookCompleted, releaseWebhookEvent } from './webhook-replay.js';
 import { hashSynchronizedFields } from './field-normalization.js';
@@ -79,10 +73,17 @@ import {
 import { recordSyncDecision } from './sync-observability.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { getPilotPause, assertPilotWritesAllowed } from './pilot-pause.js';
+import {
+  beginIssueCreateOperation,
+  markIssueCreateSubmissionStarted,
+  markIssueCreateSucceeded,
+  markIssueCreateUnknown,
+  markIssueCreateFailedDefinitive,
+  isDefinitiveCreateRejection,
+  ISSUE_CREATE_CODES,
+  ISSUE_CREATE_DIRECTIONS
+} from './issue-create-operation.js';
 
-const ATTACHMENT_ISSUE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
-const ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS = 6;
-const ATTACHMENT_ISSUE_CACHE_RETRY_DELAY_MS = 500; // 0.5s wait between cache polls
 const PARENT_MAPPING_RETRY_ATTEMPTS = 6;
 const PARENT_MAPPING_RETRY_DELAY_MS = 500;
 const PENDING_CHILD_MAX_ATTEMPTS = 3;
@@ -216,9 +217,10 @@ export async function processIncomingWebhook(payload, auth) {
   const markerToken = claim.status === 'claimed' ? claim.token : null;
 
   // 2. Route Event
+  let routeResult = null;
   try {
     if (webhookEvent === 'jira:issue_created') {
-      await handleRemoteIssueCreated(issue, context);
+      routeResult = await handleRemoteIssueCreated(issue, context);
     } else if (webhookEvent === 'jira:issue_updated') {
       await handleRemoteIssueUpdated(issue, context, payload);
     } else if (webhookEvent === 'jira:issue_deleted') {
@@ -251,7 +253,12 @@ export async function processIncomingWebhook(payload, auth) {
       }
     }
 
-    return { status: 200, body: { message: 'Processed' } };
+    const responseBody = { message: 'Processed' };
+    if (routeResult?.code === ISSUE_CREATE_CODES.RECONCILIATION_REQUIRED
+        || routeResult?.code === ISSUE_CREATE_CODES.IN_PROGRESS) {
+      responseBody.code = routeResult.code;
+    }
+    return { status: 200, body: responseBody };
   } catch (error) {
     if (markerKey) {
       await releaseWebhookEvent(markerKey, markerToken);
@@ -302,6 +309,7 @@ function extractRejectedFields(bodyText) {
 async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
   await assertPilotWritesAllowed(issueKey ? 'issue_update_local' : 'issue_create_local');
   const skippedFields = [];
+  const allowFieldRetry = Boolean(issueKey);
   let fields = { ...(payload.fields || {}) };
 
   for (let attempt = 0; attempt < MAX_ISSUE_WRITE_ATTEMPTS; attempt++) {
@@ -323,7 +331,7 @@ async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
     const rejected = extractRejectedFields(bodyText);
     const removable = rejected.filter((fieldId) => fieldId in fields);
 
-    if (attempt < MAX_ISSUE_WRITE_ATTEMPTS - 1 && removable.length > 0) {
+    if (allowFieldRetry && attempt < MAX_ISSUE_WRITE_ATTEMPTS - 1 && removable.length > 0) {
       removable.forEach((fieldId) => {
         delete fields[fieldId];
         skippedFields.push(fieldId);
@@ -408,8 +416,48 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   try {
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
-  const result = await writeJiraIssueWithRecovery({ method: 'POST', payload });
+  const createClaim = await beginIssueCreateOperation({
+    orgId,
+    direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+    sourceKey: remoteIssue.key
+  });
+
+  if (!createClaim.allowed) {
+    console.warn(`${LOG_EMOJI.WARNING} Issue create blocked for ${remoteIssue.key} (${orgId || 'legacy'}): ${createClaim.code}`);
+    await recordSyncDecision({
+      decision: createClaim.code === ISSUE_CREATE_CODES.RECONCILIATION_REQUIRED
+        ? SYNC_DECISIONS.AMBIGUOUS_WRITE
+        : SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      remoteKey: remoteIssue.key,
+      direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+      reason: createClaim.code
+    });
+    return { status: createClaim.code, code: createClaim.code };
+  }
+
+  const submission = await markIssueCreateSubmissionStarted(createClaim.operation);
+  if (!submission.ok) {
+    return { status: submission.code, code: submission.code };
+  }
+
+  let result;
+  try {
+    result = await writeJiraIssueWithRecovery({ method: 'POST', payload });
+  } catch (error) {
+    await markIssueCreateUnknown(submission.operation);
+    throw error;
+  }
+
   if (!result.ok) {
+    const status = Number(result.status);
+    if (isDefinitiveCreateRejection(status)) {
+      await markIssueCreateFailedDefinitive(submission.operation, {
+        reasonCode: 'JIRA_HTTP_REJECTED'
+      });
+    } else {
+      await markIssueCreateUnknown(submission.operation);
+    }
     throw new Error(`Failed to create local issue: ${result.failure || 'remote_write_failed'}`);
   }
   if (result.skippedFields.length > 0) {
@@ -417,8 +465,26 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
     await recordRejectedFields(orgId, result.skippedFields);
   }
 
-  const data = await result.response.json();
-  const localKey = data.key;
+  let data;
+  try {
+    data = await result.response.json();
+  } catch (error) {
+    await markIssueCreateUnknown(submission.operation);
+    throw error;
+  }
+  const localKey = data?.key;
+  if (!localKey) {
+    await markIssueCreateUnknown(submission.operation);
+    throw new Error('Create response did not include an issue key');
+  }
+
+  const operationResolution = await markIssueCreateSucceeded({
+    operation: submission.operation,
+    targetKey: localKey
+  });
+  if (!operationResolution.success) {
+    throw new Error(operationResolution.code || 'CREATE_OPERATION_RESOLUTION_FAILED');
+  }
 
   console.log(`${LOG_EMOJI.SUCCESS} Created local issue ${localKey} from remote ${remoteIssue.key}`);
 
@@ -458,42 +524,10 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   }
   await processPendingChildIssues(remoteIssue.key, context);
 
-  // Sync attachments if present
+  // Attachment synchronization is disabled backend-side for the corporate
+  // pilot. No attachment content URL from a webhook is ever fetched.
   if (resolvedRemoteIssue.fields.attachment && resolvedRemoteIssue.fields.attachment.length > 0) {
-    console.log(`${LOG_EMOJI.ATTACHMENT} Syncing ${resolvedRemoteIssue.fields.attachment.length} attachments for new issue...`);
-    
-    for (const attachment of resolvedRemoteIssue.fields.attachment) {
-      try {
-        if (attachment.size > MAX_ATTACHMENT_SIZE) {
-          console.log(`${LOG_EMOJI.WARNING} Skipping attachment attachment ${attachment.id || 'unknown'} - too large`);
-          continue;
-        }
-
-        const auth = Buffer.from(`${context.org.remoteEmail}:${context.org.remoteApiToken}`).toString('base64');
-        const downloadResponse = await fetch(attachment.content, {
-          headers: {
-            'Authorization': `Basic ${auth}`,
-            'Accept': '*/*'
-          }
-        });
-
-        if (!downloadResponse.ok) {
-          console.error(`${LOG_EMOJI.ERROR} Failed to download remote attachment attachment ${attachment.id || 'unknown'}: ${downloadResponse.status}`);
-          continue;
-        }
-
-        const buffer = Buffer.from(await downloadResponse.arrayBuffer());
-        await assertPilotWritesAllowed('attachment_upload_local');
-        const uploaded = await uploadAttachment(localKey, attachment.filename, buffer);
-
-        if (uploaded) {
-          await storeAttachmentMapping(uploaded.id, attachment.id, orgId);
-          console.log(`${LOG_EMOJI.SUCCESS} Synced attachment attachment ${attachment.id || 'unknown'}`);
-        }
-      } catch (error) {
-        console.error(`${LOG_EMOJI.ERROR} Error syncing attachment attachment ${attachment.id || 'unknown'}:`, error);
-      }
-    }
+    console.log(`${LOG_EMOJI.ATTACHMENT} ATTACHMENT_SYNC_DISABLED_FOR_PILOT (${resolvedRemoteIssue.fields.attachment.length} attachment(s) skipped)`);
   }
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
@@ -510,10 +544,6 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
 
   if (payload && shouldSkipUpdateForAttachmentOnly(payload)) {
     console.log(`${LOG_EMOJI.INFO} Skipping field update for ${localKey}; changelog contains attachment changes only.`);
-    if (payload?.changelog?.items) {
-      await recordAttachmentIssueMappingFromChangelog(payload.changelog.items, remoteIssue.key, context.orgId);
-      console.log(`${LOG_EMOJI.INFO} Attachment changelog contained ${payload.changelog.items.length} item(s)`);
-    }
     return { status: 'SKIPPED_ATTACHMENT_ONLY' };
   }
 
@@ -1349,103 +1379,11 @@ async function applyParentMapping(targetFields, remoteFields, context) {
 
 async function handleRemoteAttachmentCreated(payload, context) {
   console.log(`${LOG_EMOJI.ATTACHMENT} Handling attachment_created event for ${payload.issue?.key || 'unknown issue'} (attachment ${payload.attachment?.id || 'unknown'})`);
-  
-  if (!shouldSyncIncomingAttachments(context.syncOptions)) {
-    console.log(`⏭️ Incoming attachments disabled for ${context.orgId || 'organization'}`);
-    return;
-  }
 
-  const attachment = payload.attachment;
-  let remoteIssueKey = payload.issue?.key;
-
-  if (!attachment) {
-    console.log(`${LOG_EMOJI.WARNING} Attachment event missing attachment data`);
-    return;
-  }
-
-  if (!remoteIssueKey && payload?.changelog?.items) {
-    await recordAttachmentIssueMappingFromChangelog(payload.changelog.items, null, context.orgId);
-  }
-
-  if (!remoteIssueKey) {
-    remoteIssueKey = await waitForAttachmentIssueKey(attachment.id, context.orgId);
-  }
-
-  if (!remoteIssueKey) {
-    console.log(`${LOG_EMOJI.ERROR} Could not determine remote issue key for attachment`);
-    return;
-  }
-
-  const localKey = await getLocalKey(remoteIssueKey, context.orgId);
-  if (!localKey) {
-    console.log(`${LOG_EMOJI.WARNING} No local mapping for remote attachment on ${remoteIssueKey}`);
-    return;
-  }
-
-  console.log(`${LOG_EMOJI.INFO} Local issue for ${remoteIssueKey} resolved to ${localKey}`);
-
-  // Check if already synced
-  const existingMapping = await getAttachmentMapping(attachment.id, context.orgId);
-  if (existingMapping) {
-    console.log(`${LOG_EMOJI.SKIP} Attachment attachment ${attachment.id || 'unknown'} already synced (mapping exists)`);
-    return;
-  }
-
-  console.log(`${LOG_EMOJI.INFO} Attachment attachment ${attachment.id || 'unknown'} (${attachment.size} bytes) not mapped yet; proceeding with download`);
-
-  // Check file size
-  if (attachment.size > MAX_ATTACHMENT_SIZE) {
-    console.log(`${LOG_EMOJI.WARNING} Skipping attachment attachment ${attachment.id || 'unknown'} - too large (${(attachment.size / 1024 / 1024).toFixed(2)} MB)`);
-    return;
-  }
-
-  console.log(`${LOG_EMOJI.ATTACHMENT} Syncing incoming attachment attachment ${attachment.id || 'unknown'} (${attachment.size} bytes)`);
-
-  await markSyncing(localKey);
-  try {
-    // 1. Download from Remote
-    console.log(`⬇️ Downloading from: [REDACTED_URL]`);
-    const auth = Buffer.from(`${context.org.remoteEmail}:${context.org.remoteApiToken}`).toString('base64');
-    const downloadResponse = await fetch(attachment.content, {
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Accept': '*/*'
-      }
-    });
-
-    console.log(`⬇️ Download status: ${downloadResponse.status}`);
-
-    if (!downloadResponse.ok) {
-      console.error(`${LOG_EMOJI.ERROR} Failed to download remote attachment: ${downloadResponse.status}`);
-      return;
-    }
-
-    const arrayBuffer = await downloadResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    console.log(`⬇️ Downloaded ${buffer.length} bytes`);
-
-    // 2. Upload to Local
-    console.log(`⬆️ Uploading to local issue ${localKey}...`);
-    await assertPilotWritesAllowed('attachment_upload_local');
-    const uploadedAttachment = await uploadAttachment(localKey, attachment.filename, buffer);
-
-    if (uploadedAttachment) {
-      console.log(`${LOG_EMOJI.SUCCESS} Synced attachment attachment ${attachment.id || 'unknown'} to ${localKey}`);
-      // Store mapping: Remote ID -> Local ID (Note: getAttachmentMapping usually expects Local ID -> Remote ID, 
-      // but for inbound we might need to store it differently or just rely on the fact that we check by Remote ID here?
-      // Actually, storeAttachmentMapping stores localAttachmentId -> remoteAttachmentId.
-      // So we should store uploadedAttachment.id -> attachment.id
-      await storeAttachmentMapping(uploadedAttachment.id, attachment.id, context.orgId);
-    } else {
-      console.error(`${LOG_EMOJI.ERROR} Failed to upload attachment to local issue`);
-    }
-
-  } catch (error) {
-    console.error(`${LOG_EMOJI.ERROR} Error syncing incoming attachment:`, error);
-  } finally {
-    await clearSyncFlag(localKey);
-    await deleteAttachmentIssueMapping(attachment.id, context.orgId);
-  }
+  // Backend enforcement: never fetch a webhook-supplied attachment URL and
+  // never send the configured Jira credentials to it.
+  console.log(`⏭️ ATTACHMENT_SYNC_DISABLED_FOR_PILOT (${context.orgId || 'organization'})`);
+  return { status: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT', code: 'ATTACHMENT_SYNC_DISABLED_FOR_PILOT' };
 }
 
 async function handleRemoteIssueLinkCreated(payload, context) {
@@ -1596,81 +1534,6 @@ async function processPendingChildIssues(remoteParentKey, context, pendingChildK
 }
 
 
-function buildAttachmentIssueCacheKey(attachmentId, orgId) {
-  const prefix = orgId || 'legacy';
-  return `${prefix}:incoming-attachment:${attachmentId}`;
-}
-
-async function recordAttachmentIssueMappingFromChangelog(items, remoteIssueKey, orgId) {
-  if (!Array.isArray(items) || !remoteIssueKey) {
-    return;
-  }
-
-  const operations = [];
-  for (const item of items) {
-    if ((item.field || '').toLowerCase() !== 'attachment') {
-      continue;
-    }
-    const attachmentId = item.to;
-    if (!attachmentId) {
-      continue;
-    }
-    const key = buildAttachmentIssueCacheKey(attachmentId, orgId);
-    operations.push(kvsStore.set(key, { issueKey: remoteIssueKey, expiresAt: Date.now() + ATTACHMENT_ISSUE_CACHE_TTL_MS }));
-    console.log(`${LOG_EMOJI.INFO} Cached attachment ${attachmentId} → ${remoteIssueKey}`);
-  }
-
-  if (operations.length > 0) {
-    await Promise.all(operations);
-  }
-}
-
-async function getCachedAttachmentIssueKey(attachmentId, orgId) {
-  if (!attachmentId) {
-    return null;
-  }
-  const key = buildAttachmentIssueCacheKey(attachmentId, orgId);
-  const record = await kvsStore.get(key);
-  if (!record) {
-    return null;
-  }
-  if (record.expiresAt && record.expiresAt < Date.now()) {
-    await kvsStore.del(key);
-    return null;
-  }
-  return record.issueKey || null;
-}
-
-async function waitForAttachmentIssueKey(attachmentId, orgId) {
-  for (let attempt = 1; attempt <= ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS; attempt++) {
-    const cachedKey = await getCachedAttachmentIssueKey(attachmentId, orgId);
-    if (cachedKey) {
-      if (attempt === 1) {
-        console.log(`${LOG_EMOJI.INFO} Resolved ${attachmentId} → ${cachedKey} from changelog cache`);
-      } else {
-        const waitedMs = (attempt - 1) * ATTACHMENT_ISSUE_CACHE_RETRY_DELAY_MS;
-        console.log(`${LOG_EMOJI.INFO} Resolved ${attachmentId} → ${cachedKey} from changelog cache after waiting ${waitedMs}ms`);
-      }
-      return cachedKey;
-    }
-
-    if (attempt < ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS) {
-      console.log(`${LOG_EMOJI.INFO} Waiting for attachment ${attachmentId} cache entry (attempt ${attempt}/${ATTACHMENT_ISSUE_CACHE_RETRY_ATTEMPTS})`);
-      await sleep(ATTACHMENT_ISSUE_CACHE_RETRY_DELAY_MS);
-    }
-  }
-
-  return null;
-}
-
-async function deleteAttachmentIssueMapping(attachmentId, orgId) {
-  if (!attachmentId) {
-    return;
-  }
-  const key = buildAttachmentIssueCacheKey(attachmentId, orgId);
-  await kvsStore.del(key);
-}
-
 async function ensureParentReadyForCreate(remoteIssue, context, options = {}) {
   const allowQueue = options.allowQueueOnMissingParent !== false;
   if (!isSubtaskIssue(remoteIssue)) {
@@ -1737,19 +1600,6 @@ function isSubtaskIssue(remoteIssue) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function shouldSyncIncomingAttachments(syncOptions) {
-  if (!syncOptions) {
-    return true;
-  }
-  if (typeof syncOptions.incomingAttachments === 'boolean') {
-    return syncOptions.incomingAttachments;
-  }
-  if (typeof syncOptions.syncAttachments === 'boolean') {
-    return syncOptions.syncAttachments;
-  }
-  return true;
 }
 
 function shouldSyncIncomingLinks(syncOptions) {
