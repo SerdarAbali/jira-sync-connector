@@ -179,6 +179,7 @@ function normalizeSyncOptions(stored) {
     forceCheckAttachments: true,
     forceCheckLinks: true,
     recreateDeletedIssues: false,
+    automaticReplacementAfterDeletion: false,
     propagateAttachmentDeletions: false
   };
   if (Number.isSafeInteger(input.maxAttachmentSizeBytes) && input.maxAttachmentSizeBytes > 0) {

@@ -1,5 +1,12 @@
 import { getRemoteKey, getOrganizationsWithTokens } from '../services/storage/mappings.js';
 import { logAuditEntry } from '../services/storage/stats.js';
+import {
+  COUNTERPART_DELETED_SIDES,
+  COUNTERPART_STATUS_VALUES,
+  recordCounterpartStatus
+} from '../services/sync/counterpart-status.js';
+import { setCounterpartNotice } from '../services/sync/counterpart-probe.js';
+import { maybeAutoReplaceAfterDeletion } from '../services/sync/counterpart-recovery.js';
 
 // Deletion propagation is intentionally disabled for corporate pilot safety.
 // Local and remote deletions must never hard-delete the counterpart issue.
@@ -38,6 +45,15 @@ export async function run(event) {
       }
 
       console.warn(`${DELETION_DISABLED_REASON}: org=${orgId || 'legacy'} local=${issueKey} remote=${remoteKey}`);
+      const statusRecord = await recordCounterpartStatus({
+        orgId,
+        localKey: issueKey,
+        remoteKey,
+        status: COUNTERPART_STATUS_VALUES.CONFIRMED_DELETED,
+        deletedSide: COUNTERPART_DELETED_SIDES.LOCAL,
+        source: 'issue_deleted_event',
+        reasonCode: 'LOCAL_ISSUE_DELETED'
+      });
       await logAuditEntry({
         action: 'delete-blocked',
         sourceIssue: issueKey,
@@ -47,6 +63,23 @@ export async function run(event) {
         success: false,
         errors: [DELETION_DISABLED_REASON]
       });
+      if (statusRecord.success) {
+        await setCounterpartNotice({
+          side: 'remote',
+          key: remoteKey,
+          org,
+          localKey: issueKey,
+          remoteKey,
+          status: COUNTERPART_STATUS_VALUES.CONFIRMED_DELETED
+        });
+        await maybeAutoReplaceAfterDeletion({
+          orgId,
+          org,
+          localKey: issueKey,
+          remoteKey,
+          deletedSide: COUNTERPART_DELETED_SIDES.LOCAL
+        });
+      }
       // Keep the mapping: no cleanup on deletion in this batch.
     }
   } catch (error) {

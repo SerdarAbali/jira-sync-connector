@@ -17,6 +17,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import Diagnostics from './components/Diagnostics';
 import InitialSyncPanel from './components/InitialSyncPanel';
 import GuidedSetupWizard from './components/GuidedSetupWizard';
+import DeletedCounterpartRecovery from './components/DeletedCounterpartRecovery';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -150,7 +151,8 @@ const App = () => {
     maxAttachmentSizeBytes: null,
     syncLinks: true,
     syncCrossReference: true,
-    recreateDeletedIssues: false
+    recreateDeletedIssues: false,
+    automaticReplacementAfterDeletion: false
   });
   const [attachmentMaxMb, setAttachmentMaxMb] = useState('');
 
@@ -1272,6 +1274,7 @@ const App = () => {
                   <Tab>Configuration</Tab>
                   <Tab>Guided Setup</Tab>
                   <Tab>Mappings</Tab>
+                  <Tab>Recovery</Tab>
                   <Tab>Diagnostics</Tab>
                   <Tab>Security & Info</Tab>
                 </TabList>
@@ -1376,6 +1379,16 @@ const App = () => {
                     dataLoading={dataLoading}
                     saving={saving}
                     handleAutoMatch={handleAutoMatch}
+                  />
+                </div>
+              </TabPanel>
+
+              {/* Recovery Tab */}
+              <TabPanel>
+                <div style={tabPanelContainerStyle}>
+                  <DeletedCounterpartRecovery
+                    selectedOrg={selectedOrg}
+                    showMessage={showMessage}
                   />
                 </div>
               </TabPanel>
@@ -1866,7 +1879,8 @@ const ConfigurationPanel = ({
               { key: 'syncAttachments', label: 'Synchronize attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
               { key: 'syncCrossReference', label: 'Add Cross-Reference in Description (show linked issue keys in both orgs)' },
-              { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (re-sync issues deleted in target org)' }
+              { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (legacy setting; does not enable automatic counterpart replacement)' },
+              { key: 'automaticReplacementAfterDeletion', label: 'Automatically recreate a confirmed deleted counterpart (explicit opt-in; push never recreates a deleted local issue)' }
             ].map(option => (
               <Checkbox
                 key={option.key}

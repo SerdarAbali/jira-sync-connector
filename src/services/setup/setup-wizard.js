@@ -750,6 +750,7 @@ async function validateFeatures(orgId) {
       syncLinks: options.syncLinks === true,
       syncAttachments: options.syncAttachments === true,
       propagateAttachmentDeletions: options.propagateAttachmentDeletions === true,
+      automaticReplacementAfterDeletion: options.automaticReplacementAfterDeletion === true,
       maxAttachmentSizeBytes: Number.isSafeInteger(options.maxAttachmentSizeBytes)
         ? options.maxAttachmentSizeBytes
         : null,

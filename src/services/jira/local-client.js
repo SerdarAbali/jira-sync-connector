@@ -16,6 +16,29 @@ export async function getFullIssue(issueKey) {
   }
 }
 
+/**
+ * Read-only existence probe used by deleted-counterpart recovery. No Jira write
+ * is performed. The caller classifies the returned status code.
+ */
+export async function probeLocalIssue(issueKey) {
+  try {
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}?fields=key`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    if (!response) {
+      return { reachable: false, statusCode: null, reasonCode: 'EMPTY_RESPONSE' };
+    }
+    return {
+      reachable: response.ok === true,
+      statusCode: Number.isInteger(response.status) ? response.status : null,
+      reasonCode: response.ok === true ? 'ACTIVE' : 'JIRA_HTTP_ERROR'
+    };
+  } catch {
+    return { reachable: false, statusCode: null, reasonCode: 'NETWORK_ERROR' };
+  }
+}
+
 export async function getFullComment(issueKey, commentId) {
   try {
     const response = await api.asApp().requestJira(

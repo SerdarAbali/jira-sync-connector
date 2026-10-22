@@ -34,6 +34,40 @@ export async function getRemoteIssue(remoteKey, config, fields = []) {
   }
 }
 
+/**
+ * Read-only remote existence probe. Deliberately does not retry 404/401/403 so
+ * the caller receives the real availability class immediately.
+ */
+export async function probeRemoteIssue(remoteKey, config) {
+  if (!config?.remoteUrl || !config?.remoteEmail || !config?.remoteApiToken) {
+    return { reachable: false, statusCode: null, reasonCode: 'MISSING_CONFIGURATION' };
+  }
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  try {
+    const response = await fetch(
+      `${config.remoteUrl}/rest/api/3/issue/${remoteKey}?fields=key`,
+      {
+        method: 'GET',
+        redirect: 'error',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+    if (!response) {
+      return { reachable: false, statusCode: null, reasonCode: 'EMPTY_RESPONSE' };
+    }
+    return {
+      reachable: response.ok === true,
+      statusCode: Number.isInteger(response.status) ? response.status : null,
+      reasonCode: response.ok === true ? 'ACTIVE' : 'JIRA_HTTP_ERROR'
+    };
+  } catch {
+    return { reachable: false, statusCode: null, reasonCode: 'NETWORK_ERROR' };
+  }
+}
+
 export async function getRemoteIssueAttachments(remoteKey, config) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   

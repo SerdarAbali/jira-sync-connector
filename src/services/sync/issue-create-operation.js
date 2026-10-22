@@ -40,6 +40,7 @@ export const ISSUE_CREATE_DIRECTIONS = Object.freeze({
 export const CREATE_OPERATION_PENDING_GRACE_MS = 5 * 60 * 1000;
 const CREATE_RETRY_CLAIM_TTL_SECONDS = 60;
 const SOURCE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
+const OPERATION_SUFFIX_PATTERN = /^[A-Za-z0-9_.:-]{1,120}$/;
 
 function orgScope(orgId) {
   return orgId === null || orgId === undefined || orgId === '' ? 'legacy' : String(orgId);
@@ -111,15 +112,20 @@ export function isValidCreateTargetKey(targetKey) {
   return isValidCreateSourceKey(targetKey);
 }
 
-export function buildIssueCreateOperationKey({ orgId = null, direction, sourceKey }) {
+export function buildIssueCreateOperationKey({ orgId = null, direction, sourceKey, operationSuffix = null }) {
   if (!isKnownDirection(direction) || !isValidCreateSourceKey(sourceKey)) {
     throw new Error('Invalid issue create operation identity');
   }
-  return `issue-create-op:${orgScope(orgId)}:${direction}:${encodeURIComponent(sourceKey)}`;
+  if (operationSuffix !== null
+      && (typeof operationSuffix !== 'string' || !OPERATION_SUFFIX_PATTERN.test(operationSuffix))) {
+    throw new Error('Invalid issue create operation suffix');
+  }
+  const base = `issue-create-op:${orgScope(orgId)}:${direction}:${encodeURIComponent(sourceKey)}`;
+  return operationSuffix ? `${base}:${encodeURIComponent(operationSuffix)}` : base;
 }
 
-export async function getIssueCreateOperation({ orgId = null, direction, sourceKey }) {
-  const operationKey = buildIssueCreateOperationKey({ orgId, direction, sourceKey });
+export async function getIssueCreateOperation({ orgId = null, direction, sourceKey, operationSuffix = null }) {
+  const operationKey = buildIssueCreateOperationKey({ orgId, direction, sourceKey, operationSuffix });
   const value = await kvsStore.get(operationKey);
   return sanitizeOperation(normalizeOperation(value, operationKey));
 }
@@ -156,7 +162,7 @@ async function conditionalRetryClaim(key, value) {
   await kvsStore.set(key, value);
 }
 
-function buildOperation({ orgId, direction, sourceKey, now }) {
+function buildOperation({ orgId, direction, sourceKey, operationSuffix, now }) {
   const timestamp = new Date(now).toISOString();
   return {
     operationId: randomBytes(16).toString('hex'),
@@ -164,6 +170,7 @@ function buildOperation({ orgId, direction, sourceKey, now }) {
     orgId: orgId === null || orgId === undefined ? null : String(orgId),
     sourceKey,
     direction,
+    ...(operationSuffix ? { operationSuffix } : {}),
     state: ISSUE_CREATE_STATES.PENDING,
     attempt: 1,
     createdAt: timestamp,
@@ -241,16 +248,17 @@ export async function beginIssueCreateOperation({
   orgId = null,
   direction,
   sourceKey,
+  operationSuffix = null,
   now = Date.now()
 }) {
   let operationKey;
   try {
-    operationKey = buildIssueCreateOperationKey({ orgId, direction, sourceKey });
+    operationKey = buildIssueCreateOperationKey({ orgId, direction, sourceKey, operationSuffix });
   } catch {
     return { allowed: false, code: ISSUE_CREATE_CODES.INVALID, operation: null };
   }
 
-  const proposed = buildOperation({ orgId, direction, sourceKey, now });
+  const proposed = buildOperation({ orgId, direction, sourceKey, operationSuffix, now });
 
   try {
     await conditionalCreate(operationKey, proposed);

@@ -48,12 +48,12 @@ const BLOCKED_FIELD_KEYS = new Set([
 import api, { fetch, route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { recordAuthenticatedWebhookReceipt } from '../storage/webhook-receipt.js';
-import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLinkMapping, removeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
+import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLinkMapping, removeLinkMapping, getLocalCommentId, storeCommentMapping, replaceIssueMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { logAuditEntry } from '../storage/stats.js';
 import { LOG_EMOJI } from '../../constants.js';
-import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
+import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText, stripCounterpartNoticeFromADF } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { syncRemoteAttachmentsToLocal, propagateAttachmentDeletion, getAttachmentSyncPolicy } from './attachment-sync.js';
 import { isValidAttachmentId, isValidIssueKey } from '../../utils/attachment-url.js';
@@ -76,6 +76,15 @@ import {
 import { recordSyncDecision } from './sync-observability.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { getPilotPause, assertPilotWritesAllowed } from './pilot-pause.js';
+import {
+  COUNTERPART_DELETED_SIDES,
+  COUNTERPART_STATUS_VALUES,
+  getCounterpartStatus,
+  recordCounterpartStatus,
+  resolveCounterpartStatus
+} from './counterpart-status.js';
+import { setCounterpartNotice } from './counterpart-probe.js';
+import { maybeAutoReplaceAfterDeletion } from './counterpart-recovery.js';
 import {
   beginIssueCreateOperation,
   markIssueCreateSubmissionStarted,
@@ -376,14 +385,28 @@ async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
   return { ok: false, skippedFields, failure: 'remote_write_failed' };
 }
 
-async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
+export async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   const { org, orgId } = context;
   console.log(`${LOG_EMOJI.SYNC} Received remote issue create: ${remoteIssue.key}`);
 
   const existingLocalKey = await getLocalKey(remoteIssue.key, orgId);
+  const replacementOfLocalKey = options.replacementOfLocalKey || null;
   if (existingLocalKey) {
-    console.log(`ℹ️ Issue ${remoteIssue.key} already mapped to ${existingLocalKey}. Treating as update.`);
-    return handleRemoteIssueUpdated(remoteIssue, context);
+    const existingStatus = await getCounterpartStatus({
+      orgId,
+      localKey: existingLocalKey,
+      remoteKey: remoteIssue.key
+    });
+    if (replacementOfLocalKey && replacementOfLocalKey === existingLocalKey) {
+      console.log(`♻️ Creating a replacement local issue for ${remoteIssue.key}`);
+    } else if (existingStatus?.deletedSide === COUNTERPART_DELETED_SIDES.LOCAL
+        && existingStatus.state === 'active') {
+      console.warn(`${LOG_EMOJI.WARNING} Ignoring remote create for ${remoteIssue.key}: local counterpart was deleted`);
+      return { status: 'COUNTERPART_CONFIRMED_DELETED' };
+    } else {
+      console.log(`ℹ️ Issue ${remoteIssue.key} already mapped to ${existingLocalKey}. Treating as update.`);
+      return handleRemoteIssueUpdated(remoteIssue, context);
+    }
   }
 
   const targetProject = Array.isArray(org.allowedProjects) && org.allowedProjects.length > 0
@@ -447,7 +470,8 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
   const createClaim = await beginIssueCreateOperation({
     orgId,
     direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
-    sourceKey: remoteIssue.key
+    sourceKey: remoteIssue.key,
+    operationSuffix: options.operationSuffix || null
   });
 
   if (!createClaim.allowed) {
@@ -516,7 +540,17 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
 
   console.log(`${LOG_EMOJI.SUCCESS} Created local issue ${localKey} from remote ${remoteIssue.key}`);
 
-  await storeMapping(localKey, remoteIssue.key, orgId);
+  if (replacementOfLocalKey) {
+    await replaceIssueMapping({
+      oldLocalKey: replacementOfLocalKey,
+      oldRemoteKey: remoteIssue.key,
+      newLocalKey: localKey,
+      newRemoteKey: remoteIssue.key,
+      orgId
+    });
+  } else {
+    await storeMapping(localKey, remoteIssue.key, orgId);
+  }
   await recordLatestAccepted({
     orgId,
     direction: 'remote-to-local',
@@ -571,6 +605,7 @@ async function handleRemoteIssueCreated(remoteIssue, context, options = {}) {
       console.warn(`${LOG_EMOJI.WARNING} Attachment synchronization deferred for a mapped issue`);
     }
   }
+  return { status: 'CREATED', localKey };
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
   }
@@ -582,6 +617,32 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
   if (!localKey) {
     console.log(`⚠️ Remote issue ${remoteIssue.key} not mapped. Ignoring update.`);
     return { status: 'SKIPPED_UNMAPPED' };
+  }
+
+  const updateCounterpartStatus = await getCounterpartStatus({
+    orgId,
+    localKey,
+    remoteKey: remoteIssue.key
+  });
+  if (updateCounterpartStatus?.state === 'active') {
+    if (updateCounterpartStatus.deletedSide === COUNTERPART_DELETED_SIDES.LOCAL) {
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.SKIPPED_LOCKED,
+        orgId,
+        localKey,
+        remoteKey: remoteIssue.key,
+        direction: 'remote-to-local',
+        reason: 'counterpart-confirmed-deleted'
+      });
+      return { status: 'COUNTERPART_CONFIRMED_DELETED' };
+    }
+    // A delivered update is positive evidence that the remote counterpart is
+    // alive. Resolve only classification metadata; no Jira content is stored.
+    await resolveCounterpartStatus({
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key
+    });
   }
 
   if (payload && shouldSkipUpdateForAttachmentOnly(payload)) {
@@ -793,7 +854,7 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
 async function handleRemoteIssueDeleted(remoteIssue, context) {
   // Deletion propagation is intentionally disabled for corporate pilot safety.
   // A remote deletion must not delete the local issue; the mapping is kept for
-  // future reconciliation. No Jira write is performed here.
+  // future reconciliation. Only safe metadata and a survivor notice are written.
   const localKey = await getLocalKey(remoteIssue.key, context.orgId);
   if (!localKey) {
     return;
@@ -801,6 +862,15 @@ async function handleRemoteIssueDeleted(remoteIssue, context) {
 
   const reason = 'Deletion propagation disabled for corporate pilot safety';
   console.warn(`${reason}: org=${context.orgId || 'legacy'} remote=${remoteIssue.key} local=${localKey}`);
+  const statusRecord = await recordCounterpartStatus({
+    orgId: context.orgId,
+    localKey,
+    remoteKey: remoteIssue.key,
+    status: COUNTERPART_STATUS_VALUES.CONFIRMED_DELETED,
+    deletedSide: COUNTERPART_DELETED_SIDES.REMOTE,
+    source: 'issue_deleted_event',
+    reasonCode: 'REMOTE_ISSUE_DELETED'
+  });
   await logAuditEntry({
     action: 'remote-delete-blocked',
     sourceIssue: localKey,
@@ -810,6 +880,22 @@ async function handleRemoteIssueDeleted(remoteIssue, context) {
     success: false,
     errors: [reason]
   });
+  if (statusRecord.success) {
+    await setCounterpartNotice({
+      side: 'local',
+      key: localKey,
+      localKey,
+      remoteKey: remoteIssue.key,
+      status: COUNTERPART_STATUS_VALUES.CONFIRMED_DELETED
+    });
+    await maybeAutoReplaceAfterDeletion({
+      orgId: context.orgId,
+      org: context.org,
+      localKey,
+      remoteKey: remoteIssue.key,
+      deletedSide: COUNTERPART_DELETED_SIDES.REMOTE
+    });
+  }
 }
 
 const PARENT_RELATED_COMMENT_REJECTION_STATUSES = new Set([400, 404, 422]);
@@ -1423,7 +1509,7 @@ function normalizeDescription(value) {
     return textToADF('');
   }
   if (typeof value === 'object') {
-    const cloned = JSON.parse(JSON.stringify(value));
+    const cloned = stripCounterpartNoticeFromADF(JSON.parse(JSON.stringify(value)));
     const sanitized = stripMediaNodes(cloned);
     if (!sanitized || !Array.isArray(sanitized.content) || sanitized.content.length === 0) {
       return textToADF('');

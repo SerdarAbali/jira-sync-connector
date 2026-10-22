@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { isValidADFDocument, textToADF, stripCrossReferenceFromADF } from '../../utils/adf.js';
+import { isValidADFDocument, textToADF, stripCrossReferenceFromADF, stripCounterpartNoticeFromADF } from '../../utils/adf.js';
 
 const MAX_CANONICAL_DEPTH = 20;
 
@@ -94,7 +94,7 @@ export function normalizeDescriptionForHash(value) {
   } else if (typeof value === 'string') {
     adf = textToADF(value);
   } else if (isValidADFDocument(value)) {
-    adf = stripCrossReferenceFromADF(value);
+    adf = stripCounterpartNoticeFromADF(stripCrossReferenceFromADF(value));
   } else {
     // Explicit sentinel: malformed non-empty content must never collide with a
     // genuinely empty description. The original value is not retained.

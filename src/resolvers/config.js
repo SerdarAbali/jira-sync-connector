@@ -17,6 +17,7 @@ export const DEFAULT_SYNC_OPTIONS = Object.freeze({
   syncLinks: true,
   syncCrossReference: true,
   recreateDeletedIssues: false,
+  automaticReplacementAfterDeletion: false,
   propagateAttachmentDeletions: false,
   maxAttachmentSizeBytes: null
 });
@@ -28,6 +29,7 @@ const SYNC_OPTION_BOOLEAN_KEYS = [
   'syncLinks',
   'syncCrossReference',
   'recreateDeletedIssues',
+  'automaticReplacementAfterDeletion',
   'propagateAttachmentDeletions',
   'forceCheckAttachments',
   'forceCheckLinks'

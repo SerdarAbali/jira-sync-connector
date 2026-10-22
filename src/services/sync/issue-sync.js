@@ -2,9 +2,9 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
-import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument } from '../../utils/adf.js';
+import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument, stripCounterpartNoticeFromADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
-import { getRemoteKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated, storeLinkMapping } from '../storage/mappings.js';
+import { getRemoteKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated, storeLinkMapping, replaceIssueMapping } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
 import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
 import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../jira/local-client.js';
@@ -40,6 +40,15 @@ import {
   ISSUE_CREATE_CODES,
   ISSUE_CREATE_DIRECTIONS
 } from './issue-create-operation.js';
+import {
+  getCounterpartStatus,
+  getLatestCounterpartStatusForLocalKey,
+  counterpartStatusBlocksSync,
+  recordCounterpartStatus,
+  resolveCounterpartStatus,
+  normalizeCounterpartStatusClass
+} from './counterpart-status.js';
+import { probeCounterpart } from './counterpart-probe.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
@@ -329,6 +338,25 @@ export async function syncIssue(event) {
   const issue = await getFullIssue(issueKey);
   if (!issue) {
     console.error('Could not fetch issue data');
+    const localProbe = await probeCounterpart({ side: 'local', key: issueKey });
+    for (const org of organizations) {
+      const mappedRemoteKey = await getRemoteKey(
+        issueKey,
+        org.id === 'legacy' ? null : org.id
+      );
+      if (mappedRemoteKey && localProbe.status !== 'active') {
+        await recordCounterpartStatus({
+          orgId: org.id === 'legacy' ? null : org.id,
+          localKey: issueKey,
+          remoteKey: mappedRemoteKey,
+          status: localProbe.status,
+          deletedSide: 'local',
+          source: 'local_probe',
+          reasonCode: localProbe.reasonCode,
+          probeStatusCode: localProbe.statusCode
+        });
+      }
+    }
     await trackWebhookSync('skip', false, `Could not fetch issue data`, null, issueKey, {
       reason: 'Failed to retrieve issue from Jira API',
       eventType: event.eventType
@@ -379,6 +407,29 @@ export async function syncIssue(event) {
     };
 
     const existingRemoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);
+    const latestCounterpartStatus = await getLatestCounterpartStatusForLocalKey(
+      org.id === 'legacy' ? null : org.id,
+      issueKey
+    );
+    const relevantCounterpartStatus = latestCounterpartStatus
+      && (!existingRemoteKey || latestCounterpartStatus.remoteKey === existingRemoteKey)
+      ? latestCounterpartStatus
+      : null;
+    const counterpartGate = counterpartStatusBlocksSync(relevantCounterpartStatus, {
+      hasMapping: Boolean(existingRemoteKey)
+    });
+    if (counterpartGate.blocked && !syncOptions?.replacementOfRemoteKey) {
+      console.warn(`${LOG_EMOJI.WARNING} Sync skipped for ${issueKey}: ${counterpartGate.code}`);
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.SKIPPED_LOCKED,
+        orgId: org.id === 'legacy' ? null : org.id,
+        localKey: issueKey,
+        remoteKey: existingRemoteKey || null,
+        direction: 'local-to-remote',
+        reason: counterpartGate.code
+      });
+      continue;
+    }
     const sourceHash = hashLocalFields(issue.fields, mappings);
 
     if (existingRemoteKey) {
@@ -535,20 +586,48 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null, depth = 0) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
+
+  if (!syncOptions?.replacementOfRemoteKey) {
+    const latestStatus = await getLatestCounterpartStatusForLocalKey(orgId, issue.key);
+    const mappedRemoteKey = await getRemoteKey(issue.key, orgId);
+    const relevantStatus = latestStatus
+      && (!mappedRemoteKey || latestStatus.remoteKey === mappedRemoteKey)
+      ? latestStatus
+      : null;
+    const gate = counterpartStatusBlocksSync(relevantStatus, {
+      hasMapping: Boolean(mappedRemoteKey)
+    });
+    if (gate.blocked) {
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.SKIPPED_LOCKED,
+        orgId,
+        localKey: issue.key,
+        direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+        reason: gate.code
+      });
+      if (syncResult) syncResult.addWarning(gate.code);
+      return null;
+    }
+  }
   
   // Check depth limit for recursive parent/epic sync
   if (depth > MAX_PARENT_SYNC_DEPTH) {
     console.log(`${LOG_EMOJI.WARNING} Max sync depth (${MAX_PARENT_SYNC_DEPTH}) reached for ${issue.key}, skipping parent/epic sync`);
   }
   
-  // For initial creation, use text-only description
+  // For initial creation, use text-only description. Connector-owned notices are
+  // never copied to a counterpart.
   let initialDescription;
-  if (issue.fields.description) {
-    if (typeof issue.fields.description === 'object') {
-      const extractedText = extractTextFromADF(issue.fields.description);
+  const compatibleDescription = typeof issue.fields.description === 'object'
+    && issue.fields.description !== null
+    ? stripCounterpartNoticeFromADF(issue.fields.description)
+    : issue.fields.description;
+  if (compatibleDescription) {
+    if (typeof compatibleDescription === 'object') {
+      const extractedText = extractTextFromADF(compatibleDescription);
       initialDescription = extractedText ? textToADF(extractedText) : textToADF('');
-    } else if (typeof issue.fields.description === 'string') {
-      initialDescription = textToADF(issue.fields.description);
+    } else if (typeof compatibleDescription === 'string') {
+      initialDescription = textToADF(compatibleDescription);
     } else {
       initialDescription = textToADF('');
     }
@@ -753,7 +832,8 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       const createClaim = await beginIssueCreateOperation({
         orgId,
         direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
-        sourceKey: issue.key
+        sourceKey: issue.key,
+        operationSuffix: syncOptions?.operationSuffix || null
       });
 
       if (!createClaim.allowed) {
@@ -820,7 +900,17 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
 
         console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
 
-        await storeMapping(issue.key, result.key, orgId);
+        if (syncOptions?.replacementOfRemoteKey) {
+          await replaceIssueMapping({
+            oldLocalKey: issue.key,
+            oldRemoteKey: syncOptions.replacementOfRemoteKey,
+            newLocalKey: issue.key,
+            newRemoteKey: result.key,
+            orgId
+          });
+        } else {
+          await storeMapping(issue.key, result.key, orgId);
+        }
       await setLastSyncedLocalUpdated(issue.key, issue.fields.updated, orgId);
 
       // Process any pending links that were waiting for this issue to be synced
@@ -897,12 +987,12 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
         // Update REMOTE issue description with cross-reference
         // Use the original ADF structure, replacing media IDs if needed
         let remoteDescription;
-        if (issue.fields.description && typeof issue.fields.description === 'object') {
+        if (compatibleDescription && typeof compatibleDescription === 'object') {
           remoteDescription = Object.keys(attachmentMapping).length > 0
-            ? await replaceMediaIdsInADF(issue.fields.description, attachmentMapping)
-            : JSON.parse(JSON.stringify(issue.fields.description)); // Deep clone
-        } else if (issue.fields.description && typeof issue.fields.description === 'string') {
-          remoteDescription = textToADF(issue.fields.description);
+            ? await replaceMediaIdsInADF(compatibleDescription, attachmentMapping)
+            : JSON.parse(JSON.stringify(compatibleDescription)); // Deep clone
+        } else if (compatibleDescription && typeof compatibleDescription === 'string') {
+          remoteDescription = textToADF(compatibleDescription);
         } else {
           remoteDescription = { type: 'doc', version: 1, content: [] };
         }
@@ -948,7 +1038,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
 
         // Update LOCAL issue description with cross-reference back to remote
         const localDescriptionWithRef = prependCrossReferenceToADF(
-          issue.fields.description,
+          compatibleDescription,
           issue.key,
           result.key,
           localOrgName,
@@ -1066,6 +1156,20 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
   if (!syncOptions?.dryRun) {
     await assertPilotWritesAllowed('issue_update_remote');
+  }
+  const counterpartStatus = await getCounterpartStatus({ orgId, localKey, remoteKey });
+  const counterpartGate = counterpartStatusBlocksSync(counterpartStatus, { hasMapping: true });
+  if (counterpartGate.blocked) {
+    await recordSyncDecision({
+      decision: SYNC_DECISIONS.SKIPPED_LOCKED,
+      orgId,
+      localKey,
+      remoteKey,
+      direction: 'local-to-remote',
+      reason: counterpartGate.code
+    });
+    if (syncResult) syncResult.addWarning(counterpartGate.code);
+    return { skipped: true, status: counterpartGate.code };
   }
   const lease = await acquireIssueLease({
     orgId,
@@ -1231,7 +1335,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
     } else if (typeof issue.fields.description === 'string') {
       description = textToADF(issue.fields.description);
     } else if (isValidADFDocument(issue.fields.description)) {
-      description = JSON.parse(JSON.stringify(issue.fields.description));
+      description = stripCounterpartNoticeFromADF(JSON.parse(JSON.stringify(issue.fields.description)));
     } else {
       description = null;
     }
@@ -1242,14 +1346,16 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
     if (crossReferenceEnabled) {
       localOrgName = await getOrgName();
       remoteOrgName = org.name;
-      const enhancedDescription = prependCrossReferenceToADF(
-        issue.fields.description,
-        localKey,
-        remoteKey,
-        localOrgName,
-        remoteOrgName
-      );
-      if (enhancedDescription && adfPreservesOriginalContent(issue.fields.description, enhancedDescription)) {
+      const enhancedDescription = description
+        ? prependCrossReferenceToADF(
+          description,
+          localKey,
+          remoteKey,
+          localOrgName,
+          remoteOrgName
+        )
+        : null;
+      if (enhancedDescription && adfPreservesOriginalContent(description, enhancedDescription)) {
         finalDescription = enhancedDescription;
       } else {
         console.log(`⏭️ Skipping cross-reference enhancement for ${localKey}: unsafe-description`);
@@ -1495,16 +1601,18 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
         // Also update local issue with cross-reference (if enabled)
         if (crossReferenceEnabled) {
-          const localDescriptionWithRef = prependCrossReferenceToADF(
-            issue.fields.description,
-            localKey,
-            remoteKey,
-            localOrgName,
-            remoteOrgName
-          );
-          if (!localDescriptionWithRef || !adfPreservesOriginalContent(issue.fields.description, localDescriptionWithRef)) {
+          const localDescriptionWithRef = description
+            ? prependCrossReferenceToADF(
+              description,
+              localKey,
+              remoteKey,
+              localOrgName,
+              remoteOrgName
+            )
+            : null;
+          if (!localDescriptionWithRef || !adfPreservesOriginalContent(description, localDescriptionWithRef)) {
             console.log(`⏭️ Skipping local cross-reference for ${localKey}: unsafe-description`);
-          } else if (JSON.stringify(issue.fields.description) === JSON.stringify(localDescriptionWithRef)) {
+          } else if (JSON.stringify(description) === JSON.stringify(localDescriptionWithRef)) {
             await recordDestinationWrite({
               orgId,
               localKey,
@@ -1535,9 +1643,23 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
           const transitioned = await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);
           syncDetails.status = transitioned || false;
         }
+        await resolveCounterpartStatus({ orgId, localKey, remoteKey });
         return syncDetails;
       } else {
         console.error(`${LOG_EMOJI.ERROR} Update failed`);
+        const failureStatus = normalizeCounterpartStatusClass(response.status);
+        if (failureStatus) {
+          await recordCounterpartStatus({
+            orgId,
+            localKey,
+            remoteKey,
+            status: failureStatus,
+            deletedSide: 'remote',
+            source: 'remote_write_response',
+            reasonCode: `HTTP_${response.status}`,
+            probeStatusCode: Number(response.status)
+          });
+        }
         if (syncResult) syncResult.addError(`Update failed: ${formatHttpFailure(response.status)}`);
         return null;
       }

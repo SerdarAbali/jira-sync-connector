@@ -1,9 +1,16 @@
+export const COUNTERPART_NOTICE_MARKER =
+  'Jira Sync Connector notice: protected counterpart.';
+
 export function extractTextFromADF(adf, skipCrossReference = true) {
   if (!adf || typeof adf !== 'object') return '';
   
   let text = '';
   
   function traverse(node, isFirstNode = false) {
+    // Connector-owned notices must never be copied into a counterpart.
+    if (isCounterpartNoticeNode(node)) {
+      return;
+    }
     // Skip cross-reference line if requested (old panel format or new minimal format)
     if (skipCrossReference) {
       // Old panel format
@@ -255,6 +262,103 @@ function contentWithoutCrossReference(adf) {
   return adf.content.filter(node => !isCrossReferenceNode(node));
 }
 
+function noticeParagraphText(node) {
+  const first = node?.content?.[0];
+  return first?.type === 'paragraph'
+    ? first.content?.[0]?.text
+    : node?.content?.[0]?.text;
+}
+
+function isCounterpartNoticeNode(node) {
+  if (!isPlainObject(node) || node.type !== 'panel') {
+    return false;
+  }
+  const text = noticeParagraphText(node);
+  return typeof text === 'string' && text.startsWith(COUNTERPART_NOTICE_MARKER);
+}
+
+/**
+ * True for the connector-owned survivor notice. Exported so hashing and
+ * description-preservation checks can ignore only this generated boilerplate.
+ */
+export function isCounterpartNotice(node) {
+  return isCounterpartNoticeNode(node);
+}
+
+/**
+ * Remove connector-owned survivor notices without mutating the input. User
+ * content and the existing cross-reference are preserved.
+ */
+export function stripCounterpartNoticeFromADF(adf) {
+  if (!isPlainObject(adf) || !Array.isArray(adf.content)) {
+    return adf;
+  }
+  const cloned = cloneAdf(adf);
+  cloned.content = cloned.content.filter(node => !isCounterpartNoticeNode(node));
+  return cloned;
+}
+
+/**
+ * Return a new ADF document with exactly one marker-tagged survivor notice
+ * followed by the original content. The input is never mutated. Returns null for
+ * malformed descriptions so callers preserve the existing Jira description.
+ */
+export function prependCounterpartNoticeToADF(adf, { localKey, remoteKey, status } = {}) {
+  const original = normalizeDescriptionToAdf(adf);
+  if (!original) {
+    return null;
+  }
+
+  const statusLabel = status === 'unavailable'
+    ? 'is currently unavailable'
+    : 'was deleted';
+  const notice = {
+    type: 'panel',
+    attrs: { panelType: 'warning' },
+    content: [
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: `${COUNTERPART_NOTICE_MARKER} The counterpart issue for ${localKey || 'the local issue'} ↔ ${remoteKey || 'the remote issue'} ${statusLabel}. No Jira issue was deleted by this connector. An administrator can review this pair in Deleted Counterpart Recovery.`
+          }
+        ]
+      }
+    ]
+  };
+
+  return {
+    ...original,
+    content: [
+      notice,
+      ...original.content.filter(node => !isCounterpartNoticeNode(node))
+    ]
+  };
+}
+
+/**
+ * Remove exactly one connector-owned notice and optionally prepend a fresh one.
+ * Returns null when the description cannot be safely normalized.
+ */
+export function updateCounterpartNoticeInADF(adf, noticeInfo = null) {
+  const original = normalizeDescriptionToAdf(adf);
+  if (!original) {
+    return null;
+  }
+  const withoutNotice = {
+    ...original,
+    content: original.content.filter(node => !isCounterpartNoticeNode(node))
+  };
+  return noticeInfo
+    ? prependCounterpartNoticeToADF(withoutNotice, noticeInfo)
+    : withoutNotice;
+}
+
+function contentWithoutConnectorBoilerplate(adf) {
+  return adf.content.filter(node => !isCrossReferenceNode(node) && !isCounterpartNoticeNode(node));
+}
+
 /**
  * Return a new ADF document with exactly one cross-reference paragraph followed
  * by the original content. The input is never mutated.
@@ -293,8 +397,8 @@ export function adfPreservesOriginalContent(originalDescription, resultAdf) {
   if (!original) {
     return false;
   }
-  const expectedContent = contentWithoutCrossReference(original);
-  const resultContent = contentWithoutCrossReference(resultAdf);
+  const expectedContent = contentWithoutConnectorBoilerplate(original);
+  const resultContent = contentWithoutConnectorBoilerplate(resultAdf);
   return JSON.stringify(expectedContent) === JSON.stringify(resultContent);
 }
 

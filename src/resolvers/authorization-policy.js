@@ -88,7 +88,15 @@ export const RESOLVER_POLICIES = Object.freeze({
   // Read-only diagnostics and disabled Batch 1 operations (diagnostics.js)
   runHealthCheck: 'ADMIN_READ',
   verifyIssueSync: 'ADMIN_READ',
-  runSystemTest: 'SAFE_DISABLED'
+  runSystemTest: 'SAFE_DISABLED',
+
+  // Deleted-counterpart recovery (recovery.js)
+  getDeletedCounterparts: 'ADMIN_READ',
+  probeDeletedCounterpart: 'ADMIN_READ',
+  remapDeletedCounterpart: 'ADMIN_WRITE',
+  replaceDeletedCounterpart: 'DESTRUCTIVE',
+  endDeletedCounterpartSync: 'DESTRUCTIVE',
+  dismissDeletedCounterpart: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {

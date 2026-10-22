@@ -341,7 +341,7 @@ describe('Batch 2 resolver inventory and actual handler', () => {
 
     expect(typeof handler).toBe('function');
     expect(Object.keys(handler)).toHaveLength(0);
-    expect(registered).toHaveLength(66);
+    expect(registered).toHaveLength(72);
     expect(registered).toEqual(classified);
     expect(RESOLVER_POLICIES.replaceOrganizationToken).toBe('ADMIN_WRITE');
     expect(RESOLVER_POLICIES.rotateWebhookSecret).toBe('ADMIN_WRITE');

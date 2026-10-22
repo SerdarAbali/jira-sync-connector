@@ -225,6 +225,130 @@ export async function removeMapping(localKey, remoteKey, orgId = null) {
 }
 
 /**
+ * Atomically move an existing pair to a replacement local/remote key. The old
+ * lookup directions and metadata are removed only in the same transaction that
+ * writes both new directions, so no partial active pair is observable.
+ */
+export async function replaceIssueMapping({
+  oldLocalKey,
+  oldRemoteKey,
+  newLocalKey,
+  newRemoteKey,
+  orgId = null,
+  now = Date.now()
+}) {
+  if (![oldLocalKey, oldRemoteKey, newLocalKey, newRemoteKey].every(isValidIssueKey)) {
+    return { success: false, code: 'MAPPING_INVALID' };
+  }
+  if (typeof kvsStore.transaction !== 'function') {
+    return { success: false, code: 'MAPPING_TRANSACTION_UNAVAILABLE' };
+  }
+
+  const oldKeys = mappingKeys(oldLocalKey, oldRemoteKey, orgId);
+  const newKeys = mappingKeys(newLocalKey, newRemoteKey, orgId);
+  const [existingLocalToRemote, existingRemoteToLocal] = await Promise.all([
+    kvsStore.get(newKeys.localToRemote),
+    kvsStore.get(newKeys.remoteToLocal)
+  ]);
+  if (existingLocalToRemote && existingLocalToRemote !== oldRemoteKey
+      && existingLocalToRemote !== newRemoteKey) {
+    throw new MappingConflictError('Replacement local issue already maps to a different remote issue', {
+      localKey: newLocalKey, remoteKey: newRemoteKey, existingRemote: existingLocalToRemote
+    });
+  }
+  if (existingRemoteToLocal && existingRemoteToLocal !== oldLocalKey
+      && existingRemoteToLocal !== newLocalKey) {
+    throw new MappingConflictError('Replacement remote issue already maps to a different local issue', {
+      localKey: newLocalKey, remoteKey: newRemoteKey, existingLocal: existingRemoteToLocal
+    });
+  }
+
+  const timestamp = new Date(now).toISOString();
+  const metadata = {
+    localKey: newLocalKey,
+    remoteKey: newRemoteKey,
+    orgId: orgId || 'legacy',
+    updatedAt: timestamp,
+    replacedAt: timestamp,
+    previousLocalKey: oldLocalKey,
+    previousRemoteKey: oldRemoteKey
+  };
+
+  const transaction = kvsStore.transaction();
+  for (const key of new Set([oldKeys.localToRemote, oldKeys.remoteToLocal, oldKeys.meta])) {
+    if (key !== newKeys.localToRemote && key !== newKeys.remoteToLocal && key !== newKeys.meta) {
+      transaction.delete(key);
+    }
+  }
+  await transaction
+    .set(newKeys.localToRemote, newRemoteKey)
+    .set(newKeys.remoteToLocal, newLocalKey)
+    .set(newKeys.meta, metadata)
+    .execute();
+
+  return {
+    success: true,
+    localKey: newLocalKey,
+    remoteKey: newRemoteKey,
+    previousLocalKey: oldLocalKey,
+    previousRemoteKey: oldRemoteKey
+  };
+}
+
+/**
+ * Permanently deactivate both active lookup directions. A safe ending record is
+ * written in the same transaction. No Jira issue is deleted.
+ */
+export async function deactivateIssueMapping({
+  localKey,
+  remoteKey,
+  orgId = null,
+  endedAt = null,
+  endedBy = null,
+  reasonCode = 'administrator_ended',
+  now = Date.now()
+}) {
+  if (!isValidIssueKey(localKey) || !isValidIssueKey(remoteKey)) {
+    return { success: false, code: 'MAPPING_INVALID' };
+  }
+  if (typeof kvsStore.transaction !== 'function') {
+    return { success: false, code: 'MAPPING_TRANSACTION_UNAVAILABLE' };
+  }
+
+  const keys = mappingKeys(localKey, remoteKey, orgId);
+  const timestamp = new Date(now).toISOString();
+  const endedRecordKey = orgId
+    ? `mapping-ended:${orgId}:${localKey}:${remoteKey}`
+    : `mapping-ended:legacy:${localKey}:${remoteKey}`;
+  const endedRecord = {
+    localKey,
+    remoteKey,
+    orgId: orgId || 'legacy',
+    endedAt: typeof endedAt === 'string' ? endedAt : timestamp,
+    endedBy: typeof endedBy === 'string' ? endedBy.slice(0, 100) : null,
+    reasonCode: typeof reasonCode === 'string' ? reasonCode.slice(0, 80) : 'administrator_ended'
+  };
+
+  await kvsStore.transaction()
+    .delete(keys.localToRemote)
+    .delete(keys.remoteToLocal)
+    .delete(keys.meta)
+    .set(endedRecordKey, endedRecord)
+    .execute();
+
+  return { success: true, endedRecord };
+}
+
+export async function getMappingEndedRecord(localKey, remoteKey, orgId = null) {
+  if (!isValidIssueKey(localKey) || !isValidIssueKey(remoteKey)) return null;
+  const key = orgId
+    ? `mapping-ended:${orgId}:${localKey}:${remoteKey}`
+    : `mapping-ended:legacy:${localKey}:${remoteKey}`;
+  return await kvsStore.get(key);
+}
+
+
+/**
  * Get all mappings for an org using kvs.query() instead of index array
  * This is more scalable and doesn't hit the 240 KiB value limit
  */

@@ -2,6 +2,7 @@ import { run as runIssueDeleted } from '../src/triggers/issue-deleted.js';
 import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
 import { getOrganizationsWithTokens, getRemoteKey, getLocalKey } from '../src/services/storage/mappings.js';
 import { logAuditEntry } from '../src/services/storage/stats.js';
+import * as kvsStore from '../src/services/storage/kvs.js';
 import api, { fetch } from '@forge/api';
 
 jest.mock('@forge/api', () => {
@@ -92,6 +93,16 @@ describe('Pilot safety: deletion propagation is disabled', () => {
       orgId: 'org-1'
     }));
     expect(getRemoteKey).toHaveBeenCalledWith('LOCAL-1', 'org-1');
+    expect(kvsStore.set).toHaveBeenCalledWith(
+      'counterpart-status:org-1:LOCAL-1:REMOTE-1',
+      expect.objectContaining({
+        localKey: 'LOCAL-1',
+        remoteKey: 'REMOTE-1',
+        status: 'confirmed_deleted',
+        deletedSide: 'local'
+      })
+    );
+    expect(kvsStore.del).not.toHaveBeenCalled();
   });
 
   test('deletion without an issue key skips mapping lookup safely', async () => {
@@ -134,5 +145,15 @@ describe('Pilot safety: deletion propagation is disabled', () => {
       targetIssue: 'REMOTE-1',
       orgId: 'org-1'
     }));
+    expect(kvsStore.set).toHaveBeenCalledWith(
+      'counterpart-status:org-1:LOCAL-1:REMOTE-1',
+      expect.objectContaining({
+        localKey: 'LOCAL-1',
+        remoteKey: 'REMOTE-1',
+        status: 'confirmed_deleted',
+        deletedSide: 'remote'
+      })
+    );
+    expect(kvsStore.del).not.toHaveBeenCalled();
   });
 });
