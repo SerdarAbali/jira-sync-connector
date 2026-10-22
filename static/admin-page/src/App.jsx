@@ -18,6 +18,7 @@ import Diagnostics from './components/Diagnostics';
 import InitialSyncPanel from './components/InitialSyncPanel';
 import GuidedSetupWizard from './components/GuidedSetupWizard';
 import DeletedCounterpartRecovery from './components/DeletedCounterpartRecovery';
+import RecurringReconciliation from './components/RecurringReconciliation';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -2677,6 +2678,10 @@ const SyncActivityPanel = ({
       )}
 
       <InitialSyncPanel selectedOrg={selectedOrg} showMessage={showMessage} />
+
+      <div style={{ marginTop: token('space.300', '24px') }}>
+        <RecurringReconciliation selectedOrg={selectedOrg} showMessage={showMessage} />
+      </div>
 
       <ModalTransition>
         {pilotConfirmAction && (

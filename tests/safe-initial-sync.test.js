@@ -59,11 +59,14 @@ jest.mock('../src/services/jira/local-client.js', () => ({
 }));
 
 jest.mock('../src/services/sync/issue-sync.js', () => ({
-  createRemoteIssue: jest.fn()
+  createRemoteIssue: jest.fn(),
+  updateRemoteIssue: jest.fn()
 }));
 
 import {
   previewInitialSync,
+  previewReconciliationCandidates,
+  processReconciliationCandidate,
   startInitialSync,
   getInitialSyncStatus,
   pauseInitialSync,
@@ -91,7 +94,7 @@ import {
   getLocalKey
 } from '../src/services/storage/mappings.js';
 import { getFullIssue } from '../src/services/jira/local-client.js';
-import { createRemoteIssue } from '../src/services/sync/issue-sync.js';
+import { createRemoteIssue, updateRemoteIssue } from '../src/services/sync/issue-sync.js';
 import * as kvsStore from '../src/services/storage/kvs.js';
 import { RESOLVER_POLICIES } from '../src/resolvers/authorization-policy.js';
 import { __requestJira as mockRequestJira, __fetch as mockFetch } from '@forge/api';
@@ -124,6 +127,7 @@ function issue(key, overrides = {}) {
       issuetype: { name: 'Task', id: '1' },
       status: { name: 'To Do' },
       parent: null,
+      updated: '2026-01-01T00:00:00.000Z',
       ...overrides
     }
   };
@@ -169,6 +173,7 @@ beforeEach(() => {
   createRemoteIssue.mockImplementation(async current => ({
     key: `REMOTE-${current.key.split('-')[1]}`
   }));
+  updateRemoteIssue.mockResolvedValue({ fields: true });
   mockRequestJira.mockImplementation(async () => searchResponse());
   searchIssues = [
     issue('LOCAL-1'),
@@ -799,6 +804,100 @@ describe('initial sync controls and restart recovery', () => {
     await processInitialSyncJob({ orgId: ORG.id, jobId: started.job.jobId, maxItems: 2 });
     expect(createRemoteIssue).toHaveBeenCalledTimes(1);
     expect(createRemoteIssue.mock.calls[0][0].key).toBe('LOCAL-1');
+  });
+
+  test('reconciliation wrappers reuse the same preview and bounded create path', async () => {
+    searchIssues = [issue('LOCAL-1')];
+
+    const preview = await previewReconciliationCandidates({ orgId: ORG.id });
+    expect(preview.success).toBe(true);
+    expect(preview.preview.classification.eligible.issueKeys).toEqual(['LOCAL-1']);
+    expect(preview.preview.configuration.allowedProjects).toEqual(['LOCAL']);
+
+    const outcome = await processReconciliationCandidate({
+      orgId: ORG.id,
+      org: preview.preview.org,
+      configuration: preview.preview.configuration,
+      issueKey: 'LOCAL-1'
+    });
+
+    expect(outcome).toEqual({
+      issueKey: 'LOCAL-1',
+      outcome: 'created',
+      reasonCode: 'CREATED'
+    });
+    expect(createRemoteIssue).toHaveBeenCalledTimes(1);
+    expect(createRemoteIssue.mock.calls[0][0].key).toBe('LOCAL-1');
+  });
+
+  test('a current mapped source is excluded and never reaches an update or create path', async () => {
+    searchIssues = [issue('LOCAL-1', { updated: '2026-01-02T00:00:00.000Z' })];
+    getFullIssue.mockImplementation(async key => issue(key, {
+      updated: '2026-01-02T00:00:00.000Z'
+    }));
+    getRemoteKey.mockImplementation(async key => (key === 'LOCAL-1' ? 'REMOTE-1' : null));
+    getLocalKey.mockImplementation(async key => (key === 'REMOTE-1' ? 'LOCAL-1' : null));
+    mockStore.set(
+      `${ORG.id}:last-synced-updated:LOCAL-1`,
+      '2026-01-02T00:00:00.000Z'
+    );
+
+    const preview = await previewReconciliationCandidates({ orgId: ORG.id });
+
+    expect(preview.success).toBe(true);
+    expect(preview.preview.classification.mappedCurrent.issueKeys).toEqual(['LOCAL-1']);
+    expect(preview.preview.classification.mappedOutdated.issueKeys).toEqual([]);
+    expect(preview.preview.classification.reconciliationCandidates.issueKeys).toEqual([]);
+    expect(preview.preview.reconciliation.candidateKeys).toEqual([]);
+
+    const outcome = await processReconciliationCandidate({
+      orgId: ORG.id,
+      org: preview.preview.org,
+      configuration: preview.preview.configuration,
+      issueKey: 'LOCAL-1'
+    });
+
+    expect(outcome.outcome).toBe('skipped');
+    expect(outcome.reasonCode).toBe(INITIAL_SYNC_REASONS.ALREADY_CURRENT);
+    expect(updateRemoteIssue).not.toHaveBeenCalled();
+    expect(createRemoteIssue).not.toHaveBeenCalled();
+  });
+
+  test('an outdated mapped source updates its existing counterpart once and never creates', async () => {
+    searchIssues = [issue('LOCAL-1', { updated: '2026-01-02T00:00:00.000Z' })];
+    getFullIssue.mockImplementation(async key => issue(key, {
+      updated: '2026-01-02T00:00:00.000Z'
+    }));
+    getRemoteKey.mockImplementation(async key => (key === 'LOCAL-1' ? 'REMOTE-1' : null));
+    getLocalKey.mockImplementation(async key => (key === 'REMOTE-1' ? 'LOCAL-1' : null));
+    mockStore.set(
+      `${ORG.id}:last-synced-updated:LOCAL-1`,
+      '2026-01-01T00:00:00.000Z'
+    );
+
+    const preview = await previewReconciliationCandidates({ orgId: ORG.id });
+
+    expect(preview.preview.classification.mappedCurrent.issueKeys).toEqual([]);
+    expect(preview.preview.classification.mappedOutdated.issueKeys).toEqual(['LOCAL-1']);
+    expect(preview.preview.classification.reconciliationCandidates.issueKeys)
+      .toEqual(['LOCAL-1']);
+
+    const outcome = await processReconciliationCandidate({
+      orgId: ORG.id,
+      org: preview.preview.org,
+      configuration: preview.preview.configuration,
+      issueKey: 'LOCAL-1'
+    });
+
+    expect(outcome).toEqual({
+      issueKey: 'LOCAL-1',
+      outcome: 'updated',
+      reasonCode: INITIAL_SYNC_REASONS.UPDATED
+    });
+    expect(updateRemoteIssue).toHaveBeenCalledTimes(1);
+    expect(updateRemoteIssue.mock.calls[0][0]).toBe('LOCAL-1');
+    expect(updateRemoteIssue.mock.calls[0][1]).toBe('REMOTE-1');
+    expect(createRemoteIssue).not.toHaveBeenCalled();
   });
 
   test('job records, batches and queue payloads contain no issue content', async () => {

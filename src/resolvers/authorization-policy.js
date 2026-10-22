@@ -96,7 +96,14 @@ export const RESOLVER_POLICIES = Object.freeze({
   remapDeletedCounterpart: 'ADMIN_WRITE',
   replaceDeletedCounterpart: 'DESTRUCTIVE',
   endDeletedCounterpartSync: 'DESTRUCTIVE',
-  dismissDeletedCounterpart: 'ADMIN_WRITE'
+  dismissDeletedCounterpart: 'ADMIN_WRITE',
+
+  // Recurring local-to-remote source reconciliation (reconciliation.js)
+  getRecurringReconciliationStatus: 'ADMIN_READ',
+  saveRecurringReconciliationSettings: 'ADMIN_WRITE',
+  getRecurringReconciliationAttention: 'ADMIN_READ',
+  acknowledgeRecurringReconciliationAttention: 'ADMIN_WRITE',
+  resolveRecurringReconciliationAttention: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {

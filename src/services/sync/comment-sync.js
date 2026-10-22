@@ -2,7 +2,7 @@ import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
-import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
+import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText, isConnectorGeneratedComment } from '../../utils/adf.js';
 import { getRemoteKey, getOrganizationsWithTokens, getRemoteCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
 import { trackWebhookSync } from '../storage/stats.js';
@@ -79,8 +79,8 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     let failed = 0;
     
     for (const comment of localComments) {
-      if (comment.author?.accountType === 'app') {
-        console.log(`${LOG_EMOJI.INFO} Skipping app-authored comment ${comment.id} on ${localKey}`);
+      if (comment.author?.accountType === 'app' || isConnectorGeneratedComment(comment.body)) {
+        console.log(`${LOG_EMOJI.INFO} Skipping connector-generated comment ${comment.id} on ${localKey}`);
         skipped++;
         continue;
       }
@@ -233,8 +233,9 @@ export async function syncComment(event) {
     return;
   }
 
-  if (fullComment.author?.accountType === 'app') {
-    console.log(`${LOG_EMOJI.INFO} Skipping app-authored comment ${commentId} on ${issueKey}`);
+  if (fullComment.author?.accountType === 'app'
+      || isConnectorGeneratedComment(fullComment.body)) {
+    console.log(`${LOG_EMOJI.INFO} Skipping connector-generated comment ${commentId} on ${issueKey}`);
     await trackWebhookSync('comment', false, 'Comment authored by SyncApp (loop prevention)', null, issueKey, {
       reason: 'app-authored',
       commentId,

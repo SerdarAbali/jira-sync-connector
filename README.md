@@ -36,6 +36,7 @@ This application syncs issues from a source Jira organization to a target organi
 - Real-time webhook sync (1-3 seconds)
 - Hourly scheduled sync as backup (10-minute timeout)
 - Automatic retry for pending issue links
+- Opt-in recurring local-to-remote source reconciliation using the existing hourly recovery heartbeat (see `RECURRING_RECONCILIATION.md`)
 - Recreate deleted issues option (scans target org and recreates any issues that were deleted)
 - Attachment duplicate prevention (3-layer locking mechanism)
 - Exponential backoff with rate limit (429) handling

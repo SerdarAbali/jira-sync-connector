@@ -5,10 +5,11 @@ import * as kvsStore from '../storage/kvs.js';
 import {
   getRemoteKey,
   getLocalKey,
+  getLastSyncedLocalUpdated,
   isValidIssueKey
 } from '../storage/mappings.js';
 import { getFullIssue } from '../jira/local-client.js';
-import { createRemoteIssue } from './issue-sync.js';
+import { createRemoteIssue, updateRemoteIssue } from './issue-sync.js';
 import {
   getIssueCreateOperation,
   ISSUE_CREATE_STATES,
@@ -89,6 +90,11 @@ export const INITIAL_SYNC_REASONS = Object.freeze({
   CREATE_OUTCOME_UNKNOWN: 'CREATE_OUTCOME_UNKNOWN',
   CREATE_IN_PROGRESS: 'CREATE_IN_PROGRESS',
   CREATE_NOT_STARTED: 'CREATE_NOT_STARTED',
+  UPDATE_NOT_STARTED: 'UPDATE_NOT_STARTED',
+  UPDATE_SKIPPED: 'UPDATE_SKIPPED',
+  UPDATED: 'UPDATED',
+  ALREADY_MAPPED: 'ALREADY_MAPPED',
+  ALREADY_CURRENT: 'ALREADY_CURRENT',
   ISSUE_READ_FAILED: 'ISSUE_READ_FAILED',
   JOB_BATCH_MISSING: 'JOB_BATCH_MISSING',
   TARGET_CONFIGURATION_CHANGED: 'TARGET_CONFIGURATION_CHANGED',
@@ -332,7 +338,7 @@ async function searchScopedIssues(configuration) {
       const requestBody = {
         jql: buildProjectJql(projectKey, configuration),
         maxResults: INITIAL_SYNC_PAGE_SIZE,
-        fields: ['key', 'summary', 'issuetype', 'status', 'project', 'parent', 'subtasks']
+        fields: ['key', 'summary', 'issuetype', 'status', 'project', 'parent', 'subtasks', 'updated']
       };
       if (nextPageToken) {
         requestBody.nextPageToken = nextPageToken;
@@ -443,6 +449,24 @@ function validateIssueForCreate(issue, configuration) {
 }
 
 
+function validateIssueForUpdate(issue, configuration) {
+  const fields = issue?.fields;
+  const projectKey = fields?.project?.key;
+  if (typeof projectKey !== 'string' || !configuration.allowedProjects.includes(projectKey)) {
+    return INITIAL_SYNC_REASONS.PROJECT_OUT_OF_SCOPE;
+  }
+  if (typeof fields?.summary !== 'string' || fields.summary.trim().length === 0) {
+    return INITIAL_SYNC_REASONS.ISSUE_SUMMARY_MISSING;
+  }
+  if (fields.summary.length > MAX_SUMMARY_LENGTH) {
+    return INITIAL_SYNC_REASONS.ISSUE_SUMMARY_TOO_LONG;
+  }
+  if (!fields?.issuetype || typeof fields.issuetype.name !== 'string') {
+    return INITIAL_SYNC_REASONS.ISSUE_TYPE_MISSING;
+  }
+  return null;
+}
+
 async function existingMappingClassification(issueKey, orgId) {
   const remoteKey = await getRemoteKey(issueKey, orgId);
   if (!remoteKey) {
@@ -515,7 +539,12 @@ async function classifyBaseIssue(issue, orgId, configuration) {
 
   const mapped = await existingMappingClassification(issueKey, orgId);
   if (mapped) {
-    return { issueKey, ...mapped, parentKey: issue.fields?.parent?.key || null };
+    return {
+      issueKey,
+      ...mapped,
+      parentKey: issue.fields?.parent?.key || null,
+      localUpdated: typeof issue.fields?.updated === 'string' ? issue.fields.updated : null
+    };
   }
 
   const ledger = await createLedgerClassification(issueKey, orgId);
@@ -687,7 +716,70 @@ function groupClassification(records, configurationChecksum) {
   };
 }
 
-async function buildPreview(orgId) {
+function issueKeyGroup(issueKeys) {
+  return {
+    count: issueKeys.length,
+    issueKeys: [...issueKeys]
+  };
+}
+
+async function localUpdatedForMappedRecord(record) {
+  if (typeof record.localUpdated === 'string' && record.localUpdated) {
+    return record.localUpdated;
+  }
+  try {
+    const issue = await getFullIssue(record.issueKey);
+    return typeof issue?.fields?.updated === 'string' ? issue.fields.updated : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Split valid mappings into current and outdated source records. The last
+ * locally-synced timestamp is the same current-version marker used by the
+ * existing scheduled update path. A mapping with no marker is treated as
+ * outdated: reconciliation may update its existing counterpart, but it must
+ * never create a second remote issue.
+ */
+async function classifyMappedReconciliationState(records, orgId) {
+  const mappedCurrent = [];
+  const mappedOutdated = [];
+  const candidateKeys = [];
+
+  for (const record of records) {
+    if (record.category === INITIAL_SYNC_CATEGORIES.ELIGIBLE) {
+      candidateKeys.push(record.issueKey);
+      continue;
+    }
+    if (record.category !== INITIAL_SYNC_CATEGORIES.ALREADY_MAPPED) {
+      continue;
+    }
+
+    const localUpdated = await localUpdatedForMappedRecord(record);
+    let lastSynced = null;
+    try {
+      lastSynced = await getLastSyncedLocalUpdated(record.issueKey, orgId);
+    } catch {
+      lastSynced = null;
+    }
+    if (typeof localUpdated === 'string' && localUpdated
+        && lastSynced === localUpdated) {
+      mappedCurrent.push(record.issueKey);
+    } else {
+      mappedOutdated.push(record.issueKey);
+      candidateKeys.push(record.issueKey);
+    }
+  }
+
+  return {
+    candidateKeys,
+    mappedCurrent: issueKeyGroup(mappedCurrent),
+    mappedOutdated: issueKeyGroup(mappedOutdated)
+  };
+}
+
+async function buildPreview(orgId, { includeMappedReconciliation = false } = {}) {
   const loaded = await loadPreviewConfiguration(orgId);
   const issues = await searchScopedIssues(loaded.configuration);
   const records = [];
@@ -704,7 +796,7 @@ async function buildPreview(orgId) {
     version: 1
   });
 
-  return {
+  const preview = {
     org: loaded.org,
     configuration: loaded.configuration,
     configurationChecksum: loaded.configurationChecksum,
@@ -714,6 +806,23 @@ async function buildPreview(orgId) {
     totalIssues: ordered.length,
     generatedAt: new Date().toISOString()
   };
+
+  if (includeMappedReconciliation) {
+    const mappedState = await classifyMappedReconciliationState(ordered, orgId);
+    preview.classification = {
+      ...preview.classification,
+      mappedCurrent: mappedState.mappedCurrent,
+      mappedOutdated: mappedState.mappedOutdated,
+      reconciliationCandidates: issueKeyGroup(mappedState.candidateKeys)
+    };
+    preview.reconciliation = {
+      candidateKeys: mappedState.candidateKeys,
+      mappedCurrent: mappedState.mappedCurrent,
+      mappedOutdated: mappedState.mappedOutdated
+    };
+  }
+
+  return preview;
 }
 
 function publicPreview(preview) {
@@ -752,6 +861,77 @@ export async function previewInitialSync({ orgId } = {}) {
   }
 }
 
+
+/**
+ * Full preview data for the recurring reconciliation worker. Unlike the public
+ * preview response this includes the normalized configuration and organization
+ * needed to reuse the exact initial-sync classification and create path. It is
+ * server-side only and must never be returned by a resolver.
+ */
+export async function previewReconciliationCandidates({ orgId } = {}) {
+  try {
+    const preview = await buildPreview(normalizeOrgId(orgId), {
+      includeMappedReconciliation: true
+    });
+    return { success: true, preview };
+  } catch (error) {
+    return safeFailure(error);
+  }
+}
+
+/**
+ * Reuse one initial-sync candidate operation without creating a second
+ * initial-sync job, cursor or approval record. The reconciliation worker owns
+ * its own job state and scheduling.
+ */
+export async function processReconciliationCandidate({
+  orgId,
+  org,
+  configuration,
+  issueKey
+} = {}) {
+  let normalizedOrgId;
+  try {
+    normalizedOrgId = normalizeOrgId(orgId);
+  } catch (error) {
+    return {
+      issueKey,
+      outcome: 'failed',
+      reasonCode: INITIAL_SYNC_REASONS.INVALID_ORGANIZATION
+    };
+  }
+  if (!org || !configuration || !org.remoteApiToken) {
+    return {
+      issueKey,
+      outcome: 'failed',
+      reasonCode: INITIAL_SYNC_REASONS.CREDENTIAL_MISSING
+    };
+  }
+  try {
+    const pause = await getPilotPause();
+    if (pause.paused) {
+      return {
+        issueKey,
+        outcome: 'global_pause',
+        reasonCode: INITIAL_SYNC_REASONS.GLOBAL_PAUSE_ACTIVE
+      };
+    }
+    return await processSingleItem(
+      { orgId: normalizedOrgId, configuration },
+      org,
+      issueKey,
+      { reconcileMapped: true }
+    );
+  } catch (error) {
+    return {
+      issueKey,
+      outcome: 'failed',
+      reasonCode: error instanceof InitialSyncError
+        ? error.code
+        : INITIAL_SYNC_REASONS.INTERNAL_ERROR
+    };
+  }
+}
 
 /**
  * Acquire a per-organization processing lease using conditional KVS creation.
@@ -1268,14 +1448,119 @@ async function ledgerOutcome(issueKey, orgId) {
   return null;
 }
 
-async function processSingleItem(job, org, issueKey) {
+function safeUpdateStatus(value) {
+  return typeof value === 'string' && SAFE_REASON_PATTERN.test(value)
+    ? value
+    : INITIAL_SYNC_REASONS.UPDATE_SKIPPED;
+}
+
+async function processMappedItem(job, org, issueKey, remoteKey) {
+  if (!isValidIssueKey(remoteKey)) {
+    return {
+      issueKey,
+      outcome: 'failed',
+      reasonCode: INITIAL_SYNC_REASONS.INVALID_EXISTING_MAPPING
+    };
+  }
+
+  const mappedLocalKey = await getLocalKey(remoteKey, job.orgId);
+  if (!mappedLocalKey) {
+    return {
+      issueKey,
+      outcome: 'failed',
+      reasonCode: INITIAL_SYNC_REASONS.MAPPING_PAIR_INCOMPLETE
+    };
+  }
+  if (mappedLocalKey !== issueKey) {
+    return {
+      issueKey,
+      outcome: 'failed',
+      reasonCode: INITIAL_SYNC_REASONS.MAPPING_REVERSE_CONFLICT
+    };
+  }
+
+  const issue = await getFullIssue(issueKey);
+  if (!issue) {
+    return { issueKey, outcome: 'failed', reasonCode: INITIAL_SYNC_REASONS.ISSUE_READ_FAILED };
+  }
+
+  const validationReason = validateIssueForUpdate(issue, job.configuration);
+  if (validationReason) {
+    return { issueKey, outcome: 'skipped', reasonCode: validationReason };
+  }
+
+  const localUpdated = issue.fields?.updated;
+  const lastSynced = await getLastSyncedLocalUpdated(issueKey, job.orgId);
+  if (typeof localUpdated === 'string' && localUpdated
+      && lastSynced === localUpdated) {
+    return {
+      issueKey,
+      outcome: 'skipped',
+      reasonCode: INITIAL_SYNC_REASONS.ALREADY_CURRENT
+    };
+  }
+
+  let result;
+  try {
+    result = await updateRemoteIssue(
+      issueKey,
+      remoteKey,
+      issue,
+      org,
+      job.configuration.mappings,
+      null,
+      job.configuration.syncOptions
+    );
+  } catch {
+    result = null;
+  }
+
+  if (result?.skipped) {
+    return {
+      issueKey,
+      outcome: 'skipped',
+      reasonCode: safeUpdateStatus(result.status)
+    };
+  }
+  if (result) {
+    return {
+      issueKey,
+      outcome: 'updated',
+      reasonCode: INITIAL_SYNC_REASONS.UPDATED
+    };
+  }
+
+  const pause = await getPilotPause();
+  if (pause.paused) {
+    return {
+      issueKey,
+      outcome: 'global_pause',
+      reasonCode: INITIAL_SYNC_REASONS.GLOBAL_PAUSE_ACTIVE
+    };
+  }
+
+  return {
+    issueKey,
+    outcome: 'failed',
+    reasonCode: INITIAL_SYNC_REASONS.UPDATE_NOT_STARTED
+  };
+}
+
+async function processSingleItem(job, org, issueKey, { reconcileMapped = false } = {}) {
   if (!isValidIssueKey(issueKey)) {
     return { issueKey, outcome: 'failed', reasonCode: INITIAL_SYNC_REASONS.INVALID_ISSUE_KEY };
   }
 
   const currentRemoteKey = await getRemoteKey(issueKey, job.orgId);
   if (currentRemoteKey) {
-    return { issueKey, outcome: 'skipped', reasonCode: 'ALREADY_MAPPED' };
+    if (reconcileMapped) {
+      return processMappedItem(job, org, issueKey, currentRemoteKey);
+    }
+    return {
+      issueKey,
+      outcome: 'skipped',
+      reasonCode: INITIAL_SYNC_REASONS.ALREADY_MAPPED
+    };
   }
 
   const beforeLedger = await ledgerOutcome(issueKey, job.orgId);
@@ -1325,7 +1610,11 @@ async function processSingleItem(job, org, issueKey) {
 
   const mappedAfter = await getRemoteKey(issueKey, job.orgId);
   if (mappedAfter) {
-    return { issueKey, outcome: 'skipped', reasonCode: 'ALREADY_MAPPED' };
+    return {
+      issueKey,
+      outcome: 'skipped',
+      reasonCode: INITIAL_SYNC_REASONS.ALREADY_MAPPED
+    };
   }
 
   const afterLedger = await ledgerOutcome(issueKey, job.orgId);

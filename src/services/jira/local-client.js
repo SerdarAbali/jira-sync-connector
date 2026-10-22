@@ -55,6 +55,44 @@ export async function getFullComment(issueKey, commentId) {
   }
 }
 
+/**
+ * Add a connector-owned review comment to a local issue. The caller supplies an
+ * ADF body containing the reconciliation marker. notifyUsers is disabled so a
+ * recurring failure does not page watchers repeatedly.
+ */
+export async function addLocalIssueComment(issueKey, body) {
+  if (typeof issueKey !== 'string' || !issueKey || !body) {
+    return { success: false, code: 'INVALID_COMMENT' };
+  }
+  try {
+    const response = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}/comment?notifyUsers=false`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body })
+      }
+    );
+    if (!response?.ok) {
+      return {
+        success: false,
+        code: 'COMMENT_WRITE_FAILED',
+        status: Number.isInteger(response?.status) ? response.status : null
+      };
+    }
+    let commentId = null;
+    try {
+      const created = await response.json();
+      commentId = typeof created?.id === 'string' ? created.id : null;
+    } catch {
+      commentId = null;
+    }
+    return { success: true, commentId };
+  } catch {
+    return { success: false, code: 'COMMENT_WRITE_FAILED' };
+  }
+}
+
 export async function getOrgName() {
   try {
     const response = await api.asApp().requestJira(

@@ -53,7 +53,7 @@ import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consum
 import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { logAuditEntry } from '../storage/stats.js';
 import { LOG_EMOJI } from '../../constants.js';
-import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText, stripCounterpartNoticeFromADF } from '../../utils/adf.js';
+import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText, stripCounterpartNoticeFromADF, isConnectorGeneratedComment } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { syncRemoteAttachmentsToLocal, propagateAttachmentDeletion, getAttachmentSyncPolicy } from './attachment-sync.js';
 import { isValidAttachmentId, isValidIssueKey } from '../../utils/attachment-url.js';
@@ -1040,7 +1040,7 @@ async function handleRemoteCommentCreated(payload, context) {
     return;
   }
 
-  if (isSyncAppComment(comment.body)) {
+  if (isConnectorGeneratedComment(comment.body)) {
     console.log(`${LOG_EMOJI.INFO} Skipping comment from SyncApp to avoid loops`);
     return;
   }
@@ -1395,20 +1395,6 @@ function shouldSyncIncomingComments(syncOptions) {
     return syncOptions.syncComments;
   }
   return true;
-}
-
-function isSyncAppComment(body) {
-  if (!body) {
-    return false;
-  }
-
-  const text = typeof body === 'object'
-    ? extractTextFromADF(body)
-    : String(body);
-
-  const normalized = text.trimStart();
-  const syncedCommentPattern = /^\[Comment from [^\]]+ - User: [^\]]+]:/; // Matches SyncApp-authored prefix
-  return syncedCommentPattern.test(normalized);
 }
 
 function buildIncomingCommentKey(orgId, commentId) {

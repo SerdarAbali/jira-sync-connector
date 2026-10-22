@@ -7,6 +7,7 @@ import { definePilotResolvers } from './pilot.js';
 import { defineDiagnosticsResolvers } from './diagnostics.js';
 import { defineSetupResolvers } from './setup.js';
 import { defineRecoveryResolvers } from './recovery.js';
+import { defineReconciliationResolvers } from './reconciliation.js';
 import { createAuthorizedResolver } from './authorization.js';
 
 const resolver = createAuthorizedResolver();
@@ -22,6 +23,7 @@ definePilotResolvers(resolver);
 defineDiagnosticsResolvers(resolver);
 defineSetupResolvers(resolver);
 defineRecoveryResolvers(resolver);
+defineReconciliationResolvers(resolver);
 
 export const registeredResolverNames = resolver.getRegisteredNames();
 
