@@ -11,7 +11,7 @@ import {
   validateString
 } from '../utils/validation.js';
 
-const DEFAULT_SYNC_OPTIONS = {
+export const DEFAULT_SYNC_OPTIONS = Object.freeze({
   syncComments: true,
   syncAttachments: false,
   syncLinks: true,
@@ -19,7 +19,7 @@ const DEFAULT_SYNC_OPTIONS = {
   recreateDeletedIssues: false,
   propagateAttachmentDeletions: false,
   maxAttachmentSizeBytes: null
-};
+});
 const DEFAULT_USER_MAPPING_CONFIG = { autoMapUsers: true, fallbackUser: 'unassigned' };
 const WEBHOOK_SECRET_ENTROPY_BYTES = 32;
 const SYNC_OPTION_BOOLEAN_KEYS = [
@@ -33,7 +33,7 @@ const SYNC_OPTION_BOOLEAN_KEYS = [
   'forceCheckLinks'
 ];
 
-function normalizeSyncOptions(options = {}) {
+export function normalizeSyncOptions(options = {}) {
   const normalized = { ...DEFAULT_SYNC_OPTIONS };
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     return normalized;

@@ -46,6 +46,7 @@ export const RESOLVER_POLICIES = Object.freeze({
   getPilotStatus: 'ADMIN_READ',
   pausePilot: 'ADMIN_WRITE',
   resumePilot: 'ADMIN_WRITE',
+  setupWizard: 'ADMIN_WRITE',
 
   // Synchronization and bulk controls (sync.js)
   forceSyncIssue: 'DESTRUCTIVE',

@@ -47,6 +47,7 @@ const BLOCKED_FIELD_KEYS = new Set([
 ]);
 import api, { fetch, route } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
+import { recordAuthenticatedWebhookReceipt } from '../storage/webhook-receipt.js';
 import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLinkMapping, removeLinkMapping, getLocalCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consumePendingChildIssues } from '../storage/flags.js';
 import { recordRejectedFields } from '../storage/rejected-fields.js';
@@ -153,6 +154,10 @@ export async function processIncomingWebhook(payload, auth) {
     console.warn('Incoming webhook rejected: bidirectional sync not enabled');
     return { status: 403, body: { error: 'Incoming sync is not enabled' } };
   }
+
+  // Persist non-sensitive proof for the guided setup check. This is
+  // observability only and can never block webhook processing.
+  await recordAuthenticatedWebhookReceipt(orgId, webhookEvent);
 
   // Acknowledge and discard writes while paused. The event is not queued or
   // replayed later, so resume cannot trigger backfill or recreation.

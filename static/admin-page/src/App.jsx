@@ -16,6 +16,7 @@ import '@atlaskit/css-reset';
 import ErrorBoundary from './components/ErrorBoundary';
 import Diagnostics from './components/Diagnostics';
 import InitialSyncPanel from './components/InitialSyncPanel';
+import GuidedSetupWizard from './components/GuidedSetupWizard';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -94,6 +95,7 @@ const formatDuration = (ms) => {
 const App = () => {
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState(null);
+  const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(true);
   const [organizationsLoadState, setOrganizationsLoadState] = useState({
     status: 'loading',
@@ -481,7 +483,10 @@ const App = () => {
         await loadOrganizations();
         setShowOrgModal(false);
         setEditingOrg(null);
-        if (!editingOrg) setSelectedOrgId(result.organization.id);
+        if (!editingOrg) {
+          setSelectedOrgId(result.organization.id);
+          setActiveTab(2);
+        }
       } else {
         showMessage(`Error: ${result.error}`, 'error');
       }
@@ -1144,6 +1149,14 @@ const App = () => {
         <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'center' }}>
           <Button
             appearance="subtle"
+            onClick={() => setActiveTab(2)}
+            isDisabled={!selectedOrgId}
+            style={lozengeButtonStyle}
+          >
+            Guided Setup
+          </Button>
+          <Button
+            appearance="subtle"
             onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
             style={lozengeButtonStyle}
           >
@@ -1246,7 +1259,7 @@ const App = () => {
 
             {/* Tabs */}
             <div style={{ padding: `0 ${contentHorizontalPadding}` }}>
-              <Tabs id="org-tabs">
+              <Tabs id="org-tabs" selected={activeTab} onChange={setActiveTab}>
                 <TabList
                   style={{
                     padding: `0 0 ${token('space.100', '8px')} 0`,
@@ -1257,6 +1270,7 @@ const App = () => {
                 >
                   <Tab>Sync Activity</Tab>
                   <Tab>Configuration</Tab>
+                  <Tab>Guided Setup</Tab>
                   <Tab>Mappings</Tab>
                   <Tab>Diagnostics</Tab>
                   <Tab>Security & Info</Tab>
@@ -1314,6 +1328,19 @@ const App = () => {
                     importingSettings={importingSettings}
                     onRefreshOrganizations={loadOrganizations}
                     notify={showMessage}
+                  />
+                </div>
+              </TabPanel>
+
+              {/* Guided Setup Tab */}
+              <TabPanel>
+                <div style={tabPanelContainerStyle}>
+                  <GuidedSetupWizard
+                    selectedOrg={selectedOrg}
+                    onRefreshOrganizations={loadOrganizations}
+                    onOpenAdministration={() => setActiveTab(1)}
+                    onOpenMappings={() => setActiveTab(3)}
+                    showMessage={showMessage}
                   />
                 </div>
               </TabPanel>
@@ -1519,7 +1546,6 @@ const App = () => {
                           <h3 style={{ marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Roadmap</h3>
                           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '12px' }}>
                             {[
-                              'Speed Setup Wizard',
                               'Advanced Field Transformation Rules',
                               'Advanced Conflict Resolution',
                               'Sync History & Audit Log Export'

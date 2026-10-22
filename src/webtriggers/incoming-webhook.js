@@ -9,7 +9,7 @@ const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const MAX_USER_PATH_LENGTH = 1024;
 const JSON_CONTENT_TYPE = /^application\/json(?:\s*;|$)/i;
 
-const KNOWN_WEBHOOK_EVENTS = new Set([
+export const KNOWN_WEBHOOK_EVENTS = new Set([
   'jira:issue_created',
   'jira:issue_updated',
   'jira:issue_deleted',
