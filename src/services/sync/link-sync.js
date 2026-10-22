@@ -7,6 +7,62 @@ import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappi
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 import { assertPilotWritesAllowed } from './pilot-pause.js';
 
+function buildRemoteLinkLookupUrl(config, remoteIssueKey) {
+  return `${config.remoteUrl}/rest/api/3/issue/${remoteIssueKey}?fields=issuelinks`;
+}
+
+function remoteAuthHeader(config) {
+  const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
+  return `Basic ${auth}`;
+}
+
+/**
+ * Fetch the links currently present on the remote issue. A failed read is
+ * reported explicitly so callers can avoid treating "unknown" as "absent".
+ */
+export async function fetchRemoteIssueLinks(config, remoteIssueKey) {
+  try {
+    const response = await fetch(
+      buildRemoteLinkLookupUrl(config, remoteIssueKey),
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': remoteAuthHeader(config),
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      return { ok: false, status: response.status, links: [] };
+    }
+
+    const remoteIssue = await response.json();
+    return { ok: true, links: remoteIssue.fields?.issuelinks || [] };
+  } catch (error) {
+    return { ok: false, error: safeErrorSummary(error.message), links: [] };
+  }
+}
+
+/**
+ * Match a remote link to the link that would be created for a local link.
+ * Direction is part of the identity: an opposite-direction link must not be
+ * mistaken for an existing copy of the desired link.
+ */
+export function remoteLinkMatches(remoteLink, remoteLinkedKey, linkTypeName, direction) {
+  if (!remoteLink || remoteLink.type?.name !== linkTypeName) {
+    return false;
+  }
+
+  const counterpart = direction === 'outward'
+    ? remoteLink.outwardIssue
+    : direction === 'inward'
+      ? remoteLink.inwardIssue
+      : null;
+
+  return counterpart?.key === remoteLinkedKey;
+}
+
 /**
  * Create a link between two issues on the remote Jira instance
  */
@@ -70,27 +126,16 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
 
   console.log(`${LOG_EMOJI.LINK} Found ${issue.fields.issuelinks.length} issue link(s) on ${localIssueKey}`);
 
-  // If forceCheck, get existing links on remote to verify they actually exist
-  let remoteLinks = [];
+  // If forceCheck, get existing links on remote to verify they actually exist.
+  // This runs even when no local mapping exists: the pending-link path may
+  // have created the remote link before its mapping was recorded.
+  let remoteLinkLookup = { ok: false, links: [] };
   if (forceCheck) {
-    try {
-      const remoteIssueResponse = await fetch(
-        `${config.remoteUrl}/rest/api/3/issue/${remoteIssueKey}?fields=issuelinks`,
-        {
-          method: 'GET',
-          headers: {
-            'Authorization': `Basic ${auth}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      if (remoteIssueResponse.ok) {
-        const remoteIssue = await remoteIssueResponse.json();
-        remoteLinks = remoteIssue.fields?.issuelinks || [];
-        console.log(`${LOG_EMOJI.INFO} Remote issue ${remoteIssueKey} has ${remoteLinks.length} existing link(s)`);
-      }
-    } catch (e) {
-      console.log(`${LOG_EMOJI.WARNING} Could not fetch remote links: ${e.message}`);
+    remoteLinkLookup = await fetchRemoteIssueLinks(config, remoteIssueKey);
+    if (remoteLinkLookup.ok) {
+      console.log(`${LOG_EMOJI.INFO} Remote issue ${remoteIssueKey} has ${remoteLinkLookup.links.length} existing link(s)`);
+    } else {
+      console.log(`${LOG_EMOJI.WARNING} Could not fetch remote links${remoteLinkLookup.status ? ` (HTTP ${remoteLinkLookup.status})` : ''}`);
     }
   }
 
@@ -143,18 +188,25 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
         continue;
       }
 
-      // If forceCheck, verify the link actually exists on remote
-      if (forceCheck && existingMapping) {
-        const linkExists = remoteLinks.some(rl => {
-          const rlLinkedKey = rl.outwardIssue?.key || rl.inwardIssue?.key;
-          return rl.type.name === linkTypeName && rlLinkedKey === remoteLinkedKey;
-        });
-        
+      // If forceCheck, verify the link actually exists on remote. Do this for
+      // mapped and unmapped links: an earlier pending-link write may have
+      // succeeded without persisting its mapping.
+      if (forceCheck) {
+        const linkExists = remoteLinkLookup.ok && remoteLinkLookup.links.some(rl =>
+          remoteLinkMatches(rl, remoteLinkedKey, linkTypeName, direction)
+        );
+
         if (linkExists) {
           console.log(`${LOG_EMOJI.SKIP} Link ${link.id} verified on remote`);
+          if (!existingMapping) {
+            await storeLinkMapping(link.id, 'synced', orgId);
+          }
+          await removePendingLink(localIssueKey, link.id);
           result.skipped++;
           continue;
-        } else {
+        }
+
+        if (existingMapping) {
           console.log(`${LOG_EMOJI.WARNING} Link ${link.id} mapping exists but not found on remote - recreating`);
         }
       }

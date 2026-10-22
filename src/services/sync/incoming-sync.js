@@ -261,6 +261,26 @@ export async function processIncomingWebhook(payload, auth) {
     }
     return { status: 200, body: responseBody };
   } catch (error) {
+    if (error?.code === 'COMMENT_RECONCILIATION_REQUIRED') {
+      // The comment may have been created. Do not release the replay marker
+      // for a blind retry; a content-free reconciliation record is already
+      // persisted (or persistence itself failed, which is also unsafe to retry).
+      if (markerKey && error.persisted !== false) {
+        try {
+          await markWebhookCompleted(markerKey, markerToken);
+        } catch {
+          // Leave the processing marker to expire; never release it here.
+        }
+      }
+      return {
+        status: error.persisted === false ? 503 : 202,
+        body: {
+          message: 'Comment reconciliation required',
+          code: 'COMMENT_RECONCILIATION_REQUIRED'
+        }
+      };
+    }
+
     if (markerKey) {
       await releaseWebhookEvent(markerKey, markerToken);
     }
@@ -771,6 +791,129 @@ async function handleRemoteIssueDeleted(remoteIssue, context) {
   });
 }
 
+const PARENT_RELATED_COMMENT_REJECTION_STATUSES = new Set([400, 404, 422]);
+const AMBIGUOUS_COMMENT_STATUSES = new Set([408, 425, 429]);
+
+function createAmbiguousCommentWriteError(status = null, reason = 'ambiguous-comment-write') {
+  const error = new Error('Ambiguous comment write outcome');
+  error.code = 'COMMENT_WRITE_AMBIGUOUS';
+  error.status = Number.isFinite(Number(status)) ? Number(status) : null;
+  error.reason = reason;
+  return error;
+}
+
+function createRejectedCommentWriteError(status) {
+  const error = new Error(`Failed to sync incoming comment: ${formatHttpFailure(status)}`);
+  error.code = 'COMMENT_WRITE_REJECTED';
+  error.status = Number.isFinite(Number(status)) ? Number(status) : null;
+  return error;
+}
+
+function createCommentReconciliationError(persisted = true) {
+  const error = new Error('Incoming comment requires reconciliation');
+  error.code = 'COMMENT_RECONCILIATION_REQUIRED';
+  error.persisted = persisted;
+  return error;
+}
+
+function isAmbiguousCommentStatus(status) {
+  const code = Number(status);
+  return !Number.isFinite(code)
+    || code < 400
+    || code >= 500
+    || AMBIGUOUS_COMMENT_STATUSES.has(code);
+}
+
+function requireCommentResponse(response) {
+  if (!response || typeof response.ok !== 'boolean') {
+    throw createAmbiguousCommentWriteError(null, 'malformed-comment-response');
+  }
+  return response;
+}
+
+async function readCommentResponseBody(response) {
+  try {
+    if (response && typeof response.json === 'function') {
+      return await response.json();
+    }
+    if (response && typeof response.text === 'function') {
+      const text = await response.text();
+      if (!text) {
+        return null;
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { text };
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isParentRelatedCommentRejection(status, body) {
+  if (!PARENT_RELATED_COMMENT_REJECTION_STATUSES.has(Number(status)) || !body || typeof body !== 'object') {
+    return false;
+  }
+
+  if (body.errors && typeof body.errors === 'object') {
+    const parentField = Object.keys(body.errors).some(key =>
+      String(key).toLowerCase().includes('parent')
+    );
+    if (parentField) {
+      return true;
+    }
+  }
+
+  const messages = [];
+  if (Array.isArray(body.errorMessages)) {
+    messages.push(...body.errorMessages);
+  }
+  if (typeof body.message === 'string') {
+    messages.push(body.message);
+  }
+  if (typeof body.error === 'string') {
+    messages.push(body.error);
+  }
+  if (body.error && typeof body.error === 'object' && typeof body.error.message === 'string') {
+    messages.push(body.error.message);
+  }
+
+  return messages.some(message => /\bparent\b/i.test(String(message)));
+}
+
+async function persistCommentReconciliation({
+  context,
+  localKey,
+  remoteIssueKey,
+  comment,
+  parentLocalId,
+  status,
+  reason
+}) {
+  const key = buildIncomingCommentReconciliationKey(context.orgId, comment.id);
+  const record = {
+    state: 'reconciliation_required',
+    orgId: context.orgId || null,
+    localIssueKey: localKey,
+    remoteIssueKey,
+    remoteCommentId: String(comment.id),
+    parentLocalId: parentLocalId || null,
+    failedStatus: Number.isFinite(Number(status)) ? Number(status) : null,
+    reason,
+    createdAt: new Date().toISOString()
+  };
+
+  try {
+    await kvsStore.set(key, record);
+    return key;
+  } catch {
+    throw createCommentReconciliationError(false);
+  }
+}
+
 async function handleRemoteCommentCreated(payload, context) {
   if (!shouldSyncIncomingComments(context.syncOptions)) {
     console.log(`⏭️ Incoming comments disabled for ${context.orgId || 'organization'}`);
@@ -808,6 +951,13 @@ async function handleRemoteCommentCreated(payload, context) {
     return;
   }
 
+  const reconciliationKey = buildIncomingCommentReconciliationKey(context.orgId, comment.id);
+  const reconciliationRequired = await kvsStore.get(reconciliationKey);
+  if (reconciliationRequired) {
+    console.warn(`${LOG_EMOJI.WARNING} Comment ${comment.id} requires reconciliation; not replaying ambiguous write`);
+    return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
+  }
+
   const authorName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
   let commentText = '';
   if (comment.body && typeof comment.body === 'object') {
@@ -828,14 +978,55 @@ async function handleRemoteCommentCreated(payload, context) {
 
   await markSyncing(localKey);
   try {
-    let response = await createLocalComment(localKey, body, parentContext.localParentId);
-
-    if (!response.ok) {
-      throw new Error(`Failed to sync incoming comment: ${formatHttpFailure(response.status)}`);
+    let response;
+    try {
+      response = await createLocalComment(localKey, body, parentContext.localParentId);
+    } catch (error) {
+      if (error?.code === 'COMMENT_WRITE_AMBIGUOUS') {
+        await persistCommentReconciliation({
+          context,
+          localKey,
+          remoteIssueKey,
+          comment,
+          parentLocalId: parentContext.localParentId,
+          status: error.status,
+          reason: error.reason || 'ambiguous-comment-write'
+        });
+        throw createCommentReconciliationError();
+      }
+      throw error;
     }
 
-    const createdComment = await response.json();
-    const localCommentId = createdComment?.id;
+    let createdComment;
+    try {
+      createdComment = await response.json();
+    } catch {
+      await persistCommentReconciliation({
+        context,
+        localKey,
+        remoteIssueKey,
+        comment,
+        parentLocalId: parentContext.localParentId,
+        status: response.status,
+        reason: 'malformed-comment-create-response'
+      });
+      throw createCommentReconciliationError();
+    }
+
+    if (!createdComment || typeof createdComment !== 'object' || createdComment.id === undefined || createdComment.id === null) {
+      await persistCommentReconciliation({
+        context,
+        localKey,
+        remoteIssueKey,
+        comment,
+        parentLocalId: parentContext.localParentId,
+        status: response.status,
+        reason: 'malformed-comment-create-response'
+      });
+      throw createCommentReconciliationError();
+    }
+
+    const localCommentId = createdComment.id;
     const parentMarkers = {
       parentId: createdComment?.parentId || null,
       jsdParentId: createdComment?.jsdParentId || null,
@@ -869,25 +1060,56 @@ async function handleRemoteCommentCreated(payload, context) {
 
 async function createLocalComment(localIssueKey, body, parentLocalId = null) {
   if (!parentLocalId) {
-    return await postLocalComment(localIssueKey, { body });
+    return await postCommentOnce(localIssueKey, { body }, 'top-level');
   }
 
-  const initialResponse = await postLocalComment(localIssueKey, { body, parent: { id: parentLocalId } });
+  const initialResponse = requireCommentResponse(
+    await postLocalComment(localIssueKey, { body, parent: { id: parentLocalId } })
+  );
   if (initialResponse.ok) {
     return initialResponse;
   }
 
-  console.log(`${LOG_EMOJI.WARNING} Failed to create threaded reply on ${localIssueKey}. Retrying as top-level comment.`);
-  return await postLocalComment(localIssueKey, { body });
+  const initialBody = await readCommentResponseBody(initialResponse);
+  if (isParentRelatedCommentRejection(initialResponse.status, initialBody)) {
+    console.log(`${LOG_EMOJI.WARNING} Parent-specific comment was rejected on ${localIssueKey}. Retrying once as top-level comment.`);
+    return await postCommentOnce(localIssueKey, { body }, 'parent-fallback');
+  }
+
+  if (isAmbiguousCommentStatus(initialResponse.status)) {
+    throw createAmbiguousCommentWriteError(initialResponse.status, 'parent-specific-comment-ambiguous');
+  }
+
+  throw createRejectedCommentWriteError(initialResponse.status);
+}
+
+async function postCommentOnce(localIssueKey, payload, reason) {
+  const response = requireCommentResponse(await postLocalComment(localIssueKey, payload));
+  if (response.ok) {
+    return response;
+  }
+
+  if (isAmbiguousCommentStatus(response.status)) {
+    throw createAmbiguousCommentWriteError(response.status, reason);
+  }
+
+  throw createRejectedCommentWriteError(response.status);
 }
 
 async function postLocalComment(localIssueKey, payload) {
   await assertPilotWritesAllowed('comment_create_local');
-  return await api.asApp().requestJira(route`/rest/api/3/issue/${localIssueKey}/comment`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  try {
+    return await api.asApp().requestJira(route`/rest/api/3/issue/${localIssueKey}/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    if (error?.code === 'PILOT_PAUSED') {
+      throw error;
+    }
+    throw createAmbiguousCommentWriteError(null, 'comment-write-exception');
+  }
 }
 
 async function resolveLocalParentForIncomingComment(comment, remoteIssueKey, context) {
@@ -1085,6 +1307,11 @@ function isSyncAppComment(body) {
 function buildIncomingCommentKey(orgId, commentId) {
   const prefix = orgId || 'legacy';
   return `${prefix}:incoming-comment:${commentId}`;
+}
+
+function buildIncomingCommentReconciliationKey(orgId, commentId) {
+  const prefix = orgId || 'legacy';
+  return `${prefix}:incoming-comment-reconciliation:${commentId}`;
 }
 
 async function buildCreatePayload(remoteIssue, targetProjectKey, context) {

@@ -62,6 +62,60 @@ export async function getPendingLinks(issueKey) {
 }
 
 /**
+ * List the issue keys that currently own a pending-link index entry.
+ * The index is written by storePendingLink; querying the prefix avoids
+ * maintaining a second global index that can drift out of sync.
+ */
+export async function listPendingLinkIssueKeys(limit = 500) {
+  const entries = await kvsStore.queryByPrefix('pending-link-idx:', limit);
+  const issueKeys = [];
+  const seen = new Set();
+
+  for (const entry of entries) {
+    if (!entry || typeof entry.key !== 'string' || !entry.key.startsWith('pending-link-idx:')) {
+      continue;
+    }
+
+    const issueKey = entry.key.slice('pending-link-idx:'.length);
+    if (!issueKey || seen.has(issueKey)) {
+      continue;
+    }
+
+    seen.add(issueKey);
+    issueKeys.push(issueKey);
+  }
+
+  return issueKeys;
+}
+
+/**
+ * Increment a pending link's attempt counter and persist any reconciliation
+ * metadata supplied by the caller. Returns null when the pending entry no
+ * longer exists (for example, if it was removed concurrently).
+ */
+export async function recordPendingLinkAttempt(issueKey, linkId, updates = {}) {
+  const pendingLinks = await kvsStore.get(`pending-links:${issueKey}`) || [];
+  const existingIndex = pendingLinks.findIndex(link => link.linkId === linkId);
+
+  if (existingIndex < 0) {
+    return null;
+  }
+
+  const updated = {
+    ...pendingLinks[existingIndex],
+    ...updates,
+    attempts: (Number(pendingLinks[existingIndex].attempts) || 0) + 1,
+    lastAttempt: new Date().toISOString()
+  };
+
+  pendingLinks[existingIndex] = updated;
+  await kvsStore.set(`pending-links:${issueKey}`, pendingLinks);
+  await kvsStore.set(`pending-link-idx:${issueKey}`, pendingLinks);
+
+  return updated;
+}
+
+/**
  * Find all pending links that reference a specific target issue
  * Uses kvs.query() to find all pending link keys
  */

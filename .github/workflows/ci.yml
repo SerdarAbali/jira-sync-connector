@@ -41,7 +41,7 @@ jobs:
 
       - name: Install admin UI dependencies
         working-directory: static/admin-page
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       - name: Audit admin production dependencies
         working-directory: static/admin-page

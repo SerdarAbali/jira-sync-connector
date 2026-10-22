@@ -4,12 +4,12 @@ import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS, MAX_ERRO
 import { safeErrorSummary, boundHistory } from '../../utils/redaction.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { assertPilotWritesAllowed } from '../sync/pilot-pause.js';
-import { sleep } from '../../utils/retry.js';
+import { sleep, executeWriteOnce } from '../../utils/retry.js';
 import { getRemoteKey, getLocalKey, storeLinkMapping, getOrganizationsWithTokens, getLastSyncedLocalUpdated } from '../storage/mappings.js';
-import { removePendingLink, getPendingLinks, removeIssueFromPendingLinksIndex } from '../storage/flags.js';
+import { removePendingLink, getPendingLinks, listPendingLinkIssueKeys, recordPendingLinkAttempt } from '../storage/flags.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { updateRemoteIssue } from '../sync/issue-sync.js';
-import { syncIssueLinks } from '../sync/link-sync.js';
+import { syncIssueLinks, remoteLinkMatches, fetchRemoteIssueLinks } from '../sync/link-sync.js';
 
 async function checkIfIssueNeedsSync(issueKey, issue, config, mappings, syncOptions = {}, orgId = null) {
   // Check if issue was created by remote sync
@@ -69,7 +69,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
   let totalStillPending = 0;
 
   try {
-    const pendingLinksIndex = await kvsStore.get('pending-links-index') || [];
+    const pendingLinksIndex = await listPendingLinkIssueKeys();
 
     if (pendingLinksIndex.length === 0) {
       console.log(`No pending links to retry`);
@@ -78,22 +78,20 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 
     console.log(`📋 Found ${pendingLinksIndex.length} issue(s) with pending links`);
 
-    // Get orgId for this config
-    const orgId = config.id || null;
+    // Get orgId for this config. Legacy organizations use the null scope.
+    const orgId = config.id && config.id !== 'legacy' ? config.id : null;
 
     // Process each issue's pending links
     for (const localIssueKey of pendingLinksIndex) {
       const pendingLinks = await getPendingLinks(localIssueKey);
-      
+
       if (!pendingLinks || pendingLinks.length === 0) {
-        // Clean up index if no links found
-        await removeIssueFromPendingLinksIndex(localIssueKey);
         continue;
       }
 
       // Filter pending links for this org only
       const orgPendingLinks = pendingLinks.filter(pl => pl.orgId === orgId || (!pl.orgId && !orgId));
-      
+
       if (orgPendingLinks.length === 0) {
         continue;
       }
@@ -107,29 +105,51 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 
       console.log(`🔗 Retrying ${orgPendingLinks.length} pending link(s) for ${localIssueKey} (org: ${orgId || 'organization'})`);
 
+      // Read the remote links once per source issue. This lets a retry
+      // recognize a link created by an earlier attempt whose response was
+      // lost, instead of blindly issuing a duplicate POST.
+      const remoteLinkLookup = await fetchRemoteIssueLinks(config, remoteIssueKey);
+
       const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
 
       for (const pendingLink of orgPendingLinks) {
         totalRetried++;
 
-        // Check if linked issue is now synced (use same orgId)
         const remoteLinkedKey = await getRemoteKey(pendingLink.linkedIssueKey, orgId);
+
+        const recordFailure = async (updates, reason, message) => {
+          const updated = await recordPendingLinkAttempt(localIssueKey, pendingLink.linkId, updates);
+          totalFailed++;
+          const dropped = !updated || updated.attempts >= MAX_PENDING_LINK_ATTEMPTS;
+          if (dropped) {
+            await removePendingLink(localIssueKey, pendingLink.linkId);
+            if (stats) {
+              recordEvent(stats, {
+                type: 'link-dropped',
+                issueKey: localIssueKey,
+                linkedIssueKey: pendingLink.linkedIssueKey,
+                reason: 'max-attempts'
+              });
+            }
+          } else {
+            totalStillPending++;
+          }
+          if (stats) {
+            recordEvent(stats, {
+              type: 'link-error',
+              issueKey: localIssueKey,
+              linkedIssueKey: pendingLink.linkedIssueKey,
+              reason,
+              message
+            });
+          }
+          return dropped;
+        };
 
         if (!remoteLinkedKey) {
           console.log(`⏭️ ${pendingLink.linkedIssueKey} still not synced - keeping as pending`);
-          totalStillPending++;
-
-          if (stats) {
-            recordEvent(stats, {
-              type: 'link-pending',
-              issueKey: localIssueKey,
-              linkedIssueKey: pendingLink.linkedIssueKey,
-              direction: pendingLink.direction
-            });
-          }
-
-          // Update attempts counter (remove after MAX_PENDING_LINK_ATTEMPTS to prevent infinite storage)
-          if (pendingLink.attempts >= MAX_PENDING_LINK_ATTEMPTS) {
+          const updated = await recordPendingLinkAttempt(localIssueKey, pendingLink.linkId, {});
+          if (updated && updated.attempts >= MAX_PENDING_LINK_ATTEMPTS) {
             console.log(`❌ Removing ${pendingLink.linkedIssueKey} from pending - max attempts reached`);
             await removePendingLink(localIssueKey, pendingLink.linkId);
             totalFailed++;
@@ -141,7 +161,54 @@ export async function retryAllPendingLinks(config, mappings, stats) {
                 reason: 'max-attempts'
               });
             }
+          } else {
+            totalStillPending++;
+            if (stats) {
+              recordEvent(stats, {
+                type: 'link-pending',
+                issueKey: localIssueKey,
+                linkedIssueKey: pendingLink.linkedIssueKey,
+                direction: pendingLink.direction
+              });
+            }
           }
+          continue;
+        }
+
+        // The remote link may already exist because an earlier attempt
+        // succeeded but its response/mapping was lost.
+        const linkAlreadyExists = remoteLinkLookup.ok && remoteLinkLookup.links.some(link =>
+          remoteLinkMatches(link, remoteLinkedKey, pendingLink.linkTypeName, pendingLink.direction)
+        );
+
+        if (linkAlreadyExists) {
+          console.log(`${LOG_EMOJI.SKIP} Pending link already exists remotely: ${pendingLink.linkedIssueKey}`);
+          await storeLinkMapping(pendingLink.linkId, 'synced', orgId);
+          await removePendingLink(localIssueKey, pendingLink.linkId);
+          totalSuccess++;
+          if (stats) {
+            recordEvent(stats, {
+              type: 'link-synced',
+              issueKey: localIssueKey,
+              linkedIssueKey: pendingLink.linkedIssueKey,
+              direction: pendingLink.direction,
+              reason: 'verified-existing'
+            });
+          }
+          continue;
+        }
+
+        // Once an attempt is ambiguous, do not issue another non-idempotent
+        // POST until the link has been reconciled (or the entry is dropped at
+        // the attempt limit). A successful remote read above already recovers
+        // the common "write succeeded, response lost" case.
+        if (pendingLink.reconciliationRequired) {
+          console.warn(`${LOG_EMOJI.WARNING} Pending link requires reconciliation; not repeating ambiguous POST`);
+          await recordFailure(
+            { reconciliationRequired: true },
+            'reconciliation-required',
+            'ambiguous write outcome requires reconciliation'
+          );
           continue;
         }
 
@@ -164,16 +231,19 @@ export async function retryAllPendingLinks(config, mappings, stats) {
           }
 
           await assertPilotWritesAllowed('link_create_remote');
-          const response = await fetch(
-            `${config.remoteUrl}/rest/api/3/issueLink`,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify(linkPayload)
-            }
+          const response = await executeWriteOnce(
+            async () => fetch(
+              `${config.remoteUrl}/rest/api/3/issueLink`,
+              {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Basic ${auth}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(linkPayload)
+              }
+            ),
+            `Create pending link ${pendingLink.linkTypeName} for ${localIssueKey}`
           );
 
           if (response.ok || response.status === 201) {
@@ -192,29 +262,47 @@ export async function retryAllPendingLinks(config, mappings, stats) {
           } else {
             const safeFailure = formatHttpFailure(response.status);
             console.error(`${LOG_EMOJI.ERROR} Failed to create pending link`);
-            totalFailed++;
-            if (stats) {
-              recordEvent(stats, {
-                type: 'link-error',
-                issueKey: localIssueKey,
-                linkedIssueKey: pendingLink.linkedIssueKey,
-                message: safeFailure
-              });
-            }
-            // Keep as pending for next retry
+            const status = Number(response.status);
+            const ambiguous = !Number.isFinite(status)
+              || status >= 500
+              || status === 408
+              || status === 425
+              || status === 429;
+            await recordFailure(
+              ambiguous
+                ? { reconciliationRequired: true, lastFailure: safeFailure }
+                : { lastFailure: safeFailure },
+              ambiguous ? 'ambiguous-write-outcome' : 'link-write-rejected',
+              safeFailure
+            );
           }
         } catch (error) {
           console.error(`${LOG_EMOJI.ERROR} Error creating pending link:`, error);
-          totalFailed++;
-          if (stats) {
-            recordEvent(stats, {
-              type: 'link-error',
-              issueKey: localIssueKey,
-              linkedIssueKey: pendingLink.linkedIssueKey,
-              message: error.message
-            });
+
+          if (error?.code === 'PILOT_PAUSED') {
+            totalStillPending++;
+            if (stats) {
+              recordEvent(stats, {
+                type: 'link-pending',
+                issueKey: localIssueKey,
+                linkedIssueKey: pendingLink.linkedIssueKey,
+                direction: pendingLink.direction,
+                reason: 'pilot-paused'
+              });
+            }
+          } else if (error?.code === 'AMBIGUOUS_WRITE_OUTCOME' || error?.code === 'RATE_LIMITED_WRITE_OUTCOME') {
+            await recordFailure(
+              { reconciliationRequired: true, lastFailure: 'ambiguous-write-outcome' },
+              'ambiguous-write-outcome',
+              'ambiguous write outcome requires reconciliation'
+            );
+          } else {
+            await recordFailure(
+              { lastFailure: 'transient-retry-failure' },
+              'transient-retry-failure',
+              'pending link retry failed'
+            );
           }
-          // Keep as pending for next retry
         }
 
         // Small delay to avoid rate limiting
@@ -330,6 +418,7 @@ export async function performScheduledSync() {
       try {
         // Build config object compatible with sync functions
         const config = {
+          id: org.id || null,
           remoteUrl: org.remoteUrl,
           remoteEmail: org.remoteEmail,
           remoteApiToken: org.remoteApiToken,

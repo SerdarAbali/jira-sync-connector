@@ -103,12 +103,15 @@ app:
 permissions:
   scopes:
     - storage:app
+    # Temporary broad scopes retained for the corporate pilot. read:jira-work
+    # is needed by issue triggers, write:jira-work still covers issue deletion
+    # and other broad writes, and read:jira-user still supplies account data.
+    # A granular migration is a separate, live-tested change.
     - read:jira-work
     - write:jira-work
     - read:jira-user
     - read:comment:jira
     - write:comment:jira
-    - read:issue-link:jira
     - write:issue-link:jira
     - read:issue-meta:jira
     - read:project:jira

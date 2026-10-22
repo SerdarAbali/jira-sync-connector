@@ -4,7 +4,7 @@ import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.j
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
-import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated } from '../storage/mappings.js';
+import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated, storeLinkMapping } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
 import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
 import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../jira/local-client.js';
@@ -248,7 +248,7 @@ async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) 
  * Process pending links that were waiting for this issue to be synced
  * Called after an issue is successfully created on remote
  */
-async function processPendingLinksForNewlySyncedIssue(localIssueKey, remoteIssueKey, org, orgId) {
+export async function processPendingLinksForNewlySyncedIssue(localIssueKey, remoteIssueKey, org, orgId) {
   try {
     // Find any pending links that were waiting for this issue
     const pendingLinks = await findPendingLinksToIssue(localIssueKey);
@@ -285,7 +285,10 @@ async function processPendingLinksForNewlySyncedIssue(localIssueKey, remoteIssue
         
         if (result.success) {
           console.log(`${LOG_EMOJI.SUCCESS} Created pending link: ${pending.sourceIssueKey} → ${localIssueKey}`);
-          // Remove from pending
+          // Persist the mapping before clearing the pending entry. If the
+          // process stops between these writes, the next link pass can verify
+          // the remote link and avoid a duplicate POST.
+          await storeLinkMapping(pending.linkId, 'synced', orgId);
           await removePendingLink(pending.sourceIssueKey, pending.linkId);
         } else {
           console.log(`${LOG_EMOJI.WARNING} Failed to create pending link: ${result.error}`);
