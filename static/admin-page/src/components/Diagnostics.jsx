@@ -71,7 +71,7 @@ const Diagnostics = ({ selectedOrgId }) => {
 
   const forceSyncIssue = async () => {
     if (!selectedOrgId || !issueKey.trim()) return;
-    if (!confirm(`This will remove any existing mapping for ${issueKey} and force sync it to the remote. Proceed?`)) return;
+    if (!confirm('This will update the existing remote issue, or create one if the issue is not yet mapped. Proceed?')) return;
     
     setForceSyncLoading(true);
     

@@ -734,11 +734,18 @@ const App = () => {
   };
 
   const handleManualSync = async () => {
+    if (!selectedOrgId) {
+      showMessage('Please select an organization first', 'warning');
+      return;
+    }
     if (!manualIssueKey.trim()) return;
 
     setManualSyncLoading(true);
     try {
-      const result = await invoke('forceSyncIssue', { issueKey: manualIssueKey.trim() });
+      const result = await invoke('forceSyncIssue', {
+        issueKey: manualIssueKey.trim(),
+        orgId: selectedOrgId
+      });
       if (result.success) {
         showMessage(result.message, 'success');
         setManualIssueKey('');
@@ -3164,7 +3171,7 @@ const SyncActivityPanel = ({
         <div style={surfaceCard()}>
           <h4 style={{ margin: '0 0 4px 0' }}>Manual Sync</h4>
           <p style={{ fontSize: '13px', color: '#6B778C', margin: '0 0 12px 0' }}>
-            Sync a specific issue to all <strong>{organizations.length}</strong> org(s).
+            Sync a specific issue to the selected organization.
           </p>
           <div style={{ display: 'flex', gap: token('space.150', '12px'), alignItems: 'flex-end' }}>
             <div style={{ flex: 1 }}>
