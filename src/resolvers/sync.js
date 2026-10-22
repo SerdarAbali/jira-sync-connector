@@ -1,9 +1,16 @@
-import api, { route, fetch } from '@forge/api';
 import { Queue } from '@forge/events';
 import * as kvsStore from '../services/storage/kvs.js';
-import { getRemoteKey, getOrganizationsWithTokens, storeMapping } from '../services/storage/mappings.js';
+import { getRemoteKey, getOrganizationsWithTokens } from '../services/storage/mappings.js';
 import { getFullIssue } from '../services/jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../services/sync/issue-sync.js';
+import {
+  previewInitialSync,
+  startInitialSync,
+  getInitialSyncStatus,
+  pauseInitialSync,
+  resumeInitialSync,
+  cancelInitialSync
+} from '../services/sync/initial-sync.js';
 import { retryAllPendingLinks } from '../services/scheduled/scheduled-sync.js';
 import { isProjectAllowedToSync } from '../utils/validation.js';
 
@@ -164,6 +171,39 @@ export function defineSyncResolvers(resolver) {
       console.error('Error retrying pending links:', error);
       return { success: false, error: error.message };
     }
+  });
+
+
+  // Safe initial-sync orchestration. Preview is read-only; start requires an
+  // explicit approval bound to the previewed configuration and checksum.
+  resolver.define('previewInitialSync', async ({ payload }) => {
+    return await previewInitialSync({ orgId: payload?.orgId });
+  });
+
+  resolver.define('startInitialSync', async ({ payload, context }) => {
+    return await startInitialSync({
+      orgId: payload?.orgId,
+      approved: payload?.approved === true,
+      previewChecksum: payload?.previewChecksum,
+      configurationChecksum: payload?.configurationChecksum,
+      startedBy: context?.accountId || null
+    });
+  });
+
+  resolver.define('getInitialSyncStatus', async ({ payload }) => {
+    return await getInitialSyncStatus({ orgId: payload?.orgId });
+  });
+
+  resolver.define('pauseInitialSync', async ({ payload }) => {
+    return await pauseInitialSync({ orgId: payload?.orgId });
+  });
+
+  resolver.define('resumeInitialSync', async ({ payload }) => {
+    return await resumeInitialSync({ orgId: payload?.orgId });
+  });
+
+  resolver.define('cancelInitialSync', async ({ payload }) => {
+    return await cancelInitialSync({ orgId: payload?.orgId });
   });
 
 

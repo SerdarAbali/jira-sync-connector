@@ -1,5 +1,5 @@
 import * as kvsStore from './kvs.js';
-import { SYNC_FLAG_TTL_MS, MAX_PENDING_LINK_ATTEMPTS } from '../../constants.js';
+import { SYNC_FLAG_TTL_MS } from '../../constants.js';
 
 export async function markSyncing(issueKey) {
   // @forge/kvs doesn't support TTL directly, so we store expiration time

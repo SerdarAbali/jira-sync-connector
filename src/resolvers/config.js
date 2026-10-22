@@ -1,4 +1,4 @@
-import api, { route, fetch, webTrigger } from '@forge/api';
+import { fetch, webTrigger } from '@forge/api';
 import { randomBytes } from 'crypto';
 import * as kvsStore from '../services/storage/kvs.js';
 import { MAX_STORAGE_SIZE } from '../constants.js';
@@ -8,7 +8,6 @@ import {
   validateOrgId, 
   validateMappings, 
   validateObject,
-  validateArray,
   validateString
 } from '../utils/validation.js';
 
@@ -1063,9 +1062,8 @@ export function defineConfigResolvers(resolver) {
   });
 
   // Get last sync time for an organization
-  resolver.define('getLastSyncTime', async ({ payload }) => {
+  resolver.define('getLastSyncTime', async () => {
     try {
-      const { orgId } = payload;
       
       // Get webhook stats (has lastSync per issue)
       const webhookStats = await kvsStore.get('webhookSyncStats');

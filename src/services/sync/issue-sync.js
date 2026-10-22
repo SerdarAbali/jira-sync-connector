@@ -4,7 +4,7 @@ import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.j
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
-import { getRemoteKey, getLocalKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated, storeLinkMapping } from '../storage/mappings.js';
+import { getRemoteKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated, storeLinkMapping } from '../storage/mappings.js';
 import { markSyncing, clearSyncFlag, isSyncing, findPendingLinksToIssue, removePendingLink } from '../storage/flags.js';
 import { trackWebhookSync, logAuditEntry } from '../storage/stats.js';
 import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../jira/local-client.js';
@@ -562,7 +562,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
   
   // Check if there's a mapping for this issue type (mappings are keyed by local ID, value contains remote info)
   if (mappings.issueTypeMappings) {
-    for (const [remoteId, mapping] of Object.entries(mappings.issueTypeMappings)) {
+    for (const mapping of Object.values(mappings.issueTypeMappings)) {
       if (mapping.localName === localIssueTypeName || mapping.localId === issue.fields.issuetype.id) {
         remoteIssueTypeName = mapping.remoteName;
         console.log(`🔄 Mapped issue type: ${localIssueTypeName} → ${remoteIssueTypeName}`);
@@ -1263,7 +1263,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
     let remoteIssueTypeName = localIssueTypeName;
     
     if (mappings.issueTypeMappings) {
-      for (const [remoteId, mapping] of Object.entries(mappings.issueTypeMappings)) {
+      for (const mapping of Object.values(mappings.issueTypeMappings)) {
         if (mapping.localName === localIssueTypeName || mapping.localId === issue.fields.issuetype.id) {
           remoteIssueTypeName = mapping.remoteName;
           console.log(`🔄 Mapped issue type: ${localIssueTypeName} → ${remoteIssueTypeName}`);

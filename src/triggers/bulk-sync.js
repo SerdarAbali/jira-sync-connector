@@ -1,6 +1,6 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
-import { getRemoteKey, addToMappingIndex, removeMapping, getOrganizationsWithTokens, storeMapping } from '../services/storage/mappings.js';
+import { getRemoteKey, removeMapping, storeMapping } from '../services/storage/mappings.js';
 import { getFullIssue } from '../services/jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../services/sync/issue-sync.js';
 import { syncAttachments } from '../services/sync/attachment-sync.js';

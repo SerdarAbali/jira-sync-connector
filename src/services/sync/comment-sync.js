@@ -3,7 +3,7 @@ import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText } from '../../utils/adf.js';
-import { getRemoteKey, getLocalKey, getOrganizationsWithTokens, getRemoteCommentId, storeCommentMapping } from '../storage/mappings.js';
+import { getRemoteKey, getOrganizationsWithTokens, getRemoteCommentId, storeCommentMapping } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
 import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';

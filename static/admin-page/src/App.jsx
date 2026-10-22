@@ -15,6 +15,7 @@ import { token } from '@atlaskit/tokens';
 import '@atlaskit/css-reset';
 import ErrorBoundary from './components/ErrorBoundary';
 import Diagnostics from './components/Diagnostics';
+import InitialSyncPanel from './components/InitialSyncPanel';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -1520,7 +1521,7 @@ const App = () => {
                             {[
                               'Speed Setup Wizard',
                               'Advanced Field Transformation Rules',
-                              'Bulk Migration Wizard',
+                              'Advanced Conflict Resolution',
                               'Sync History & Audit Log Export'
                             ].map((item, i) => (
                               <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: token('color.text.subtle', '#6B778C') }}>
@@ -2635,6 +2636,8 @@ const SyncActivityPanel = ({
         </div>
       )}
 
+      <InitialSyncPanel selectedOrg={selectedOrg} showMessage={showMessage} />
+
       <ModalTransition>
         {pilotConfirmAction && (
           <ModalDialog onClose={() => { if (!pilotActionLoading) setPilotConfirmAction(null); }}>
@@ -2661,9 +2664,9 @@ const SyncActivityPanel = ({
                   <p>
                     This allows Jira writes again using each organization's existing sync direction.
                   </p>
-                  <SectionMessage appearance="info" title="No backfill or recreation">
+                  <SectionMessage appearance="info" title="No automatic replay">
                     <p>
-                      Resume does not queue, replay, backfill, recreate, or bulk sync issues. Events received while paused are not replayed.
+                      Resume does not queue or replay webhook events and does not start an initial backfill. An explicitly approved initial-sync job stays paused until resumed separately.
                     </p>
                   </SectionMessage>
                 </>

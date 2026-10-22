@@ -56,6 +56,10 @@ modules:
       interval: hour
       function: scheduled-sync-function
 
+    - key: initial-sync-recovery
+      interval: hour
+      function: initial-sync-recover-fn
+
   consumer:
     - key: bulk-sync-consumer
       queue: bulk-sync-queue
@@ -68,6 +72,10 @@ modules:
     - key: attachment-sync-consumer
       queue: attachment-sync-queue
       function: attachment-sync-func
+
+    - key: initial-sync-consumer
+      queue: initial-sync-queue
+      function: initial-sync-function
 
   webtrigger:
     - key: incoming-webhook
@@ -108,6 +116,14 @@ modules:
 
     - key: attachment-sync-func
       handler: index.runAttachmentSyncQueue
+      timeoutSeconds: 300
+
+    - key: initial-sync-function
+      handler: index.runInitialSync
+      timeoutSeconds: 900
+
+    - key: initial-sync-recover-fn
+      handler: index.runInitialSyncRecovery
       timeoutSeconds: 300
 
     - key: incoming-webhook-func
