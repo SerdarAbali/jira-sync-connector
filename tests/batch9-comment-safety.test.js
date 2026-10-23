@@ -13,6 +13,7 @@ jest.mock('@forge/api', () => {
 });
 
 jest.mock('../src/services/storage/kvs.js', () => ({
+  queryByPrefix: jest.fn(async prefix => Array.from(mockStore, ([key, value]) => ({ key, value })).filter(row => row.key.startsWith(prefix))),
   get: jest.fn(async key => (mockStore.has(key) ? mockStore.get(key) : null)),
   set: jest.fn(async (key, value) => { mockStore.set(key, value); }),
   del: jest.fn(async key => { mockStore.delete(key); }),
@@ -69,9 +70,12 @@ jest.mock('../src/services/jira/local-client.js', () => ({
 
 jest.mock('../src/services/jira/remote-client.js', () => ({
   getRemoteIssue: jest.fn(),
-  getRemoteComment: jest.fn(async () => ({
-    id: 'REMOTE-PARENT-1',
-    body: 'parent body',
+  getRemoteComment: jest.fn(async (issueKey, id) => ({
+    id,
+    body: id === 'REMOTE-PARENT-1' ? 'parent body' : 'remote body must not be persisted',
+    jsdPublic: true,
+    properties: [],
+    ...(id === 'REMOTE-COMMENT-1' ? { parentId: 'REMOTE-PARENT-1' } : {}),
     author: { displayName: 'Parent User' }
   }))
 }));
@@ -140,7 +144,9 @@ function errorResponse(status, body) {
 }
 
 function markerKeyForCurrentPayload() {
-  return webhookMarkerKey('org-1', buildWebhookFingerprint(payload, 'org-1'));
+  return webhookMarkerKey('org-1', buildWebhookFingerprint({
+    webhookEvent: payload.webhookEvent, issue: { key: payload.issue.key }, comment: { id: payload.comment.id }
+  }, 'org-1'));
 }
 
 function reconciliationKey() {

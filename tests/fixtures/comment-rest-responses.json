@@ -1,0 +1,121 @@
+{
+  "software": {
+    "projectTypeKey": "software",
+    "comment": {
+      "id": "101",
+      "self": "https://source.atlassian.net/rest/api/3/issue/SRC-1/comment/101",
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Software project comment"
+              }
+            ]
+          }
+        ]
+      },
+      "properties": [],
+      "author": {
+        "accountId": "sanitized-account",
+        "displayName": "Example User"
+      }
+    }
+  },
+  "business": {
+    "projectTypeKey": "business",
+    "comment": {
+      "id": "101",
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Business project comment"
+              }
+            ]
+          }
+        ]
+      },
+      "properties": [],
+      "author": {
+        "accountId": "sanitized-account",
+        "displayName": "Example User"
+      }
+    }
+  },
+  "jsmPublic": {
+    "projectTypeKey": "service_desk",
+    "comment": {
+      "id": "101",
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Public request response"
+              }
+            ]
+          }
+        ]
+      },
+      "jsdPublic": true,
+      "properties": [
+        {
+          "key": "sd.public.comment",
+          "value": {
+            "internal": false
+          }
+        }
+      ],
+      "author": {
+        "displayName": "Example Agent"
+      }
+    }
+  },
+  "jsmInternal": {
+    "projectTypeKey": "service_desk",
+    "comment": {
+      "id": "101",
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Internal request response"
+              }
+            ]
+          }
+        ]
+      },
+      "jsdPublic": false,
+      "properties": [
+        {
+          "key": "sd.public.comment",
+          "value": {
+            "internal": true
+          }
+        }
+      ],
+      "author": {
+        "displayName": "Example Agent"
+      }
+    }
+  }
+}

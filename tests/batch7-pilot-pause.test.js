@@ -25,6 +25,7 @@ jest.mock('@forge/resolver', () => {
 });
 
 jest.mock('../src/services/storage/kvs.js', () => ({
+  queryByPrefix: jest.fn(async prefix => Array.from(mockStore, ([key, value]) => ({ key, value })).filter(row => row.key.startsWith(prefix))),
   get: jest.fn(async key => (mockStore.has(key) ? mockStore.get(key) : null)),
   set: jest.fn(async (key, value) => { mockStore.set(key, value); }),
   del: jest.fn(async key => { mockStore.delete(key); }),
@@ -339,6 +340,7 @@ describe('Batch 7 pause blocks Jira write categories', () => {
       json: async () => ({
         comments: [{
           id: '10001',
+          jsdPublic: true,
           body: { type: 'doc', content: [] },
           author: { displayName: 'Local User', accountType: 'atlassian' }
         }]

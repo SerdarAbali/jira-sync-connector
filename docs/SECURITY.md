@@ -79,6 +79,147 @@ Jira writes are not blindly retried.
 - Comment mappings and content markers prevent duplicate copying.
 - App-authored and connector-generated comments are skipped.
 
+### Comment confidentiality
+
+Source readability does not authorize disclosure to another Jira site. The connector
+never maps groups or roles between sites. An authoritative REST comment must match
+the requested ID and have no `visibility` field. Explicit group/role restrictions,
+malformed metadata, and conflicting or internal JSM signals reject the whole comment.
+For Software and Business comments without public/internal flags, freshly verified
+issue/project `projectTypeKey` establishes the applicable ordinary Jira semantics.
+JSM comments require explicit public evidence; unknown project types fail closed.
+Project context is cached only within one verification operation (or catch-up batch),
+never across tenants or invocations. No new JSM permissions are introduced.
+
+Every known ancestor must independently pass the same policy, up to eight comments
+including the reply. Restricted or malformed ancestors, cycles, unparseable parent
+properties, and deeper threads block the entire reply. No parent author, snippet,
+identifier, or relationship is copied from a rejected thread. Temporary ancestor
+read failures defer the entire reply. Both directions and historical catch-up use
+this shared policy; webhook bodies never substitute for authoritative REST content.
+Absent ancestry is distinct from explicit null, zero, false, empty objects, invalid
+identifiers, and conflicting aliases/properties: the latter all reject the thread.
+Jira documents inherited child visibility. The connector's legacy `parentCommentId`,
+`jsdParentId`, nested parent objects, and custom parent/thread property encodings
+are conservative hints, not claimed official Jira contracts. Conflicting hints
+cannot grant copying. Their actual tenant response shapes, and whether each REST
+endpoint reliably exposes ancestry, require live validation; omission is not proof
+that every Jira endpoint exposes all thread relationships. Search-embedded comment
+objects are never used as final authority.
+
+Immediately before submission, both event directions and catch-up read the source
+comment and every known ancestor again through dedicated REST reads. Parent and ancestor relationships discovered during initial verification remain
+mandatory constraints even if final responses omit them; conflicting current
+relationships fail closed. Final checks
+use a fresh project-context cache and never reuse comment-list bodies, authors, or
+visibility as final authority. Submitted content is built from this last verified
+response. The inbound parent-rejection fallback also rechecks before its second
+POST, using the same final-phase deadline.
+
+#### Deferred verification and invocation limits
+
+Verification reads (including JSON decoding) each have a four-second wait bound,
+within a shared ten-second budget per verification phase for source comment, project
+context, and ancestors. Initial and final phases together can wait up to twenty
+seconds; any inbound parent fallback shares the final phase's remaining budget.
+They never sleep or retry inline. HTTP 429 respects numeric or date `Retry-After`
+through durable `notBefore` scheduling, with a minimum delay of one minute.
+Every deferral, including the one-minute minimum, has an immutable
+`comment-verification-deadline:` record;
+normal delivery, recovery, and the submission guard use their maximum together
+with pending `notBefore`. Concurrent read/modify/write updates cannot erase that
+longer barrier. No per-comment verification reads or destination writes proceed through this gate
+while it is throttled. Deadline records are retained; a saturated 100-record deadline
+scan fails closed and ultimately requires manual attention rather than guessing
+that an unseen deadline has expired. HTTP
+401/403/404, 5xx, network errors, and unreadable responses also defer conservatively.
+The read deadline bounds waiting, not network cancellation or the whole handler:
+existing storage, issue reads, catch-up listing, and destination writes keep their
+existing behavior. Ancestor reads may consume the budget and defer long threads.
+
+Identifier-only `comment-verification:` records retain direction, organization,
+issue/comment IDs, optional parent ID, attempt count, and scheduling timestamps.
+No comment bodies, authors, credentials, or restriction names enter these records.
+Incoming deferral releases the replay claim and returns 202 with
+`COMMENT_VERIFICATION_DEFERRED`; it never marks verification successful. Persistence
+failure returns 503. Recovery does not depend on Jira retrying that HTTP response.
+
+The existing hourly heartbeat processes at most three due records from a bounded
+100-record scan per run, with five attempts and a 24-hour age limit. This bounds
+work rather than promising delivery latency; a large backlog requires operator
+review. Each attempt reads current source visibility again, retaining ordinary
+mapping, loop suppression, global pause, and destination operation safeguards.
+While globally paused, new incoming events follow the existing acknowledge/discard
+policy. Previously persisted recovery work remains pending; pause is never a
+terminal outcome. Deferred attempts remain subject to the five-attempt/24-hour
+bounds and may require manual attention after prolonged pause or outage.
+
+Recovery deletes a pending record only for an explicit `COMMENT_SYNCED`,
+`COMMENT_ALREADY_MAPPED`, `COMMENT_REJECTED`, `COMMENT_IGNORED_CONNECTOR`, or
+organization-removed `CANCELLED` outcome, after persisting a `terminal` record.
+An interrupted deletion resumes from this terminal state without submitting again.
+HTTP 200 alone, undefined returns, in-flight duplicates, source issues currently
+syncing, missing issue reads/mappings, disabled options, and pauses do not establish
+completion. They retain the durable attempt, with a bounded `lastOutcome` code.
+Terminal persistence failure leaves pending work and does not increment successful
+recovery counts. Exhaustion/expiry archives a reason-coded attention record before
+removing pending state; archive failure keeps pending state.
+
+Recovery worker leases and pre-submission guards use separate storage prefixes.
+Before a recovered destination write, an atomic submission guard and durable
+`write_started` state prevent an ambiguous write or crash from causing blind replay.
+Exhausted verification and interrupted submissions move to
+`comment-verification-attention:` for manual inspection. These records have no
+automatic deletion or replay. A pre-write crash can conservatively require manual
+review even when no destination comment was created. Operators must reconcile
+source, destination, mapping, and operation records before explicitly approving
+any further synchronization.
+
+Fixtures in `tests/fixtures/comment-rest-responses.json` are sanitized, schema-derived
+representative responses, not captured tenant responses. Tests run production
+source clients and policy together with mocked HTTP transport and storage. Live
+tenant acceptance, Forge timing measurements, and real Jira throttling remain
+rollout checks; no live data was accessed for this corrective pass.
+
+#### Rollout condition: earlier copies and later restrictions (F02-R5)
+
+This fix controls copying at verification time. It does not retract earlier copies,
+propagate later visibility changes, or detect confidential text manually quoted by
+users. A restriction can change between verification and submission; cross-site
+copying is not an atomic Jira transaction. Enabling this fix alone cannot certify
+existing destination comments as safe.
+
+Before a sensitive pilot, an administrator should:
+
+1. Pause writes and inventory synchronized issue pairs in both sites. Locate copied
+   comments using `[Comment from ...]` headers and app authorship, then correlate
+   source/destination comment IDs using organization-scoped comment mappings and
+   `comment-meta:` / `comment-meta-local:` records. Legacy records may lack the
+   organization prefix. Headers are discovery hints, not proof of complete coverage;
+   edited copies or missing mappings require manual review of destination threads.
+2. Check current source comment visibility and JSM internal/public state with an
+   authorized account, including all ancestors. Review destination bodies, quoted
+   parent snippets, authors, and links even when the child itself appears public.
+   A source comment unavailable to the reviewer must remain unresolved.
+3. Have the responsible administrator explicitly approve manual remediation on
+   destination copies and exposed reply context, including edits or removal where
+   appropriate. Preserve required audit evidence and review mapping/operation state
+   before resuming; do not blindly clear retry guards or recreate copies.
+4. Repeat this review after later source restrictions. Already copied content stays
+   visible under destination permissions until manually remediated. Ongoing
+   visibility-change detection and automatic restriction/removal propagation require
+   a separately designed, explicitly approved feature.
+
+This procedure documents manual remediation only. F02 performs no automatic
+cleanup, source modification, or destination deletion.
+
+Official references:
+- [Jira comment visibility, inheritance, and REST responses](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/)
+- [Comment properties are custom data, not a universal ancestry schema](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comment-properties/)
+- [Jira project types](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/)
+- [JSM public and internal request comments](https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-comment-commentid-get)
+- [Cloud JSON import examples for JSM comment properties](https://support.atlassian.com/jira-cloud-administration/docs/import-data-from-json/)
+
 ## Leases and concurrency
 
 Per-issue and per-organization leases prevent concurrent workers from acting on the same state.

@@ -26,6 +26,7 @@ jest.mock('@forge/api', () => {
 });
 
 jest.mock('../src/services/storage/kvs.js', () => ({
+  queryByPrefix: jest.fn(async prefix => Array.from(mockOperationStore, ([key, value]) => ({ key, value })).filter(row => row.key.startsWith(prefix))),
   get: jest.fn(async key => (mockOperationStore.has(key) ? mockOperationStore.get(key) : null)),
   set: jest.fn(async (key, value) => { mockOperationStore.set(key, value); }),
   del: jest.fn(),
@@ -124,7 +125,7 @@ describe('Pilot safety: ambiguous non-idempotent writes are attempted once', () 
     getRemoteKey.mockResolvedValue('REMOTE-1');
     getRemoteCommentId.mockResolvedValue(null);
     getFullIssue.mockResolvedValue(issue);
-    getFullComment.mockResolvedValue({ id: 'C1', body: 'hello', author: { displayName: 'User' } });
+    getFullComment.mockResolvedValue({ id: 'C1', body: 'hello', jsdPublic: true, author: { displayName: 'User' } });
     getOrgName.mockResolvedValue('Local Org');
     isSyncing.mockResolvedValue(false);
     kvsStore.get.mockImplementation(async (key) => {

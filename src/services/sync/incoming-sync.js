@@ -55,6 +55,10 @@ import { logAuditEntry } from '../storage/stats.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText, stripCounterpartNoticeFromADF, isConnectorGeneratedComment } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
+import { getCommentConfidentiality, verifyCommentThread, commentParentId, withParentHints, verifyFreshCommentThread } from './comment-confidentiality.js';
+import { commentReadBudget } from '../jira/comment-read.js';
+import { getCommentProjectType } from '../jira/comment-project.js';
+import { deferCommentVerification, markDeferredCommentSubmission, assertCommentVerificationReady } from './comment-verification-recovery.js';
 import { syncRemoteAttachmentsToLocal, propagateAttachmentDeletion, getAttachmentSyncPolicy } from './attachment-sync.js';
 import { isValidAttachmentId, isValidIssueKey } from '../../utils/attachment-url.js';
 import { transitionLocalIssue } from './transition-sync.js';
@@ -221,9 +225,13 @@ export async function processIncomingWebhook(payload, auth) {
   // Duplicate suppression uses a deterministic payload fingerprint. A fresh
   // marker is claimed atomically; completed markers suppress duplicates and
   // processing markers prevent concurrent duplicate execution.
-  const claim = await claimWebhookEvent(payload, orgId);
+  // Comment identity is stable across external delivery and durable recovery.
+  const markerPayload = webhookEvent === 'comment_created'
+    ? { webhookEvent, issue: { key: payload.issue?.key }, comment: { id: payload.comment?.id } }
+    : payload;
+  const claim = await claimWebhookEvent(markerPayload, orgId);
   if (claim.status === 'completed') {
-    return { status: 200, body: { message: 'Duplicate event ignored' } };
+    return { status: 200, body: { message: 'Duplicate event ignored', ...(webhookEvent === 'comment_created' ? { code: 'COMMENT_ALREADY_MAPPED' } : {}) } };
   }
   if (claim.status === 'processing') {
     return { status: 409, body: { error: 'Request is already being processed' } };
@@ -244,7 +252,7 @@ export async function processIncomingWebhook(payload, auth) {
     } else if (webhookEvent === 'jira:issue_deleted') {
       await handleRemoteIssueDeleted(issue, context);
     } else if (webhookEvent === 'comment_created') {
-      await handleRemoteCommentCreated(payload, context);
+      routeResult = await handleRemoteCommentCreated(payload, context);
     } else if (webhookEvent === 'jira:issue_link_created' || webhookEvent === 'issuelink_created') {
       routeResult = await handleRemoteIssueLinkCreated(payload, context);
     } else if (webhookEvent === 'jira:issue_link_deleted' || webhookEvent === 'issuelink_deleted') {
@@ -256,6 +264,11 @@ export async function processIncomingWebhook(payload, auth) {
       routeResult = await handleRemoteAttachmentDeleted(payload, context);
     } else {
       console.log(`ℹ️ Ignoring event: ${webhookEvent}`);
+    }
+
+    if (webhookEvent === 'comment_created' && routeResult?.status === 'COMMENT_RETRY') {
+      if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+      return { status: 202, body: { code: 'COMMENT_RETRY' } };
     }
 
     if (markerKey) {
@@ -272,11 +285,34 @@ export async function processIncomingWebhook(payload, auth) {
     }
 
     const responseBody = { message: 'Processed' };
+    if (webhookEvent === 'comment_created' && typeof routeResult?.status === 'string') responseBody.code = routeResult.status;
+    if (routeResult?.status === 'COMMENT_RECONCILIATION_REQUIRED') {
+      responseBody.code = routeResult.status;
+    }
     if (typeof routeResult?.code === 'string') {
       responseBody.code = routeResult.code;
     }
     return { status: 200, body: responseBody };
   } catch (error) {
+    if (webhookEvent === 'comment_created' && error?.code === 'COMMENT_REJECTED') {
+      if (markerKey) {
+        const completion = await markWebhookCompleted(markerKey, markerToken);
+        if (!completion?.completed) return { status: 503, body: { error: 'Webhook processing temporarily unavailable' } };
+      }
+      return { status: 200, body: { code: 'COMMENT_REJECTED' } };
+    }
+    if (webhookEvent === 'comment_created' && error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
+      try {
+        await deferCommentVerification({ direction: 'remote-to-local', orgId,
+          issueKey: payload.issue?.key, commentId: payload.comment?.id,
+          parentId: extractParentIdFromRemoteComment(payload.comment) }, error);
+        if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+        return { status: 202, body: { code: 'COMMENT_VERIFICATION_DEFERRED', message: 'Verification deferred' } };
+      } catch {
+        if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+        return { status: 503, body: { error: 'Verification recovery unavailable' } };
+      }
+    }
     if (error?.code === 'COMMENT_RECONCILIATION_REQUIRED') {
       // The comment may have been created. Do not release the replay marker
       // for a blind retry; a content-free reconciliation record is already
@@ -1024,38 +1060,43 @@ async function persistCommentReconciliation({
 async function handleRemoteCommentCreated(payload, context) {
   if (!shouldSyncIncomingComments(context.syncOptions)) {
     console.log(`⏭️ Incoming comments disabled for ${context.orgId || 'organization'}`);
-    return;
+    return { status: 'COMMENT_RETRY' };
   }
 
   const remoteIssueKey = payload.issue?.key;
-  const comment = payload.comment;
+  let comment = payload.comment;
 
   if (!remoteIssueKey || !comment) {
     console.log(`${LOG_EMOJI.WARNING} Comment event missing issue or comment data`);
-    return;
+    return { status: 'COMMENT_RETRY' };
+  }
+
+  if (getCommentConfidentiality(comment).code === 'COMMENT_RESTRICTED') {
+    console.log('Comment copy skipped: confidentiality not verified');
+    return { status: 'COMMENT_REJECTED' };
   }
 
   if (comment.author?.accountType === 'app') {
     console.log(`${LOG_EMOJI.INFO} Skipping SyncApp-authored comment ${comment.id} on ${remoteIssueKey}`);
-    return;
+    return { status: 'COMMENT_IGNORED_CONNECTOR' };
   }
 
   if (isConnectorGeneratedComment(comment.body)) {
     console.log(`${LOG_EMOJI.INFO} Skipping comment from SyncApp to avoid loops`);
-    return;
+    return { status: 'COMMENT_IGNORED_CONNECTOR' };
   }
 
   const localKey = await getLocalKey(remoteIssueKey, context.orgId);
   if (!localKey) {
     console.log(`${LOG_EMOJI.WARNING} No local mapping for remote comment on ${remoteIssueKey}`);
-    return;
+    return { status: 'COMMENT_RETRY' };
   }
 
   const dedupKey = buildIncomingCommentKey(context.orgId, comment.id);
   const alreadyProcessed = await kvsStore.get(dedupKey);
   if (alreadyProcessed) {
     console.log(`${LOG_EMOJI.INFO} Comment ${comment.id} already processed, skipping duplicate event`);
-    return;
+    return { status: 'COMMENT_ALREADY_MAPPED' };
   }
 
   const reconciliationKey = buildIncomingCommentReconciliationKey(context.orgId, comment.id);
@@ -1064,6 +1105,32 @@ async function handleRemoteCommentCreated(payload, context) {
     console.warn(`${LOG_EMOJI.WARNING} Comment ${comment.id} requires reconciliation; not replaying ambiguous write`);
     return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
   }
+
+  // Always use the authoritative REST body and metadata. Never merge omitted
+  // REST fields with webhook content or fall back to that content on failure.
+  await assertCommentVerificationReady({ direction: 'remote-to-local', orgId: context.org.id, issueKey: remoteIssueKey, commentId: comment.id });
+  const budget = commentReadBudget();
+  const verifiedComment = await getRemoteComment(remoteIssueKey, comment.id, context.org, budget);
+  const source = withParentHints(verifiedComment, comment);
+  const verification = await verifyCommentThread(source, {
+    expectedId: comment.id,
+    readParent: id => getRemoteComment(remoteIssueKey, id, context.org, budget),
+    projectType: () => getCommentProjectType(remoteIssueKey, context.org, budget),
+    parentIdFor: extractParentIdFromRemoteComment
+  });
+  if (!verification.allowed) {
+    console.log('Comment copy skipped: confidentiality not verified');
+    return { status: 'COMMENT_REJECTED' };
+  }
+  const finalBudget = commentReadBudget();
+  const final = await verifyFreshCommentThread({
+    readComment: () => getRemoteComment(remoteIssueKey, comment.id, context.org, finalBudget), expectedId: comment.id,
+    readParent: id => getRemoteComment(remoteIssueKey, id, context.org, finalBudget),
+    projectType: () => getCommentProjectType(remoteIssueKey, context.org, finalBudget), hints: source, knownAncestry: verification.ancestry
+  });
+  if (!final.allowed) return { status: 'COMMENT_REJECTED' };
+  comment = final.comment;
+  if (comment.author?.accountType === 'app' || isConnectorGeneratedComment(comment.body)) return { status: 'COMMENT_IGNORED_CONNECTOR' };
 
   const authorName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
   let commentText = '';
@@ -1074,7 +1141,7 @@ async function handleRemoteCommentCreated(payload, context) {
   }
   commentText = sanitizeCommentText(stripSyncPrefix(commentText));
 
-  const parentContext = await resolveLocalParentForIncomingComment(comment, remoteIssueKey, context);
+  const parentContext = await resolveLocalParentForIncomingComment(final.parent, context);
   const body = buildSyncedCommentADF({
     orgName: context.org.name,
     userName: authorName,
@@ -1087,7 +1154,22 @@ async function handleRemoteCommentCreated(payload, context) {
   try {
     let response;
     try {
-      response = await createLocalComment(localKey, body, parentContext.localParentId);
+      await markDeferredCommentSubmission({ direction: 'remote-to-local', orgId: context.org.id,
+        issueKey: remoteIssueKey, commentId: comment.id });
+      response = await createLocalComment(localKey, body, parentContext.localParentId, async () => {
+        const fallback = await verifyFreshCommentThread({
+          readComment: () => getRemoteComment(remoteIssueKey, comment.id, context.org, finalBudget), expectedId: comment.id,
+          readParent: id => getRemoteComment(remoteIssueKey, id, context.org, finalBudget),
+          projectType: () => getCommentProjectType(remoteIssueKey, context.org, finalBudget), hints: final.comment, knownAncestry: final.ancestry
+        });
+        if (!fallback.allowed) throw Object.assign(new Error('Comment confidentiality rejected'), { code: 'COMMENT_REJECTED' });
+        const parent = await resolveLocalParentForIncomingComment(fallback.parent, context);
+        return buildSyncedCommentADF({ orgName: context.org.name,
+          userName: fallback.comment.author?.displayName || fallback.comment.author?.emailAddress || 'Unknown User',
+          parentAuthor: parent.parentAuthor, parentSnippet: parent.parentSnippet,
+          responseText: sanitizeCommentText(stripSyncPrefix(typeof fallback.comment.body === 'object'
+            ? extractTextFromADF(fallback.comment.body) : fallback.comment.body || '')) });
+      });
     } catch (error) {
       if (error?.code === 'COMMENT_WRITE_AMBIGUOUS') {
         await persistCommentReconciliation({
@@ -1163,9 +1245,10 @@ async function handleRemoteCommentCreated(payload, context) {
   } finally {
     await clearSyncFlag(localKey);
   }
+  return { status: 'COMMENT_SYNCED' };
 }
 
-async function createLocalComment(localIssueKey, body, parentLocalId = null) {
+async function createLocalComment(localIssueKey, body, parentLocalId = null, beforeFallback) {
   if (!parentLocalId) {
     return await postCommentOnce(localIssueKey, { body }, 'top-level');
   }
@@ -1180,7 +1263,8 @@ async function createLocalComment(localIssueKey, body, parentLocalId = null) {
   const initialBody = await readCommentResponseBody(initialResponse);
   if (isParentRelatedCommentRejection(initialResponse.status, initialBody)) {
     console.log(`${LOG_EMOJI.WARNING} Parent-specific comment was rejected on ${localIssueKey}. Retrying once as top-level comment.`);
-    return await postCommentOnce(localIssueKey, { body }, 'parent-fallback');
+    const freshBody = await beforeFallback();
+    return await postCommentOnce(localIssueKey, { body: freshBody }, 'parent-fallback');
   }
 
   if (isAmbiguousCommentStatus(initialResponse.status)) {
@@ -1219,87 +1303,20 @@ async function postLocalComment(localIssueKey, payload) {
   }
 }
 
-async function resolveLocalParentForIncomingComment(comment, remoteIssueKey, context) {
-  console.log(`${LOG_EMOJI.INFO} Resolving parent for remote comment ${comment.id} on ${remoteIssueKey}`);
-  const hydratedComment = await hydrateRemoteCommentIfNeeded(comment, remoteIssueKey, context.org);
-  let remoteParentId = extractParentIdFromRemoteComment(hydratedComment);
-  let remoteParentComment = null;
-
-  if (remoteParentId) {
-    remoteParentComment = await getRemoteComment(remoteIssueKey, remoteParentId, context.org);
-  }
-
-  if (!remoteParentId || !remoteParentComment) {
-    if (!remoteParentId) {
-      console.log(`${LOG_EMOJI.INFO} No parent reference found for remote comment ${comment.id}`);
-    } else {
-      console.log(`${LOG_EMOJI.WARNING} Remote parent ${remoteParentId} could not be loaded`);
-    }
-
-    return {
-      remoteParentId: remoteParentId || null,
-      localParentId: null,
-      parentAuthor: null,
-      parentSnippet: null
-    };
-  }
-
+async function resolveLocalParentForIncomingComment(parent, context) {
+  if (!parent) return { remoteParentId: null, localParentId: null, parentAuthor: null, parentSnippet: null };
+  const remoteParentId = String(parent.id);
   const localParentId = await getLocalCommentId(remoteParentId, context.orgId);
-  if (localParentId) {
-    console.log(`${LOG_EMOJI.INFO} Resolved remote parent ${remoteParentId} to local comment ${localParentId}`);
-  } else {
-    console.log(`${LOG_EMOJI.WARNING} Remote parent ${remoteParentId} has no local mapping yet`);
-  }
-
   return {
     remoteParentId,
     localParentId: localParentId ? String(localParentId) : null,
-    parentAuthor: remoteParentComment.author?.displayName || remoteParentComment.author?.emailAddress || null,
-    parentSnippet: extractPlainTextFromRemoteComment(remoteParentComment)
+    parentAuthor: parent.author?.displayName || parent.author?.emailAddress || null,
+    parentSnippet: extractPlainTextFromRemoteComment(parent)
   };
 }
 
-async function hydrateRemoteCommentIfNeeded(comment, remoteIssueKey, org) {
-  if (Array.isArray(comment?.properties)) {
-    return comment;
-  }
-
-  const hydrated = await getRemoteComment(remoteIssueKey, comment.id, org);
-  if (hydrated) {
-    console.log(`${LOG_EMOJI.INFO} Hydrated remote comment ${comment.id}; properties length: ${hydrated.properties?.length || 0}`);
-    return { ...comment, ...hydrated };
-  }
-
-  return comment;
-}
-
 function extractParentIdFromRemoteComment(comment) {
-  if (!comment) {
-    return null;
-  }
-
-  const directParent =
-    comment.parentId ||
-    comment.parentCommentId ||
-    comment.parent?.id ||
-    comment.parent?.commentId ||
-    comment.jsdParentId ||
-    comment.jsdParentID;
-
-  if (directParent) {
-    return String(directParent);
-  }
-
-  if (Array.isArray(comment.properties)) {
-    for (const property of comment.properties) {
-      const candidate = extractParentIdFromProperty(property);
-      if (candidate) {
-        return candidate;
-      }
-    }
-  }
-
-  return null;
+  return commentParentId(comment);
 }
 
 function extractPlainTextFromRemoteComment(comment) {
@@ -1317,58 +1334,6 @@ function extractPlainTextFromRemoteComment(comment) {
   }
 
   return '';
-}
-
-function extractParentIdFromProperty(property) {
-  if (!property) {
-    return null;
-  }
-
-  const key = String(property.key || '').toLowerCase();
-  if (!key.includes('parent') && !key.includes('thread')) {
-    return null;
-  }
-
-  return findParentIdInValue(property.value);
-}
-
-function findParentIdInValue(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  if (typeof value === 'string' || typeof value === 'number') {
-    const trimmed = String(value).trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const nested = findParentIdInValue(entry);
-      if (nested) {
-        return nested;
-      }
-    }
-    return null;
-  }
-
-  if (typeof value === 'object') {
-    const prioritizedKeys = ['parentId', 'parentCommentId', 'parentCommentID', 'commentId', 'id'];
-    for (const key of prioritizedKeys) {
-      if (value[key] !== undefined && value[key] !== null) {
-        return String(value[key]);
-      }
-    }
-
-    for (const nestedValue of Object.values(value)) {
-      const nested = findParentIdInValue(nestedValue);
-      if (nested) {
-        return nested;
-      }
-    }
-  }
-
-  return null;
 }
 
 function summarizeText(text, maxLength = 140) {

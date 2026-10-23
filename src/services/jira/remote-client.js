@@ -1,4 +1,5 @@
 import { fetch } from '@forge/api';
+import { readCommentJson, CommentVerificationDeferred } from './comment-read.js';
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { buildCanonicalAttachmentUrl, buildAttachmentUploadUrl } from '../../utils/attachment-url.js';
@@ -195,33 +196,20 @@ export async function uploadAttachment(remoteKey, filename, fileBuffer, config) 
   }
 }
 
-export async function getRemoteComment(issueKey, commentId, config) {
+export async function getRemoteComment(issueKey, commentId, config, budget) {
   if (!issueKey || !commentId || !config) {
-    return null;
+    throw new CommentVerificationDeferred();
   }
 
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
   const url = `${config.remoteUrl}/rest/api/3/issue/${issueKey}/comment/${commentId}?expand=properties`;
 
-  try {
-    const response = await retryWithBackoff(async () => {
-      return await fetch(url, {
+  return await readCommentJson(() => fetch(url, {
         method: 'GET',
+        redirect: 'error',
         headers: {
           'Authorization': `Basic ${auth}`,
           'Accept': 'application/json'
         }
-      });
-    }, `Get remote comment ${commentId}`);
-
-    if (response.ok) {
-      return await response.json();
-    }
-
-    console.error(`${LOG_EMOJI.ERROR} Failed to get remote comment ${commentId}`);
-    return null;
-  } catch (error) {
-    console.error(`${LOG_EMOJI.ERROR} Error getting remote comment ${commentId}:`, error);
-    return null;
-  }
+      }), budget);
 }

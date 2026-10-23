@@ -1,4 +1,5 @@
 import api, { route } from '@forge/api';
+import { readCommentJson } from './comment-read.js';
 
 export async function getFullIssue(issueKey) {
   try {
@@ -39,20 +40,10 @@ export async function probeLocalIssue(issueKey) {
   }
 }
 
-export async function getFullComment(issueKey, commentId) {
-  try {
-    const response = await api.asApp().requestJira(
+export async function getFullComment(issueKey, commentId, budget) {
+  return await readCommentJson(() => api.asApp().requestJira(
       route`/rest/api/3/issue/${issueKey}/comment/${commentId}?expand=renderedBody,properties`
-    );
-    if (!response.ok) {
-      console.error(`Failed to fetch comment ${commentId} for issue ${issueKey}: ${response.status}`);
-      return null;
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('Error fetching comment:', error);
-    return null;
-  }
+    ), budget);
 }
 
 /**

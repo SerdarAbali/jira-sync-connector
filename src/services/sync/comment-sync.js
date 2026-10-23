@@ -10,8 +10,12 @@ import { isProjectAllowedToSync } from '../../utils/validation.js';
 import { SyncResult } from './sync-result.js';
 import { isSyncing } from '../storage/flags.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
-import { safeErrorSummary } from '../../utils/redaction.js';
-import { assertPilotWritesAllowed } from './pilot-pause.js';
+import { safeErrorSummary, safeErrorForLog } from '../../utils/redaction.js';
+import { getPilotPause, assertPilotWritesAllowed } from './pilot-pause.js';
+import { verifyCommentThread, commentParentId, withParentHints, verifyFreshCommentThread } from './comment-confidentiality.js';
+import { commentReadBudget } from '../jira/comment-read.js';
+import { getCommentProjectType } from '../jira/comment-project.js';
+import { deferCommentVerification, markDeferredCommentSubmission, assertCommentVerificationReady } from './comment-verification-recovery.js';
 // Threading helpers were removed because Jira flattens replies; we now embed context inline.
 
 /**
@@ -36,12 +40,12 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     
     const commentsData = await commentsResponse.json();
     const localComments = commentsData.comments || [];
+    const commentLookup = new Map(localComments.map(comment => [String(comment.id), comment]));
     
     if (localComments.length === 0) {
       return { synced: 0, skipped: 0, failed: 0 };
     }
 
-    const commentLookup = new Map(localComments.map(comment => [String(comment.id), comment]));
     
     console.log(`${LOG_EMOJI.COMMENT} Found ${localComments.length} comments on ${localKey}`);
     
@@ -77,8 +81,32 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     let synced = 0;
     let skipped = 0;
     let failed = 0;
+    const projectContextCache = new Map();
     
     for (const comment of localComments) {
+      let verification;
+      try {
+        await assertCommentVerificationReady({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy',
+          issueKey: localKey, commentId: comment.id });
+        const budget = commentReadBudget();
+        budget.cache = projectContextCache;
+        verification = await verifyCommentThread(comment, {
+          expectedId: comment.id,
+          readParent: id => commentLookup.get(String(id)) || getFullComment(localKey, id, budget),
+          projectType: () => getCommentProjectType(localKey, null, budget)
+        });
+      } catch (error) {
+        if (error?.code !== 'COMMENT_VERIFICATION_DEFERRED') throw error;
+        await deferCommentVerification({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy',
+          issueKey: localKey, commentId: comment.id }, error);
+        skipped++;
+        continue;
+      }
+      if (!verification.allowed) {
+        console.log('Comment copy skipped: confidentiality not verified');
+        skipped++;
+        continue;
+      }
       if (comment.author?.accountType === 'app' || isConnectorGeneratedComment(comment.body)) {
         console.log(`${LOG_EMOJI.INFO} Skipping connector-generated comment ${comment.id} on ${localKey}`);
         skipped++;
@@ -102,14 +130,6 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
       }
       commentText = sanitizeCommentText(stripSyncPrefix(commentText)) || '';
       
-      const parentContext = await resolveLocalParentDetails(comment, localKey, commentLookup);
-      const commentBody = buildSyncedCommentADF({
-        orgName,
-        userName,
-        parentAuthor: parentContext?.parentAuthor || null,
-        parentSnippet: parentContext?.parentSnippet || null,
-        responseText: commentText
-      });
       const signature = `[Comment from ${orgName} - User: ${userName}]`;
       
       // Check if this comment likely already exists (by checking for similar content)
@@ -139,6 +159,18 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
       // Sync the comment
       try {
         await assertPilotWritesAllowed('comment_create_remote');
+        const finalBudget = commentReadBudget();
+        const final = await verifyFreshCommentThread({
+          readComment: () => getFullComment(localKey, comment.id, finalBudget), expectedId: comment.id,
+          readParent: id => getFullComment(localKey, id, finalBudget),
+          projectType: () => getCommentProjectType(localKey, null, finalBudget), hints: comment, knownAncestry: verification.ancestry
+        });
+        if (!final.allowed) { skipped++; continue; }
+        if (final.comment.author?.accountType === 'app' || isConnectorGeneratedComment(final.comment.body)) { skipped++; continue; }
+        const finalBody = verifiedCommentBody(final.comment, final.parent, orgName);
+        await assertPilotWritesAllowed('comment_create_remote');
+        await markDeferredCommentSubmission({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy',
+          issueKey: localKey, commentId: comment.id });
         const response = await executeWriteOnce(async () => {
           return await fetch(
             `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
@@ -148,7 +180,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
                 'Authorization': `Basic ${auth}`,
                 'Content-Type': 'application/json'
               },
-              body: JSON.stringify({ body: commentBody })
+              body: JSON.stringify({ body: finalBody })
             }
           );
         }, `Sync comment to ${remoteKey}`);
@@ -167,7 +199,11 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
           if (syncResult) syncResult.details.comments.failed++;
         }
       } catch (error) {
-        console.error(`${LOG_EMOJI.ERROR} Error syncing comment:`, error);
+        if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
+          await deferCommentVerification({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy', issueKey: localKey, commentId: comment.id }, error);
+          skipped++; continue;
+        }
+        console.error('Error syncing comment:', safeErrorForLog(error));
         failed++;
         if (syncResult) syncResult.details.comments.failed++;
       }
@@ -180,12 +216,14 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     return { synced, skipped, failed };
     
   } catch (error) {
-    console.error(`${LOG_EMOJI.ERROR} Error syncing comments for ${localKey}:`, error);
+    console.error('Error syncing comments:', safeErrorForLog(error));
     return { synced: 0, skipped: 0, failed: 0 };
   }
 }
 
-export async function syncComment(event) {
+export async function syncComment(event, recoveryOrgId = null) {
+  if (recoveryOrgId && (await getPilotPause()).paused) return { status: 'COMMENT_RETRY', reason: 'paused' };
+  let recoveryOutcome = { status: 'COMMENT_RETRY' };
   const issueKey = event.issue.key;
   const commentId = event.comment?.id;
 
@@ -195,11 +233,11 @@ export async function syncComment(event) {
       reason: 'loop-prevention',
       commentId
     });
-    return;
+    return { status: 'COMMENT_RETRY' };
   }
 
   // Get all organizations with their API tokens from secure storage
-  const organizations = await getOrganizationsWithTokens();
+  const organizations = (await getOrganizationsWithTokens()).filter(org => !recoveryOrgId || org.id === recoveryOrgId);
 
   if (organizations.length === 0) {
     console.log('Comment sync skipped: no organizations configured');
@@ -207,7 +245,7 @@ export async function syncComment(event) {
       reason: 'No target organizations configured in settings',
       commentId
     });
-    return;
+    return { status: 'COMMENT_RETRY' };
   }
 
   // Get issue to check project
@@ -218,11 +256,35 @@ export async function syncComment(event) {
       reason: 'Failed to retrieve issue from Jira API',
       commentId
     });
-    return;
+    return { status: 'COMMENT_RETRY' };
   }
 
   const projectKey = issue.fields.project.key;
-  const fullComment = await getFullComment(issueKey, commentId);
+  const budget = commentReadBudget();
+  let fullComment;
+  let verification;
+  try {
+    for (const org of organizations) await assertCommentVerificationReady({ direction: 'local-to-remote',
+      orgId: org.id || 'legacy', issueKey, commentId });
+    fullComment = await getFullComment(issueKey, commentId, budget);
+    // Event parent references are used only as identifiers, never as content.
+    const source = withParentHints(fullComment, event.comment);
+    verification = await verifyCommentThread(source, {
+      expectedId: commentId,
+      readParent: id => getFullComment(issueKey, id, budget),
+      projectType: () => getCommentProjectType(issueKey, null, budget)
+    });
+  } catch (error) {
+    if (error?.code === 'COMMENT_RECONCILIATION_REQUIRED') return { status: error.code };
+    if (error?.code !== 'COMMENT_VERIFICATION_DEFERRED') throw error;
+    for (const org of organizations) {
+      if (Array.isArray(org.allowedProjects) && org.allowedProjects.includes(projectKey)) {
+        await deferCommentVerification({ direction: 'local-to-remote', orgId: org.id || 'legacy',
+          issueKey, commentId, parentId: commentParentId(event.comment) }, error);
+      }
+    }
+    return { status: 'COMMENT_VERIFICATION_DEFERRED' };
+  }
   if (!fullComment) {
     console.log('Could not fetch full comment data');
     await trackWebhookSync('comment', false, 'Could not fetch comment data', null, issueKey, {
@@ -230,7 +292,12 @@ export async function syncComment(event) {
       commentId,
       projectKey
     });
-    return;
+    return { status: 'COMMENT_RETRY' };
+  }
+
+  if (!verification.allowed) {
+    console.log('Comment copy skipped: confidentiality not verified');
+    return { status: 'COMMENT_REJECTED' };
   }
 
   if (fullComment.author?.accountType === 'app'
@@ -242,29 +309,15 @@ export async function syncComment(event) {
       projectKey,
       author: fullComment.author?.displayName || 'SyncApp'
     });
-    return;
+    return { status: 'COMMENT_IGNORED_CONNECTOR' };
   }
 
   const orgName = await getOrgName();
   const userName = fullComment.author?.displayName || fullComment.author?.emailAddress || 'Unknown User';
 
-  let commentText = '';
-  if (fullComment.body && typeof fullComment.body === 'object') {
-    commentText = extractTextFromADF(fullComment.body);
-  } else {
-    commentText = fullComment.body || '';
-  }
-  commentText = sanitizeCommentText(stripSyncPrefix(commentText)) || '';
-
-  const parentContext = await resolveLocalParentDetails(fullComment, issueKey, null, event.comment);
+  const parentContext = verifiedParentContext(verification.parent);
   const parentLocalId = parentContext?.parentId || null;
-  const commentBody = buildSyncedCommentADF({
-    orgName,
-    userName,
-    parentAuthor: parentContext?.parentAuthor || null,
-    parentSnippet: parentContext?.parentSnippet || null,
-    responseText: commentText
-  });
+
 
   // Sync comment to all organizations
   for (const org of organizations) {
@@ -272,6 +325,7 @@ export async function syncComment(event) {
     const existingRemoteCommentId = await getRemoteCommentId(commentId, orgId);
     if (existingRemoteCommentId) {
       console.log(`${LOG_EMOJI.SKIP} Comment ${commentId} already synced to ${org.id || 'organization'} as ${existingRemoteCommentId}`);
+      recoveryOutcome = { status: 'COMMENT_ALREADY_MAPPED' };
       continue;
     }
 
@@ -301,7 +355,20 @@ export async function syncComment(event) {
     try {
       console.log(`${LOG_EMOJI.COMMENT} Syncing comment to ${org.id || 'organization'}: ${issueKey} → ${remoteKey}`);
 
+      const finalBudget = commentReadBudget();
+      const final = await verifyFreshCommentThread({
+        readComment: () => getFullComment(issueKey, commentId, finalBudget), expectedId: commentId,
+        readParent: id => getFullComment(issueKey, id, finalBudget),
+        projectType: () => getCommentProjectType(issueKey, null, finalBudget), hints: fullComment, knownAncestry: verification.ancestry
+      });
+      if (!final.allowed) { recoveryOutcome = { status: 'COMMENT_REJECTED' }; continue; }
+      if (final.comment.author?.accountType === 'app' || isConnectorGeneratedComment(final.comment.body)) {
+        recoveryOutcome = { status: 'COMMENT_IGNORED_CONNECTOR' }; continue;
+      }
+      const finalBody = verifiedCommentBody(final.comment, final.parent, orgName);
       await assertPilotWritesAllowed('comment_create_remote');
+      await markDeferredCommentSubmission({ direction: 'local-to-remote', orgId: org.id || 'legacy',
+        issueKey, commentId });
       const response = await executeWriteOnce(async () => {
         return await fetch(
           `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
@@ -311,7 +378,7 @@ export async function syncComment(event) {
               'Authorization': `Basic ${auth}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ body: commentBody })
+            body: JSON.stringify({ body: finalBody })
           }
         );
       }, `Sync comment to ${remoteKey}`);
@@ -321,6 +388,9 @@ export async function syncComment(event) {
         const remoteCommentId = remoteComment?.id;
         if (remoteCommentId) {
           await storeCommentMapping(commentId, remoteCommentId, orgId);
+          recoveryOutcome = { status: 'COMMENT_SYNCED' };
+        } else if (recoveryOrgId) {
+          return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
         }
 
         console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.id || 'organization'} (${remoteKey})${remoteCommentId ? ` → remote comment ${remoteCommentId}` : ''}`);
@@ -335,6 +405,7 @@ export async function syncComment(event) {
           parentRemoteId: null
         });
       } else {
+        if (recoveryOrgId) return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
         console.error(`${LOG_EMOJI.ERROR} Comment sync failed for ${org.id || 'organization'}`);
         const safeFailure = formatHttpFailure(response.status);
         syncResult.details.comments.failed++;
@@ -347,7 +418,13 @@ export async function syncComment(event) {
         });
       }
     } catch (error) {
-      console.error(`${LOG_EMOJI.ERROR} Error syncing comment to ${org.id || 'organization'}:`, error);
+      if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
+        await deferCommentVerification({ direction: 'local-to-remote', orgId: org.id || 'legacy', issueKey, commentId }, error);
+        recoveryOutcome = { status: error.code };
+        continue;
+      }
+      if (error?.code === 'PILOT_PAUSED') return { status: 'COMMENT_RETRY', reason: 'paused' };
+      console.error('Error syncing comment:', safeErrorForLog(error));
       const safeFailure = safeErrorSummary(error.message);
       syncResult.details.comments.failed++;
       syncResult.addError(`Error syncing comment: ${safeFailure}`);
@@ -356,6 +433,7 @@ export async function syncComment(event) {
         projectKey,
         commentId
       });
+      if (recoveryOrgId) return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
     }
 
     // Log summary for this org
@@ -363,59 +441,16 @@ export async function syncComment(event) {
   }
 
   console.log(`\n✅ Completed comment sync for ${issueKey} across ${organizations.length} organization(s)`);
+  return recoveryOutcome;
 }
 
-async function resolveLocalParentDetails(primaryComment, issueKey, commentLookup = null, fallbackComment = null) {
-  const parentId = extractLocalParentId(primaryComment, fallbackComment);
-  if (!parentId) {
-    return null;
-  }
-
-  let parentComment = null;
-  if (commentLookup && commentLookup.has(String(parentId))) {
-    parentComment = commentLookup.get(String(parentId));
-  }
-
-  if (!parentComment && issueKey) {
-    try {
-      parentComment = await getFullComment(issueKey, parentId);
-    } catch (error) {
-      console.log(`${LOG_EMOJI.INFO} Could not load parent comment ${parentId} on ${issueKey}: ${error.message}`);
-    }
-  }
-
-  if (!parentComment) {
-    return { parentId };
-  }
-
+function verifiedParentContext(parentComment) {
+  if (!parentComment) return null;
   return {
-    parentId,
+    parentId: String(parentComment.id),
     parentAuthor: parentComment.author?.displayName || parentComment.author?.emailAddress || null,
     parentSnippet: extractPlainTextFromComment(parentComment)
   };
-}
-
-function extractLocalParentId(primaryComment, fallbackComment = null) {
-  const candidates = [primaryComment, fallbackComment];
-  for (const comment of candidates) {
-    if (!comment) {
-      continue;
-    }
-
-    const directParent =
-      comment.parentId ||
-      comment.parentCommentId ||
-      comment.parent?.id ||
-      comment.parent?.commentId ||
-      comment.jsdParentId ||
-      comment.jsdParentID;
-
-    if (directParent) {
-      return String(directParent);
-    }
-  }
-
-  return null;
 }
 
 function extractPlainTextFromComment(comment) {
@@ -456,4 +491,13 @@ async function parseJsonSafely(response) {
   } catch (error) {
     return null;
   }
+}
+
+function verifiedCommentBody(comment, parent, orgName) {
+  const context = verifiedParentContext(parent);
+  const text = typeof comment.body === 'object' ? extractTextFromADF(comment.body) : comment.body || '';
+  return buildSyncedCommentADF({ orgName,
+    userName: comment.author?.displayName || comment.author?.emailAddress || 'Unknown User',
+    parentAuthor: context?.parentAuthor || null, parentSnippet: context?.parentSnippet || null,
+    responseText: sanitizeCommentText(stripSyncPrefix(text)) || '' });
 }
