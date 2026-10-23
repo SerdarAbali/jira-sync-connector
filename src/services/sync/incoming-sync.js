@@ -397,7 +397,7 @@ function extractRejectedFields(bodyText) {
  * @returns {{ ok: boolean, response?: any, status?: number, skippedFields: string[], failure?: string }}
  */
 async function writeJiraIssueWithRecovery({ method, issueKey, payload, context, originalLocalKey = null }) {
-  await assertPilotWritesAllowed(issueKey ? 'issue_update_local' : 'issue_create_local');
+  const pauseOperation = issueKey ? 'issue_update_local' : 'issue_create_local';
   const skippedFields = [];
   const allowFieldRetry = Boolean(issueKey);
   let fields = { ...(payload.fields || {}) };
@@ -407,6 +407,9 @@ async function writeJiraIssueWithRecovery({ method, issueKey, payload, context, 
       ? route`/rest/api/3/issue/${issueKey}`
       : route`/rest/api/3/issue`;
 
+    // Re-checked on every attempt: the field-stripping retry must not submit a
+    // write after the administrator paused the connector.
+    await assertPilotWritesAllowed(pauseOperation);
     await assertInboundScope({ orgId: context.orgId, issueKeys: [issueKey, originalLocalKey, fields.parent?.key].filter(Boolean),
       projectKey: issueKey ? null : fields.project?.key, includeCurrentParents: Boolean(issueKey && 'parent' in fields) });
     const response = await api.asApp().requestJira(url, {

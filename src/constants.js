@@ -9,7 +9,20 @@ export const MAX_STORAGE_SIZE = 240000; // 240 KiB limit per key in Forge (verif
 export const SCHEDULED_SYNC_DELAY_MS = 500; // Delay between issues in scheduled sync
 export const RETRY_BASE_DELAY_MS = 1000; // Base delay for exponential backoff (1 second)
 export const MAX_RETRY_ATTEMPTS = 3; // Maximum number of retry attempts for failed API calls
-export const RATE_LIMIT_RETRY_DELAY_MS = 60000; // Wait 1 minute when rate limited (429)
+
+// Retry execution budgets.
+//
+// Forge invocation limits are not uniform: product-event triggers and resolvers
+// run for at most 25 seconds, async consumer/scheduled functions default to
+// 55 seconds and may be raised up to 900 seconds with timeoutSeconds. Forge
+// exposes no remaining-time API, so retries use one conservative budget that
+// fits inside the shortest supported context. A Jira Retry-After deadline that
+// does not fit inside the remaining budget is deferred instead of slept away.
+export const RETRY_SAFE_BUDGET_MS = 10000; // Total wait allowed per retry helper call
+export const RETRY_MIN_WAIT_MS = 250; // Floor for an honored Retry-After delay
+export const MAX_RETRY_AFTER_MS = 3600000; // Bounded representation of Retry-After (1 hour)
+export const RATE_LIMIT_RETRY_FALLBACK_MS = 5000; // Used only when Jira omits Retry-After
+export const WRITE_RETRY_MAX_ATTEMPTS = 2; // Idempotent write: initial attempt plus one retry
 export const BATCH_SIZE = 10; // Number of issues to process per batch in scheduled sync
 export const BATCH_DELAY_MS = 5000; // Delay between batches (5 seconds) to avoid rate limits
 

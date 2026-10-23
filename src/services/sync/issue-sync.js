@@ -1,7 +1,8 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
-import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
+import { executeWriteOnce } from '../../utils/retry.js';
+import { executeWriteWithRetry } from './write-retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument, stripCounterpartNoticeFromADF } from '../../utils/adf.js';
 import { mapUserToRemote, reverseMapping } from '../../utils/mapping.js';
 import { getRemoteKey, storeMapping, getOrganizationsWithTokens, setLastSyncedLocalUpdated, storeLinkMapping, replaceIssueMapping } from '../storage/mappings.js';
@@ -57,6 +58,27 @@ let epicLinkFieldCache = {
 };
 
 const CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
+
+/**
+ * Safe, tenant-neutral description of a write that was not submitted because of
+ * the emergency pause, a deferred Retry-After deadline, an unverifiable pause
+ * state or an ambiguous outcome. Returns null for errors that are not one of
+ * those classifications, so callers can keep rethrowing unexpected failures.
+ */
+function describeDeferredWrite(error, label) {
+  switch (error?.code) {
+    case 'PILOT_PAUSED':
+      return `${label} skipped: connector paused`;
+    case 'PAUSE_STATE_UNAVAILABLE':
+      return `${label} skipped: pause state could not be verified`;
+    case 'RATE_LIMIT_DEFERRED':
+      return `${label} deferred by Jira rate limiting`;
+    case 'AMBIGUOUS_WRITE_OUTCOME':
+      return `${label} outcome ambiguous; not retried`;
+    default:
+      return null;
+  }
+}
 
 function hasNonFieldContentChange(event) {
   const items = event?.changelog?.items;
@@ -1011,25 +1033,35 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           if (syncResult) syncResult.addWarning('Skipped remote cross-reference: description could not be safely preserved');
         } else {
           console.log(`🔗 Updating remote issue ${result.key} with cross-reference...`);
-          await assertPilotWritesAllowed('issue_description_update_remote');
-          const updateResponse = await retryWithBackoff(async () => {
-            return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
-              method: 'PUT',
-              headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                fields: {
-                  description: remoteDescriptionWithRef
-                }
-              })
-            });
-          }, `Update description for ${result.key}`);
+          let updateResponse = null;
+          try {
+            updateResponse = await executeWriteWithRetry(async () => {
+              return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
+                method: 'PUT',
+                headers: {
+                  'Authorization': `Basic ${auth}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  fields: {
+                    description: remoteDescriptionWithRef
+                  }
+                })
+              });
+            }, `Update description for ${result.key}`, { pauseOperation: 'issue_description_update_remote' });
+          } catch (error) {
+            // The issue is already created and mapped. A paused, deferred or
+            // ambiguous cross-reference must not be reported as a failed
+            // creation, and it is never retried blindly.
+            const deferredWarning = describeDeferredWrite(error, 'Remote cross-reference update');
+            if (!deferredWarning) throw error;
+            console.log(`${LOG_EMOJI.WARNING} ${deferredWarning}`);
+            if (syncResult) syncResult.addWarning(deferredWarning);
+          }
 
-          if (updateResponse.ok || updateResponse.status === HTTP_STATUS.NO_CONTENT) {
+          if (updateResponse && (updateResponse.ok || updateResponse.status === HTTP_STATUS.NO_CONTENT)) {
             console.log(`${LOG_EMOJI.SUCCESS} Updated remote issue with cross-reference`);
-          } else {
+          } else if (updateResponse) {
             const warningMsg = 'Could not update remote description with cross-reference';
             console.log(`${LOG_EMOJI.WARNING} ${warningMsg}`);
             if (syncResult) syncResult.addWarning(warningMsg);
@@ -1066,19 +1098,25 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
             Object.keys(attachmentMapping).length > 0) {
           const correctedDescription = await replaceMediaIdsInADF(issue.fields.description, attachmentMapping);
           console.log(`🖼️ Updating description with corrected media references...`);
-          await assertPilotWritesAllowed('issue_description_update_remote');
-          await retryWithBackoff(async () => {
-            return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
-              method: 'PUT',
-              headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                fields: { description: correctedDescription }
-              })
-            });
-          }, `Update description for ${result.key}`);
+          try {
+            await executeWriteWithRetry(async () => {
+              return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
+                method: 'PUT',
+                headers: {
+                  'Authorization': `Basic ${auth}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  fields: { description: correctedDescription }
+                })
+              });
+            }, `Update description for ${result.key}`, { pauseOperation: 'issue_description_update_remote' });
+          } catch (error) {
+            const deferredWarning = describeDeferredWrite(error, 'Remote description update');
+            if (!deferredWarning) throw error;
+            console.log(`${LOG_EMOJI.WARNING} ${deferredWarning}`);
+            if (syncResult) syncResult.addWarning(deferredWarning);
+          }
         }
         console.log(`⏭️ Skipping cross-reference sync (disabled in sync options)`);
       }
@@ -1540,17 +1578,31 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
         };
       }
 
-      await assertPilotWritesAllowed('issue_update_remote');
-      const response = await retryWithBackoff(async () => {
-        return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?notifyUsers=false`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `Basic ${auth}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(updateData)
-        });
-      }, `Update issue ${remoteKey}`);
+      let response;
+      try {
+        // The pause gate is re-verified inside the wrapper immediately before
+        // every submission, so a pause activated during a rate-limit wait stops
+        // the retried write.
+        response = await executeWriteWithRetry(async () => {
+          return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?notifyUsers=false`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(updateData)
+          });
+        }, `Update issue ${remoteKey}`, { pauseOperation: 'issue_update_remote' });
+      } catch (error) {
+        const deferredFailure = describeDeferredWrite(error, 'Remote issue update');
+        if (!deferredFailure) throw error;
+        const suffix = error?.code === 'RATE_LIMIT_DEFERRED' && error.retryAfterMs !== null
+          ? `; no retry submitted in this invocation (Jira asked for ${error.retryAfterMs}ms)`
+          : '';
+        console.warn(`${LOG_EMOJI.WARNING} ${deferredFailure}${suffix}`);
+        if (syncResult) syncResult.addError(deferredFailure);
+        return null;
+      }
 
       if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
         console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
