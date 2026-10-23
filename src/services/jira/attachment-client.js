@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import api, { fetch, route } from '@forge/api';
+import api, { fetch, route } from './guarded-api.js';
 import {
   buildAttachmentDeleteUrl,
   buildAttachmentMetadataUrl,

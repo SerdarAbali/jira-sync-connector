@@ -1,3 +1,4 @@
+import { runWithIssueLease } from './issue-lease-context.js';
 const BASE_REMOTE_FIELDS = [
   'summary',
   'description',
@@ -45,7 +46,7 @@ const BLOCKED_FIELD_KEYS = new Set([
   'progress',
   'watches'
 ]);
-import api, { fetch, route } from '@forge/api';
+import api, { fetch, route } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
 import { recordAuthenticatedWebhookReceipt } from '../storage/webhook-receipt.js';
 import { getLocalKey, storeMapping, ensureMappingPair, storeLinkMapping, getLinkMapping, removeLinkMapping, getLocalCommentId, storeCommentMapping, replaceIssueMapping } from '../storage/mappings.js';
@@ -527,6 +528,7 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
     return;
   }
 
+  return await runWithIssueLease(lease, async () => {
   try {
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
@@ -662,6 +664,7 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
   }
+  });
 }
 
 async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
@@ -775,6 +778,7 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
   }
 
 
+  return await runWithIssueLease(lease, async () => {
   await markSyncing(localKey);
   try {
     const latest = await getLatestAccepted({
@@ -905,6 +909,7 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
     await clearSyncFlag(localKey);
     await releaseIssueLease({ key: lease.key, token: lease.token });
   }
+  });
 }
 
 async function handleRemoteIssueDeleted(remoteIssue, context) {

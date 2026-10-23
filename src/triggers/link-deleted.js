@@ -1,4 +1,4 @@
-import api, { route, fetch } from '@forge/api';
+import api, { route, fetch } from '../services/jira/guarded-api.js';
 import { getRemoteKey, getOrganizationsWithTokens, removeLinkMapping } from '../services/storage/mappings.js';
 import { assertPilotWritesAllowed } from '../services/sync/pilot-pause.js';
 

@@ -1,4 +1,4 @@
-import { fetch } from '@forge/api';
+import { fetch } from './guarded-api.js';
 import { readCommentJson, CommentVerificationDeferred } from './comment-read.js';
 import { retryWithBackoff, executeWriteOnce } from '../../utils/retry.js';
 import { LOG_EMOJI } from '../../constants.js';

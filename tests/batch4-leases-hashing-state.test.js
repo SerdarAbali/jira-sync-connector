@@ -1,3 +1,4 @@
+import { entities, state, requests } from './helpers/forge-lease-runtime';
 const mockStore = new Map();
 
 jest.mock('../src/services/storage/kvs.js', () => ({
@@ -27,6 +28,7 @@ import {
   releaseIssueLease,
   withIssueLease,
   buildIssueLeaseKey,
+  issueLeaseEntityKey,
   DEFAULT_ISSUE_LEASE_TTL_SECONDS
 } from '../src/services/sync/issue-lease.js';
 import {
@@ -53,6 +55,21 @@ beforeEach(() => {
 });
 
 describe('Batch 4 per-issue leases', () => {
+  test('F07: successor survives replacement between release read and delete', async () => {
+    const oldLease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1' });
+    let successor;
+    state.beforeTransaction = async body => {
+      expect(body.delete).toHaveLength(1);
+      // Delay A's release request while the expired row is taken over by B.
+      successor = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1', now: Date.now() + 121000 });
+    };
+
+    await releaseIssueLease({ key: oldLease.key, token: oldLease.token });
+
+    expect(successor.acquired).toBe(true);
+    expect(entities.get(successor.key)?.leaseToken).toBe(successor.token);
+  });
+
   test('1. first lease acquisition succeeds', async () => {
     const lease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
     expect(lease).toEqual(expect.objectContaining({ acquired: true, status: 'ACQUIRED' }));
@@ -66,48 +83,41 @@ describe('Batch 4 per-issue leases', () => {
     expect(second).toEqual(expect.objectContaining({ acquired: false, status: 'SYNC_ALREADY_IN_PROGRESS' }));
   });
 
-  test('3. lease uses FAIL_IF_EXISTS and a bounded native TTL', async () => {
+  test('3. lease uses a conditional entity create and bounded application expiry', async () => {
     const lease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
-    expect(kvsStore.setIfNotExists).toHaveBeenCalledWith(
-      lease.key,
-      expect.objectContaining({
-        orgId: 'org-1',
-        localKey: 'LOCAL-1',
-        remoteKey: 'REMOTE-1',
-        direction: 'unknown',
-        leaseToken: lease.token
-      }),
-      DEFAULT_ISSUE_LEASE_TTL_SECONDS
-    );
-    const stored = mockStore.get(lease.key);
+    const creation = requests.find(request => request.body.set)?.body.set[0];
+    expect(creation).toMatchObject({ key: lease.key, entityName: 'issue-lease',
+      conditions: { and: [{ property: 'leaseToken', condition: 'NOT_EXISTS', values: [true] }] } });
+    const stored = entities.get(lease.key);
+    expect(stored.expiresAt - Date.now()).toBeLessThanOrEqual(DEFAULT_ISSUE_LEASE_TTL_SECONDS * 1000);
     expect(stored).not.toHaveProperty('description');
     expect(stored).not.toHaveProperty('summary');
-    expect(Date.parse(stored.expiresAt)).toBeGreaterThan(Date.parse(stored.acquiredAt));
+    expect(stored.expiresAt).toBeGreaterThan(Date.now());
   });
 
   test('4. only the matching lease token can release the lease', async () => {
     const lease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1' });
     const wrong = await releaseIssueLease({ key: lease.key, token: '0'.repeat(64) });
     expect(wrong.released).toBe(false);
-    expect(mockStore.has(lease.key)).toBe(true);
+    expect(entities.has(lease.key)).toBe(true);
 
     const correct = await releaseIssueLease({ key: lease.key, token: lease.token });
     expect(correct.released).toBe(true);
-    expect(mockStore.has(lease.key)).toBe(false);
+    expect(entities.has(lease.key)).toBe(false);
   });
 
   test('5. an old invocation cannot release a newer lease', async () => {
     const oldLease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1' });
-    mockStore.delete(oldLease.key);
+    entities.delete(oldLease.key);
     const newLease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1' });
 
     const released = await releaseIssueLease({ key: oldLease.key, token: oldLease.token });
     expect(released.released).toBe(false);
-    expect(mockStore.get(newLease.key).leaseToken).toBe(newLease.token);
+    expect(entities.get(newLease.key).leaseToken).toBe(newLease.token);
   });
 
   test('6. storage failure is reported as a storage failure, not a duplicate', async () => {
-    kvsStore.setIfNotExists.mockRejectedValueOnce(Object.assign(new Error('quota exceeded'), { code: 'QUOTA' }));
+    state.failure = Object.assign(new Error('quota exceeded'), { code: 'QUOTA' });
     const lease = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1' });
     expect(lease).toEqual(expect.objectContaining({ acquired: false, status: 'LEASE_STORAGE_ERROR' }));
   });
@@ -117,8 +127,8 @@ describe('Batch 4 per-issue leases', () => {
       throw new Error('boom');
     })).rejects.toThrow('boom');
 
-    expect(kvsStore.del).toHaveBeenCalledWith(buildIssueLeaseKey({ orgId: 'org-1', localKey: 'LOCAL-1' }));
-    expect(mockStore.size).toBe(0);
+    expect(requests.some(request => request.body.delete?.[0]?.key === issueLeaseEntityKey(buildIssueLeaseKey({ orgId: 'org-1', localKey: 'LOCAL-1' })))).toBe(true);
+    expect(entities.size).toBe(0);
   });
 
   test('8. scheduled and webhook directions contend on the same issue-pair lease', async () => {

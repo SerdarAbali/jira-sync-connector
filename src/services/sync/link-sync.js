@@ -1,4 +1,4 @@
-import { fetch } from '@forge/api';
+import { fetch } from '../jira/guarded-api.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { safeErrorSummary } from '../../utils/redaction.js';

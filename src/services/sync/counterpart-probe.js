@@ -1,5 +1,5 @@
 import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
-import { fetch } from '@forge/api';
+import { fetch } from '../jira/guarded-api.js';
 import { getFullIssue, probeLocalIssue, updateLocalIssueDescription } from '../jira/local-client.js';
 import { probeRemoteIssue } from '../jira/remote-client.js';
 import { getPilotPause } from './pilot-pause.js';

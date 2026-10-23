@@ -1,5 +1,6 @@
 module.exports = {
   testEnvironment: 'jsdom',
+  setupFilesAfterEnv: ['<rootDir>/tests/forge-lease-setup.js'],
   transform: {
     '^.+\\.[jt]sx?$': 'babel-jest',
   },

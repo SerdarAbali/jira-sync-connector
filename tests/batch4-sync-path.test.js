@@ -1,3 +1,4 @@
+import { entities } from './helpers/forge-lease-runtime';
 const mockStore = new Map();
 
 jest.mock('@forge/api', () => {
@@ -92,6 +93,7 @@ import { prependCrossReferenceToADF, adfPreservesOriginalContent } from '../src/
 import { storeMapping, getLocalKey } from '../src/services/storage/mappings.js';
 import { getRemoteIssue } from '../src/services/jira/remote-client.js';
 import { getFullIssue } from '../src/services/jira/local-client.js';
+import { markSyncing } from '../src/services/storage/flags.js';
 import { run as runBulkSync } from '../src/triggers/bulk-sync.js';
 import { defineDiagnosticsResolvers } from '../src/resolvers/diagnostics.js';
 
@@ -152,6 +154,40 @@ beforeEach(() => {
 
 
 describe('Batch 4 issue write paths', () => {
+  test('F07: worker resumed after 120-second expiry and successor acquisition submits no PUT', async () => {
+    const clock = jest.spyOn(Date, 'now');
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    let resume;
+    let reached;
+    const held = new Promise(resolve => { resume = resolve; });
+    const entered = new Promise(resolve => { reached = resolve; });
+    markSyncing.mockImplementationOnce(async () => { reached(); await held; });
+    const worker = updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), {
+      syncAttachments: false, syncLinks: false, syncComments: false
+    });
+    try {
+      await entered;
+      const [key, lease] = [...entities.entries()][0];
+      // Model one permitted TTL-cleanup schedule, not guaranteed immediate
+      // removal. 121 seconds is still inside a 900-second Forge invocation.
+      clock.mockReturnValue(start + 121000);
+      expect(lease.expiresAt).toBeLessThan(Date.now());
+      // Leave the expired row physically present: takeover must not need TTL cleanup.
+      const successor = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
+      expect(successor.acquired).toBe(true);
+      resume();
+      await worker;
+      const writes = mockFetch.mock.calls.filter(([, options]) => options?.method === 'PUT');
+      expect(writes).toHaveLength(0);
+      expect(entities.get(key)?.leaseToken).toBe(successor.token);
+    } finally {
+      resume();
+      await worker;
+      clock.mockRestore();
+    }
+  });
+
   test('19. a failed destination write does not advance the latest accepted timestamp', async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'rejected' });
     const result = await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(), { syncAttachments: false, syncLinks: false, syncComments: false });
@@ -306,6 +342,32 @@ describe('Batch 4 inbound and safety regressions', () => {
       observedSide: 'local',
       fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: false })
     })).resolves.toEqual(expect.objectContaining({ echo: true }));
+  });
+
+  test('F07: inbound worker resumed after takeover submits no local write', async () => {
+    authContext();
+    getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' }, summary: 'Local' } });
+    getRemoteIssue.mockResolvedValue({ key: 'REMOTE-1', fields: localIssue({ summary: 'Remote change' }).fields });
+    let resume, reached;
+    const held = new Promise(resolve => { resume = resolve; });
+    const entered = new Promise(resolve => { reached = resolve; });
+    markSyncing.mockImplementationOnce(async () => { reached(); await held; });
+    const clock = jest.spyOn(Date, 'now');
+    const start = Date.now(); clock.mockReturnValue(start);
+    const worker = processIncomingWebhook({ webhookEvent: 'jira:issue_updated', timestamp: start,
+      issue: { id: '20001', key: 'REMOTE-1', fields: { updated: '2026-10-21T12:00:00.000Z' } }
+    }, { orgId: 'org-1', credential });
+    try {
+      await entered;
+      clock.mockReturnValue(start + 121000);
+      const successor = await acquireIssueLease({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
+      expect(successor.acquired).toBe(true);
+      resume(); await worker;
+      expect(mockRequestJira.mock.calls.filter(([, options]) => options?.method === 'PUT' || options?.method === 'POST')).toHaveLength(0);
+      expect(entities.get(successor.key)?.leaseToken).toBe(successor.token);
+    } finally {
+      resume(); await worker; clock.mockRestore();
+    }
   });
 
   test('46. cross-reference description preservation still holds', () => {

@@ -1,4 +1,4 @@
-import api, { route, fetch } from '@forge/api';
+import api, { route, fetch } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';

@@ -1,4 +1,4 @@
-import api, { route } from '@forge/api';
+import api, { route } from './guarded-api.js';
 import { readCommentJson } from './comment-read.js';
 
 export async function getFullIssue(issueKey) {

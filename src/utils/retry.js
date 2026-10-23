@@ -17,6 +17,9 @@ const BACKOFF_MULTIPLIER = 2;
 // and retrying cannot help: a paused connector must stay stopped, and a
 // deferred or ambiguous write must be resolved by recovery or an administrator.
 const NON_RETRYABLE_CODES = new Set([
+  'LEASE_NOT_OWNED',
+  'LEASE_OWNERSHIP_UNAVAILABLE',
+  'LEASE_MIGRATION_REQUIRED',
   'PILOT_PAUSED',
   'PAUSE_STATE_UNAVAILABLE',
   'RATE_LIMIT_DEFERRED',
@@ -237,6 +240,7 @@ export async function executeWriteOnce(fn, operation = 'write', options = {}) {
   try {
     result = await fn();
   } catch (error) {
+    if (isNonRetryableError(error)) throw error;
     throw await trackAmbiguous(error);
   }
 

@@ -1,4 +1,5 @@
-import api, { route, fetch } from '@forge/api';
+import { runWithIssueLease } from './issue-lease-context.js';
+import api, { route, fetch } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
@@ -599,7 +600,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
     return null;
   }
   try {
-    return await createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult, orgId, depth);
+    return await runWithIssueLease(lease, () => createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult, orgId, depth));
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
   }
@@ -1229,7 +1230,7 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
   }
 
   try {
-    return await updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult, orgId);
+    return await runWithIssueLease(lease, () => updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult, orgId));
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
   }

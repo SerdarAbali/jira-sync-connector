@@ -1,5 +1,5 @@
 import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
-import api, { fetch, route } from '@forge/api';
+import api, { fetch, route } from '../jira/guarded-api.js';
 import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { reverseMapping } from '../../utils/mapping.js';
