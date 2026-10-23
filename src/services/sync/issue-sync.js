@@ -51,6 +51,7 @@ import {
   normalizeCounterpartStatusClass
 } from './counterpart-status.js';
 import { probeCounterpart } from './counterpart-probe.js';
+import { resolveTargetProjectKey } from './project-routing.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
@@ -673,12 +674,22 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     }
   }
   
-  // Determine target project key - use project mapping if available, otherwise fall back to org default
+  // Determine target project key from the organization's authoritative project
+  // mappings. Unmapped source projects may use the organization default, but a
+  // present-but-invalid mapping (or a missing valid default) fails closed
+  // instead of silently creating the issue in the wrong project.
   const localProjectKey = issue.fields.project.key;
-  let targetProjectKey = org.remoteProjectKey; // Default fallback
-  
-  if (mappings.projectMappings && mappings.projectMappings[localProjectKey]) {
-    targetProjectKey = mappings.projectMappings[localProjectKey];
+  const routing = resolveTargetProjectKey(localProjectKey, {
+    projectMappings: mappings?.projectMappings,
+    remoteProjectKey: org.remoteProjectKey
+  });
+  if (!routing.key) {
+    console.error(`${LOG_EMOJI.ERROR} Cannot route ${issue.key} (${localProjectKey}) for ${org.id || 'organization'}: ${routing.reason}`);
+    if (syncResult) syncResult.addWarning(`create-blocked:${routing.reason}`);
+    throw new Error(`Cannot create remote issue for ${issue.key}: ${routing.reason}`);
+  }
+  const targetProjectKey = routing.key;
+  if (targetProjectKey !== org.remoteProjectKey) {
     console.log(`🔄 Mapped project: ${localProjectKey} → ${targetProjectKey}`);
   }
   

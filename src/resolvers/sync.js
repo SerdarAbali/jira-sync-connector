@@ -68,11 +68,12 @@ export function defineSyncResolvers(resolver) {
           continue;
         }
         // Fetch org-specific mappings
-        const [userMappings, fieldMappings, statusMappings, issueTypeMappings, syncOptions] = await Promise.all([
+        const [userMappings, fieldMappings, statusMappings, issueTypeMappings, projectMappings, syncOptions] = await Promise.all([
           kvsStore.get(org.id === 'legacy' ? 'userMappings' : `userMappings:${org.id}`),
           kvsStore.get(org.id === 'legacy' ? 'fieldMappings' : `fieldMappings:${org.id}`),
           kvsStore.get(org.id === 'legacy' ? 'statusMappings' : `statusMappings:${org.id}`),
           kvsStore.get(org.id === 'legacy' ? 'issueTypeMappings' : `issueTypeMappings:${org.id}`),
+          kvsStore.get(org.id === 'legacy' ? 'projectMappings' : `projectMappings:${org.id}`),
           kvsStore.get(org.id === 'legacy' ? 'syncOptions' : `syncOptions:${org.id}`)
         ]);
 
@@ -80,7 +81,8 @@ export function defineSyncResolvers(resolver) {
           userMappings: userMappings || {},
           fieldMappings: fieldMappings || {},
           statusMappings: statusMappings || {},
-          issueTypeMappings: issueTypeMappings || {}
+          issueTypeMappings: issueTypeMappings || {},
+          projectMappings: projectMappings || {}
         };
 
         const existingRemoteKey = await getRemoteKey(issueKey, org.id === 'legacy' ? null : org.id);

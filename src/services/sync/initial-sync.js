@@ -18,6 +18,10 @@ import {
 import { getPilotPause } from './pilot-pause.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { isKeyConflictError } from '../../utils/storage-errors.js';
+import {
+  PROJECT_ROUTING_REASONS,
+  resolveTargetProjectKey
+} from './project-routing.js';
 
 export const INITIAL_SYNC_QUEUE_KEY = 'initial-sync-queue';
 export const INITIAL_SYNC_JOB_PREFIX = 'initialSyncJob:';
@@ -406,17 +410,19 @@ function resolveMappedIssueType(issueType, issueTypeMappings) {
 }
 
 function resolveTargetProject(projectKey, configuration) {
-  const mapped = configuration.mappings.projectMappings[projectKey];
-  if (mapped !== undefined) {
-    if (typeof mapped !== 'string' || !PROJECT_KEY_PATTERN.test(mapped)) {
-      return { key: null, reason: INITIAL_SYNC_REASONS.INVALID_PROJECT_MAPPING };
-    }
-    return { key: mapped, reason: null };
+  const routing = resolveTargetProjectKey(projectKey, {
+    projectMappings: configuration.mappings.projectMappings,
+    remoteProjectKey: configuration.remoteProjectKey
+  });
+  if (routing.key) {
+    return { key: routing.key, reason: null };
   }
-  if (!PROJECT_KEY_PATTERN.test(configuration.remoteProjectKey)) {
-    return { key: null, reason: INITIAL_SYNC_REASONS.TARGET_PROJECT_MISSING };
-  }
-  return { key: configuration.remoteProjectKey, reason: null };
+  return {
+    key: null,
+    reason: routing.reason === PROJECT_ROUTING_REASONS.INVALID_PROJECT_MAPPING
+      ? INITIAL_SYNC_REASONS.INVALID_PROJECT_MAPPING
+      : INITIAL_SYNC_REASONS.TARGET_PROJECT_MISSING
+  };
 }
 
 function validateIssueForCreate(issue, configuration) {
