@@ -28,6 +28,7 @@ describe('Batch 6 CI and dependency reproducibility', () => {
     expect(workflow).toContain('npm run lint');
     expect(workflow).toContain('npm audit --omit=dev');
     expect(workflow).toContain('npm run check:secrets');
+    expect(workflow).toContain('./node_modules/.bin/forge settings set usage-analytics false');
     expect(workflow).toContain('npm run check:forge:offline');
     expect(workflow).toContain('working-directory: static/admin-page');
     expect(workflow).toContain('npm run build');

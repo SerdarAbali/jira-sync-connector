@@ -37,7 +37,7 @@ jobs:
         run: npm run check:secrets
 
       - name: Configure Forge CLI for non-interactive use
-        run: forge settings set usage-analytics false
+        run: ./node_modules/.bin/forge settings set usage-analytics false
 
       - name: Forge lint (offline static checks)
         run: npm run check:forge:offline
