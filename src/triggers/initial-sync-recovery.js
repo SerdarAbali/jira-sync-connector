@@ -4,6 +4,7 @@ import { recoverCommentVerifications } from '../services/sync/comment-verificati
 import { syncComment } from '../services/sync/comment-sync.js';
 import { processIncomingWebhook } from '../services/sync/incoming-sync.js';
 import { getPilotPause } from '../services/sync/pilot-pause.js';
+import { recoverPostCreateAttachments } from '../services/sync/post-create-attachments.js';
 import * as storage from '../services/storage/kvs.js';
 
 /**
@@ -47,16 +48,21 @@ export async function run() {
       }
       const credential = await storage.getSecret(`secret:${record.orgId}:incomingSecret`);
       return await processIncomingWebhook({ webhookEvent: 'comment_created',
-        issue: { key: record.issueKey }, comment: { id: record.commentId, ...(record.parentId ? { parentId: record.parentId } : {}) } }, { orgId: record.orgId, credential });
+        issue: { key: record.issueKey }, comment: { id: record.commentId, ...(record.parentId ? { parentId: record.parentId } : {}) } }, { orgId: record.orgId, credential }, { commentAncestry: record.ancestry });
     });
   } catch {
     console.warn('Comment verification recovery deferred');
     comments = { recovered: 0 };
   }
 
+  let attachments;
+  try { attachments = await recoverPostCreateAttachments(); }
+  catch { attachments = { completed: 0 }; }
+
   return {
     ...initialSync,
     reconciliation,
-    comments
+    comments,
+    attachments
   };
 }

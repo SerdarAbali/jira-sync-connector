@@ -225,6 +225,7 @@ beforeEach(() => {
   mockStore.clear();
   mockSecrets.clear();
   jest.clearAllMocks();
+  jest.requireMock('../src/services/jira/local-client.js').getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
   localLinks = [];
   setupLocalJira();
   setupRemoteJira();

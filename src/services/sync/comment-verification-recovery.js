@@ -55,9 +55,37 @@ export async function deferCommentVerification(identifiers, error) {
   };
   const parentId = error?.parentId || identifiers.parentId || existing?.parentId;
   if (parentId && /^[A-Za-z0-9_-]{1,100}$/.test(String(parentId))) record.parentId = String(parentId);
+  if (identifiers.ancestry || existing?.ancestry) {
+    const ancestry = new Map();
+    for (const pairs of [existing?.ancestry || [], identifiers.ancestry || []]) {
+      if (!Array.isArray(pairs) || pairs.length > 8) throw new Error('Invalid comment ancestry identifiers');
+      for (const pair of pairs) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string'
+            || !/^[A-Za-z0-9_-]{1,100}$/.test(pair[0])
+            || (pair[1] !== null && (typeof pair[1] !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(pair[1])))) {
+          throw new Error('Invalid comment ancestry identifiers');
+        }
+        const previous = ancestry.get(pair[0]);
+        if (previous && pair[1] && previous !== pair[1]) throw new Error('Conflicting comment ancestry identifiers');
+        ancestry.set(pair[0], pair[1] || previous || null);
+      }
+    }
+    if (ancestry.size > 8) throw new Error('Invalid comment ancestry identifiers');
+    record.ancestry = Array.from(ancestry);
+  }
   if (existing?.state === 'write_started') record.state = existing.state;
   await storage.set(key, record);
   return { status: 'COMMENT_VERIFICATION_DEFERRED' };
+}
+
+// A contradictory hint cannot leave an older deferred job free to copy later.
+export async function rejectDeferredCommentAncestry(identifiers) {
+  const key = keyFor(identifiers);
+  const existing = await storage.get(key);
+  await storage.set(key.replace(PREFIX, 'comment-verification-attention:'), {
+    ...(existing || identifiers), reason: 'COMMENT_ANCESTRY_REJECTED'
+  });
+  await storage.del(key);
 }
 
 export async function markDeferredCommentSubmission(identifiers) {

@@ -52,6 +52,100 @@ Synchronization scope is not advisory:
 
 A JQL filter is not a security boundary by itself. The project allow-list, remote webhook JQL, and remote account permissions are separate layers.
 
+### Current inbound project scope (F03)
+
+An existing mapping does not authorize an inbound Jira write. The shared inbound
+scope policy reloads the selected organization's current configuration and reads
+the destination issue's current `fields.project.key` through Jira as the app.
+It never infers the project from the old issue key, a mapping, a webhook body,
+or remote webhook JQL. Missing, empty, mixed-type, or malformed project lists
+block writes. A removed organization or disabled bidirectional direction also
+blocks writes. Moving an issue changes the project evaluated by the next check.
+
+Every local write checks scope near submission: issue fields, hierarchy, status,
+comments and parent-rejection fallback, attachment upload/delete, issue-link
+create/delete, and counterpart description notices. Links require both endpoints.
+Hierarchy changes check new and current related parents before secondary links or
+field submission. Local issue creation, including replacement, checks its original
+target project against the current list and any mapped parent; it never reroutes
+to another project when that selection becomes invalid. Replacement also requires
+verifiable scope for the original mapped local issue; a deleted/unreadable original
+requires administrator review rather than inferring its former project from its key.
+Attachment continuations
+reuse the shared policy and reload scope before each upload after downloading.
+
+Initial and final checks do not share a configuration/issue cache. A bounded read
+helper limits individual issue waits to four seconds within a ten-second scope
+check budget; unresponsive reads fail closed. Multiple scope checks add latency,
+especially to linked/hierarchical operations. Scope can still change after the
+last check and before Jira accepts a request; there is no cross-system atomic
+transaction. Live tenant testing must validate issue-key redirects after moves,
+app permissions, read overhead, queue behavior, and Forge invocation limits.
+
+`INBOUND_SCOPE_BLOCKED` is a definitive skip (HTTP 200 with a safe reason code).
+`INBOUND_SCOPE_UNVERIFIABLE` is retryable (HTTP 503): neither case completes a
+webhook replay marker. Mappings and Jira content are retained. Temporary comment
+scope failures enter the existing identifier-only F02 recovery mechanism before
+any comment submission guard is acquired. Other deliveries remain replayable
+through their existing webhook/queue mechanisms; HTTP failure alone does not
+guarantee redelivery. Ambiguous destination writes retain their original ledgers
+and are never made retryable by a scope error. A scope denial before an attachment
+or create POST is recorded as a definitive no-submission failure, not an unknown
+write. Reauthorization permits a later eligible delivery; it starts no backfill.
+
+The optional organization JQL remains a **local source-selection** rule, consistent
+with CONFIGURATION.md and OPERATIONS.md: it governs source selection, initial sync,
+and existing create-path checks where a local source issue exists. Existing mapped
+inbound destination updates use the current project allow-list; F03 does not invent
+a destination-JQL requirement or evaluate a nonexistent local issue before inbound
+creation. The remote webhook's JQL remains an independent remote-side filter.
+Malformed JQL configuration fails closed. F03 does not change the separate outbound
+JQL implementation or its existing failure handling.
+
+### F03 corrective recovery boundaries
+
+Scope-related comment deferral uses the same F02 deferral mechanism as source-read
+failure. It retains the webhook parent ID and any already verified ancestor edges
+as validated identifier pairs (at most eight), never comment text or authors.
+Subsequent deferral merges these constraints; missing metadata cannot erase known
+relationships. The heartbeat restores this context for current REST verification
+and final/fallback verification. Conflicting hints quarantine older pending work
+in the existing comment-attention store instead of leaving it runnable.
+
+Replacement authorization carries the original mapped local issue key through
+payload construction, the create ledger boundary, and the final Jira POST gate.
+A later revocation of that original project blocks creation even if the replacement
+project remains allowed. Temporary original-issue reads remain retryable.
+
+Successful issue creation is distinct from completed attachment work. Immediately
+after its mapping is persisted, enabled post-create attachment IDs are retained in
+`post-create-attachment:` records before further post-create reads or tasks. Records
+contain only organization, local/remote issue keys, attachment ID, creation time,
+attempt count, and safe reason codes. A duplicate create delivery resumes retained
+work through the existing attachment engine instead of creating another issue.
+`POST_CREATE_ATTACHMENTS_PENDING` reports unfinished attachment work when the issue
+itself has been created successfully.
+
+The existing hourly heartbeat also attempts at most three retained attachments
+from a 100-record scan. Each record is limited to five attempts/24 hours. Current
+project scope, mapping pair, attachment opt-in, credentials, and global pause are
+checked on every attempt. Pause preserves pending work without consuming attempts.
+A 360-second per-record lease prevents overlap between redelivery and heartbeat.
+No source attachment metadata/body or credentials are stored in these records;
+metadata/content are fetched canonically by the existing attachment engine.
+
+The attachment operation ledger remains the authority on submission safety. Unknown
+uploads and pending uploads with a submission marker are moved to
+`post-create-attachment-attention:` without retrying the POST. Exhausted/expired
+work is likewise retained for administrator review. An upload confirmed successful
+can be reconciled through its existing mapping/ledger without uploading again.
+A permanently revoked scope never authorizes an upload; restoration before the
+bounded recovery limit permits another authorized attempt. No attachment deletion
+or deletion-policy change is introduced. Records require successful KVS persistence;
+persistence faults fail processing rather than claiming attachment completion.
+A large backlog can delay attempts; live Forge timing, KVS limits, and heartbeat
+behavior still require tenant validation.
+
 ## Operation ledgers and idempotency
 
 Jira writes are not blindly retried.

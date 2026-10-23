@@ -77,7 +77,10 @@ export async function verifyCommentThread(comment, { expectedId, readParent, pro
     try {
       current = await readParent(parentId);
     } catch (error) {
-      if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') error.parentId = parentIdFor(comment);
+      if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
+        error.parentId = parentIdFor(comment);
+        error.ancestry = Array.from(ancestry);
+      }
       throw error;
     }
     if (depth === 0) parent = current;

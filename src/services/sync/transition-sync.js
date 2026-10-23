@@ -1,3 +1,4 @@
+import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
 import api, { fetch, route } from '@forge/api';
 import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
@@ -105,7 +106,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
   }
 }
 
-export async function transitionLocalIssue(localKey, remoteStatus, statusMappings, syncResult = null) {
+export async function transitionLocalIssue(localKey, remoteStatus, statusMappings, syncResult = null, scope = {}) {
   if (!remoteStatus) {
     return false;
   }
@@ -179,6 +180,7 @@ export async function transitionLocalIssue(localKey, remoteStatus, statusMapping
     };
 
     await assertPilotWritesAllowed('transition_local');
+    await assertInboundScope({ orgId: scope.orgId, issueKeys: [localKey] });
     const response = await api.asApp().requestJira(
       route`/rest/api/3/issue/${localKey}/transitions`,
       {
@@ -198,6 +200,7 @@ export async function transitionLocalIssue(localKey, remoteStatus, statusMapping
     if (syncResult) syncResult.addTransitionFailure(transition.to.name, formatHttpFailure(response.status));
     return false;
   } catch (error) {
+    if (isInboundScopeError(error)) throw error;
     const safeFailure = safeErrorSummary(error.message);
     console.error(`${LOG_EMOJI.ERROR} Error transitioning local issue ${localKey}: ${safeFailure}`);
     if (syncResult) syncResult.addTransitionFailure(target.name || remoteStatus.name, safeFailure);

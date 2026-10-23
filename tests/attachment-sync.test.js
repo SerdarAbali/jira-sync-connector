@@ -152,6 +152,7 @@ function attachmentMeta(overrides = {}) {
 
 beforeEach(() => {
   mockStore.clear();
+  mockStore.set('organizations', [{ id: ORG.id, syncDirection: ORG.syncDirection, allowedProjects: ORG.allowedProjects }]);
   mockMappings.clear();
   mockIssueMaps.clear();
   jest.clearAllMocks();
@@ -857,5 +858,30 @@ describe('Attachment reconciliation and data minimization', () => {
     expect(getAttachmentSyncPolicy({ ...OPTIONS, propagateAttachmentDeletions: true }))
       .toEqual(expect.objectContaining({ enabled: true, propagateDeletions: true }));
     expect(RESOLVER_POLICIES.reconcileAttachment).toBe('ADMIN_WRITE');
+  });
+});
+
+describe('F03 current inbound attachment scope', () => {
+  test('upload rechecks current config after download without marking an ambiguous write', async () => {
+    rememberPair('LOCAL-1', 'REMOTE-1');
+    downloadAttachmentContent.mockImplementation(async () => {
+      mockStore.set('organizations', [{ id: 'org-1', syncDirection: 'bidirectional', allowedProjects: [] }]);
+      return Buffer.from('data');
+    });
+    await expect(syncRemoteAttachmentsToLocal('REMOTE-1', 'LOCAL-1', REMOTE_ISSUE, ORG, null, 'org-1', { syncOptions: OPTIONS }))
+      .rejects.toMatchObject({ code: 'INBOUND_SCOPE_BLOCKED' });
+    expect(uploadAttachmentContent).not.toHaveBeenCalled();
+    expect(Array.from(mockStore.values()).some(record => record?.state === 'unknown')).toBe(false);
+  });
+
+  test('deletion checks current destination project and retains mapping', async () => {
+    rememberPair('LOCAL-1', 'REMOTE-1');
+    mockMappings.set(mappingKey('42', 'org-1', 'remote-to-local'), '77');
+    getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'OTHER' } } });
+    await expect(propagateAttachmentDeletion({ direction: 'remote-to-local', sourceAttachmentId: '42', localKey: 'LOCAL-1',
+      remoteKey: 'REMOTE-1', config: ORG, orgId: 'org-1', syncOptions: { ...OPTIONS, propagateAttachmentDeletions: true } }))
+      .rejects.toMatchObject({ code: 'INBOUND_SCOPE_BLOCKED' });
+    expect(deleteAttachmentContent).not.toHaveBeenCalled();
+    expect(mockMappings.get(mappingKey('42', 'org-1', 'remote-to-local'))).toBe('77');
   });
 });

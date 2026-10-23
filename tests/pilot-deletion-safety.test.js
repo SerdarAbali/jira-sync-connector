@@ -75,6 +75,7 @@ jest.mock('../src/utils/mapping.js', () => ({
 describe('Pilot safety: deletion propagation is disabled', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  jest.requireMock('../src/services/jira/local-client.js').getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
     getOrganizationsWithTokens.mockResolvedValue([{ id: 'org-1', name: 'Target Org' }]);
     getRemoteKey.mockResolvedValue('REMOTE-1');
     getLocalKey.mockResolvedValue('LOCAL-1');
@@ -121,7 +122,7 @@ describe('Pilot safety: deletion propagation is disabled', () => {
     kvsStore.setWithTtl.mockResolvedValue(undefined);
     kvsStore.get.mockImplementation(async (key) => {
       if (key === 'organizations') {
-        return [{ id: 'org-1', name: 'Remote Org', syncDirection: 'bidirectional' }];
+        return [{ id: 'org-1', name: 'Remote Org', syncDirection: 'bidirectional', allowedProjects: ['LOCAL'] }];
       }
       return null;
     });

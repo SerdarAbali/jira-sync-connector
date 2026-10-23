@@ -1,3 +1,4 @@
+import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
 import { fetch } from '@forge/api';
 import { getFullIssue, probeLocalIssue, updateLocalIssueDescription } from '../jira/local-client.js';
 import { probeRemoteIssue } from '../jira/remote-client.js';
@@ -112,7 +113,7 @@ async function updateRemoteDescription({ key, org, info }) {
   }
 }
 
-async function updateLocalDescription({ key, info }) {
+async function updateLocalDescription({ key, info, scope }) {
   try {
     const issue = await getFullIssue(key);
     if (!issue) {
@@ -126,11 +127,13 @@ async function updateLocalDescription({ key, info }) {
     if (JSON.stringify(original) === JSON.stringify(updated)) {
       return { success: true, changed: false };
     }
+    await assertInboundScope({ orgId: scope?.orgId, issueKeys: [key] });
     const written = await updateLocalIssueDescription(key, updated);
     return written
       ? { success: true, changed: true }
       : { success: false, skipped: true, code: 'NOTICE_WRITE_FAILED' };
-  } catch {
+  } catch (error) {
+    if (isInboundScopeError(error)) throw error;
     return { success: false, skipped: true, code: 'NOTICE_WRITE_FAILED' };
   }
 }
@@ -145,7 +148,8 @@ export async function setCounterpartNotice({
   org = null,
   localKey,
   remoteKey,
-  status
+  status,
+  scope = null
 }) {
   if (await pilotWritesPaused()) {
     return { success: false, skipped: true, code: 'PILOT_PAUSED' };
@@ -153,14 +157,14 @@ export async function setCounterpartNotice({
   const info = noticeInfo({ localKey, remoteKey, status });
   return side === 'remote'
     ? updateRemoteDescription({ key, org, info })
-    : updateLocalDescription({ key, info });
+    : updateLocalDescription({ key, info, scope });
 }
 
-export async function clearCounterpartNotice({ side, key, org = null }) {
+export async function clearCounterpartNotice({ side, key, org = null, scope = null }) {
   if (await pilotWritesPaused()) {
     return { success: false, skipped: true, code: 'PILOT_PAUSED' };
   }
   return side === 'remote'
     ? updateRemoteDescription({ key, org, info: null })
-    : updateLocalDescription({ key, info: null });
+    : updateLocalDescription({ key, info: null, scope });
 }

@@ -143,6 +143,7 @@ function authContext() {
 beforeEach(() => {
   mockStore.clear();
   jest.clearAllMocks();
+  getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
   mockFetch.mockResolvedValue({ ok: true, status: 204, text: async () => '', json: async () => ({}) });
   mockRequestJira.mockResolvedValue({ ok: true, status: 204, text: async () => '', json: async () => ({}) });
   getLocalKey.mockResolvedValue('LOCAL-1');
@@ -257,6 +258,7 @@ describe('Batch 4 inbound and safety regressions', () => {
   test('45. Org B -> Org A issue update still succeeds under mocks', async () => {
     authContext();
     const localDestinationFields = {
+      project: { key: 'LOCAL' },
       summary: 'Remote change',
       description: DESCRIPTION,
       issuetype: { name: 'Task', id: '10001' },

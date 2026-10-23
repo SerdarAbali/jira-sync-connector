@@ -108,9 +108,11 @@ async function clearNoticeForSurvivor({ orgId, record, org }) {
     return await clearCounterpartNotice({
       side,
       key: side === 'remote' ? record.remoteKey : record.localKey,
-      org
+      org,
+      scope: { orgId }
     });
-  } catch {
+  } catch (error) {
+    if (error?.code?.startsWith('INBOUND_SCOPE_')) return { success: false, skipped: true, code: error.code };
     return { success: false, skipped: true, code: 'NOTICE_CLEAR_FAILED' };
   }
 }

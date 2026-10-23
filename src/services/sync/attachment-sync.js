@@ -40,6 +40,7 @@ import {
   resolveAttachmentUploadOperation,
   sanitizeAttachmentOperation
 } from './attachment-operation.js';
+import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
 import { assertPilotWritesAllowed } from './pilot-pause.js';
 import { isValidIssueKey, isValidAttachmentId, normalizeAttachmentMimeType, sanitizeAttachmentFilename } from '../../utils/attachment-url.js';
 import { safeErrorSummary } from '../../utils/redaction.js';
@@ -190,21 +191,6 @@ async function verifyMappedPair({ direction, localKey, remoteKey, orgId }) {
     return (await getRemoteKey(localKey, orgId)) === remoteKey;
   }
   return (await getLocalKey(remoteKey, orgId)) === localKey;
-}
-
-async function verifyDestinationProject({ direction, localKey, config }) {
-  const allowedProjects = Array.isArray(config?.allowedProjects)
-    ? config.allowedProjects.filter(Boolean)
-    : [];
-  if (allowedProjects.length === 0) return false;
-
-  if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
-    const localIssue = await getFullIssue(localKey);
-    const projectKey = localIssue?.fields?.project?.key;
-    return typeof projectKey === 'string' && allowedProjects.includes(projectKey);
-  }
-
-  return true;
 }
 
 export async function resolveEffectiveAttachmentLimit({ direction, config, syncOptions = {} }) {
@@ -387,6 +373,9 @@ async function processOneUpload({
       maxBytes: effectiveLimit.limit
     });
 
+    if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
+      await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
+    }
     await assertPilotWritesAllowed('attachment_upload');
     // Metadata retrieval, validation and download are complete. Only now may
     // the POST be issued, so persist the write boundary immediately before it.
@@ -431,6 +420,10 @@ async function processOneUpload({
     success(syncResult);
     return { status: 'ATTACHMENT_SYNCED', destinationAttachmentId: uploaded.id };
   } catch (error) {
+    if (isInboundScopeError(error) && !writeStarted) {
+      await markDefinitive(operation, error.code);
+      throw error;
+    }
     const clientCode = error instanceof AttachmentClientError
       ? error.code
       : (writeStarted ? ATTACHMENT_CLIENT_CODES.UPLOAD_OUTCOME_UNKNOWN : 'ATTACHMENT_SYNC_FAILED');
@@ -492,9 +485,8 @@ async function syncAttachmentDirection({
       warning(syncResult, ATTACHMENT_SYNC_CODES.PROJECT_BLOCKED);
       return mapping;
     }
-  } else if (!(await verifyDestinationProject({ direction, localKey, config }))) {
-    warning(syncResult, ATTACHMENT_SYNC_CODES.PROJECT_BLOCKED);
-    return mapping;
+  } else {
+    await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
   }
 
   let effectiveLimit;
@@ -538,6 +530,7 @@ async function syncAttachmentDirection({
         mapping[sourceAttachmentId] = result.destinationAttachmentId;
       }
     } catch (error) {
+      if (isInboundScopeError(error)) throw error;
       failure(syncResult, safeErrorSummary(error?.code || 'ATTACHMENT_SYNC_FAILED'));
     }
   }
@@ -620,6 +613,9 @@ export async function propagateAttachmentDeletion({
     return { status: ATTACHMENT_SYNC_CODES.DELETE_UNMAPPED };
   }
 
+  if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
+    await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
+  }
   const mappedDestinationAttachmentId = normalizeMappingValue(
     await getAttachmentMapping(sourceAttachmentId, orgId, direction)
   );
@@ -648,6 +644,9 @@ export async function propagateAttachmentDeletion({
   const { destination } = destinations(direction);
   let writeStarted = false;
   try {
+    if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
+      await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
+    }
     await assertPilotWritesAllowed('attachment_delete');
     // Persist the DELETE boundary immediately before the request. If the
     // invocation ends here or later without a confirmed result, retries stop.
@@ -686,6 +685,10 @@ export async function propagateAttachmentDeletion({
         : ATTACHMENT_SYNC_CODES.DELETE_COMPLETE
     };
   } catch (error) {
+    if (isInboundScopeError(error) && !writeStarted) {
+      await markAttachmentDeletionFailedDefinitive(claim.operation, { failureCode: error.code });
+      throw error;
+    }
     if (writeStarted && (error?.ambiguous || !(error instanceof AttachmentClientError))) {
       try {
         await markAttachmentDeletionUnknown(claim.operation);

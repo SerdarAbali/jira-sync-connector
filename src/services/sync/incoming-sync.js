@@ -58,7 +58,7 @@ import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { getCommentConfidentiality, verifyCommentThread, commentParentId, withParentHints, verifyFreshCommentThread } from './comment-confidentiality.js';
 import { commentReadBudget } from '../jira/comment-read.js';
 import { getCommentProjectType } from '../jira/comment-project.js';
-import { deferCommentVerification, markDeferredCommentSubmission, assertCommentVerificationReady } from './comment-verification-recovery.js';
+import { deferCommentVerification, markDeferredCommentSubmission, assertCommentVerificationReady, rejectDeferredCommentAncestry } from './comment-verification-recovery.js';
 import { syncRemoteAttachmentsToLocal, propagateAttachmentDeletion, getAttachmentSyncPolicy } from './attachment-sync.js';
 import { isValidAttachmentId, isValidIssueKey } from '../../utils/attachment-url.js';
 import { transitionLocalIssue } from './transition-sync.js';
@@ -87,6 +87,8 @@ import {
   recordCounterpartStatus,
   resolveCounterpartStatus
 } from './counterpart-status.js';
+import { assertInboundScope, isInboundScopeError, InboundScopeError } from './inbound-scope.js';
+import { retainPostCreateAttachments, resumePostCreateAttachments } from './post-create-attachments.js';
 import { setCounterpartNotice } from './counterpart-probe.js';
 import { maybeAutoReplaceAfterDeletion } from './counterpart-recovery.js';
 import {
@@ -132,7 +134,7 @@ function isValidWebhookAuth(auth) {
     && WEBHOOK_CREDENTIAL_PATTERN.test(auth.credential);
 }
 
-export async function processIncomingWebhook(payload, auth) {
+export async function processIncomingWebhook(payload, auth, recovery = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return { status: 400, body: { error: 'Invalid webhook payload' } };
   }
@@ -198,6 +200,7 @@ export async function processIncomingWebhook(payload, auth) {
   ]);
 
   const context = {
+    commentAncestry: recovery.commentAncestry,
     org: { ...org, remoteApiToken },
     orgId: storageOrgId,
     mappings: {
@@ -294,6 +297,21 @@ export async function processIncomingWebhook(payload, auth) {
     }
     return { status: 200, body: responseBody };
   } catch (error) {
+    if (isInboundScopeError(error)) {
+      if (error.retryable) {
+        try {
+          if (webhookEvent === 'comment_created') await deferIncomingCommentVerification(payload, orgId, error);
+        } catch (failure) {
+          if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+          if (failure.code === 'COMMENT_REJECTED') return { status: 200, body: { code: failure.code } };
+          return { status: 503, body: { code: error.code, reason: 'RECOVERY_STORAGE_UNAVAILABLE' } };
+        }
+        if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+        return { status: 503, body: { code: error.code, reason: error.reason } };
+      }
+      if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+      return { status: 200, body: { code: error.code, reason: error.reason } };
+    }
     if (webhookEvent === 'comment_created' && error?.code === 'COMMENT_REJECTED') {
       if (markerKey) {
         const completion = await markWebhookCompleted(markerKey, markerToken);
@@ -303,13 +321,12 @@ export async function processIncomingWebhook(payload, auth) {
     }
     if (webhookEvent === 'comment_created' && error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
       try {
-        await deferCommentVerification({ direction: 'remote-to-local', orgId,
-          issueKey: payload.issue?.key, commentId: payload.comment?.id,
-          parentId: extractParentIdFromRemoteComment(payload.comment) }, error);
+        await deferIncomingCommentVerification(payload, orgId, error);
         if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
         return { status: 202, body: { code: 'COMMENT_VERIFICATION_DEFERRED', message: 'Verification deferred' } };
-      } catch {
+      } catch (failure) {
         if (markerKey) await releaseWebhookEvent(markerKey, markerToken);
+        if (failure.code === 'COMMENT_REJECTED') return { status: 200, body: { code: failure.code } };
         return { status: 503, body: { error: 'Verification recovery unavailable' } };
       }
     }
@@ -379,7 +396,7 @@ function extractRejectedFields(bodyText) {
  *
  * @returns {{ ok: boolean, response?: any, status?: number, skippedFields: string[], failure?: string }}
  */
-async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
+async function writeJiraIssueWithRecovery({ method, issueKey, payload, context, originalLocalKey = null }) {
   await assertPilotWritesAllowed(issueKey ? 'issue_update_local' : 'issue_create_local');
   const skippedFields = [];
   const allowFieldRetry = Boolean(issueKey);
@@ -390,6 +407,8 @@ async function writeJiraIssueWithRecovery({ method, issueKey, payload }) {
       ? route`/rest/api/3/issue/${issueKey}`
       : route`/rest/api/3/issue`;
 
+    await assertInboundScope({ orgId: context.orgId, issueKeys: [issueKey, originalLocalKey, fields.parent?.key].filter(Boolean),
+      projectKey: issueKey ? null : fields.project?.key, includeCurrentParents: Boolean(issueKey && 'parent' in fields) });
     const response = await api.asApp().requestJira(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
@@ -441,7 +460,12 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
       return { status: 'COUNTERPART_CONFIRMED_DELETED' };
     } else {
       console.log(`ℹ️ Issue ${remoteIssue.key} already mapped to ${existingLocalKey}. Treating as update.`);
-      return handleRemoteIssueUpdated(remoteIssue, context);
+      const result = await handleRemoteIssueUpdated(remoteIssue, context);
+      if (context.syncOptions?.syncAttachments === true) {
+        const attachments = await resumePostCreateAttachments({ orgId, localKey: existingLocalKey, remoteKey: remoteIssue.key });
+        if (attachments.pending) return { ...result, code: 'POST_CREATE_ATTACHMENTS_PENDING' };
+      }
+      return result;
     }
   }
 
@@ -449,10 +473,10 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
     ? org.allowedProjects[0]
     : null;
 
-  if (!targetProject) {
-    throw new Error(`No allowed local project configured for org ${org.name}`);
-  }
+  if (!targetProject) throw new InboundScopeError('PROJECTS_MISSING');
+  if (replacementOfLocalKey) await assertInboundScope({ orgId, issueKeys: [replacementOfLocalKey] });
 
+  await assertInboundScope({ orgId, projectKey: targetProject });
   const resolvedRemoteIssue = await loadRemoteIssue(remoteIssue, context);
   if (!resolvedRemoteIssue) {
     throw new Error(`Unable to load remote issue ${remoteIssue.key} for creation`);
@@ -503,6 +527,7 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
   try {
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
+  await assertInboundScope({ orgId, projectKey: targetProject, issueKeys: [replacementOfLocalKey, payload.fields.parent?.key].filter(Boolean) });
   const createClaim = await beginIssueCreateOperation({
     orgId,
     direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
@@ -524,6 +549,7 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
     return { status: createClaim.code, code: createClaim.code };
   }
 
+  await assertInboundScope({ orgId, projectKey: targetProject, issueKeys: [replacementOfLocalKey, payload.fields.parent?.key].filter(Boolean) });
   const submission = await markIssueCreateSubmissionStarted(createClaim.operation);
   if (!submission.ok) {
     return { status: submission.code, code: submission.code };
@@ -531,9 +557,10 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
 
   let result;
   try {
-    result = await writeJiraIssueWithRecovery({ method: 'POST', payload });
+    result = await writeJiraIssueWithRecovery({ method: 'POST', payload, context, originalLocalKey: replacementOfLocalKey });
   } catch (error) {
-    await markIssueCreateUnknown(submission.operation);
+    if (isInboundScopeError(error)) await markIssueCreateFailedDefinitive(submission.operation, { reasonCode: error.code });
+    else await markIssueCreateUnknown(submission.operation);
     throw error;
   }
 
@@ -587,6 +614,10 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
   } else {
     await storeMapping(localKey, remoteIssue.key, orgId);
   }
+  if (context.syncOptions.syncAttachments === true) {
+    await retainPostCreateAttachments({ orgId, localKey, remoteKey: remoteIssue.key,
+      attachmentIds: (resolvedRemoteIssue.fields.attachment || []).map(item => item?.id) });
+  }
   await recordLatestAccepted({
     orgId,
     direction: 'remote-to-local',
@@ -622,26 +653,9 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
   }
   await processPendingChildIssues(remoteIssue.key, context);
 
-  // Attachments use a canonical metadata and content lookup keyed by the
-  // validated source attachment ID. Any URL, filename or size supplied by the
-  // webhook payload is ignored.
-  if (Array.isArray(resolvedRemoteIssue.fields.attachment)
-      && resolvedRemoteIssue.fields.attachment.length > 0) {
-    try {
-      await syncRemoteAttachmentsToLocal(
-        remoteIssue.key,
-        localKey,
-        resolvedRemoteIssue,
-        org,
-        null,
-        orgId,
-        { syncOptions: context.syncOptions }
-      );
-    } catch {
-      console.warn(`${LOG_EMOJI.WARNING} Attachment synchronization deferred for a mapped issue`);
-    }
-  }
-  return { status: 'CREATED', localKey };
+  const attachments = context.syncOptions?.syncAttachments === true
+    ? await resumePostCreateAttachments({ orgId, localKey, remoteKey: remoteIssue.key }) : null;
+  return { status: 'CREATED', localKey, ...(attachments?.pending ? { code: 'POST_CREATE_ATTACHMENTS_PENDING' } : {}) };
   } finally {
     await releaseIssueLease({ key: lease.key, token: lease.token });
   }
@@ -654,6 +668,8 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
     console.log(`⚠️ Remote issue ${remoteIssue.key} not mapped. Ignoring update.`);
     return { status: 'SKIPPED_UNMAPPED' };
   }
+
+  await assertInboundScope({ orgId, issueKeys: [localKey] });
 
   const updateCounterpartStatus = await getCounterpartStatus({
     orgId,
@@ -815,15 +831,16 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
       });
     }
 
-    await syncIncomingLinksForIssue(resolvedRemoteIssue, localKey, context);
-
     const updatePayload = await buildUpdatePayload(resolvedRemoteIssue, context);
+    await assertInboundScope({ orgId, issueKeys: [localKey, updatePayload.fields.parent?.key].filter(Boolean),
+      includeCurrentParents: 'parent' in updatePayload.fields });
+    await syncIncomingLinksForIssue(resolvedRemoteIssue, localKey, context);
     if (Object.keys(updatePayload.fields).length === 0) {
       console.log(`ℹ️ No fields to update for ${localKey}`);
       return { status: 'NO_FIELDS' };
     }
 
-    const result = await writeJiraIssueWithRecovery({ method: 'PUT', issueKey: localKey, payload: updatePayload });
+    const result = await writeJiraIssueWithRecovery({ method: 'PUT', issueKey: localKey, payload: updatePayload, context });
     if (!result.ok) {
       throw new Error(`Failed to update local issue: ${result.failure || 'remote_write_failed'}`);
     }
@@ -834,7 +851,7 @@ async function handleRemoteIssueUpdated(remoteIssue, context, payload = null) {
     console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${localKey}`);
 
     if (resolvedRemoteIssue.fields?.status) {
-      await transitionLocalIssue(localKey, resolvedRemoteIssue.fields.status, mappings.statusMappings);
+      await transitionLocalIssue(localKey, resolvedRemoteIssue.fields.status, mappings.statusMappings, null, { orgId });
     }
 
     const localDestination = await resolveLocalDestinationHash({
@@ -896,6 +913,7 @@ async function handleRemoteIssueDeleted(remoteIssue, context) {
     return;
   }
 
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localKey] });
   const reason = 'Deletion propagation disabled for corporate pilot safety';
   console.warn(`${reason}: org=${context.orgId || 'legacy'} remote=${remoteIssue.key} local=${localKey}`);
   const statusRecord = await recordCounterpartStatus({
@@ -922,7 +940,8 @@ async function handleRemoteIssueDeleted(remoteIssue, context) {
       key: localKey,
       localKey,
       remoteKey: remoteIssue.key,
-      status: COUNTERPART_STATUS_VALUES.CONFIRMED_DELETED
+      status: COUNTERPART_STATUS_VALUES.CONFIRMED_DELETED,
+      scope: { orgId: context.orgId }
     });
     await maybeAutoReplaceAfterDeletion({
       orgId: context.orgId,
@@ -1092,6 +1111,7 @@ async function handleRemoteCommentCreated(payload, context) {
     return { status: 'COMMENT_RETRY' };
   }
 
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localKey] });
   const dedupKey = buildIncomingCommentKey(context.orgId, comment.id);
   const alreadyProcessed = await kvsStore.get(dedupKey);
   if (alreadyProcessed) {
@@ -1116,18 +1136,25 @@ async function handleRemoteCommentCreated(payload, context) {
     expectedId: comment.id,
     readParent: id => getRemoteComment(remoteIssueKey, id, context.org, budget),
     projectType: () => getCommentProjectType(remoteIssueKey, context.org, budget),
-    parentIdFor: extractParentIdFromRemoteComment
+    parentIdFor: extractParentIdFromRemoteComment, knownAncestry: new Map(context.commentAncestry || [])
   });
   if (!verification.allowed) {
     console.log('Comment copy skipped: confidentiality not verified');
     return { status: 'COMMENT_REJECTED' };
   }
   const finalBudget = commentReadBudget();
-  const final = await verifyFreshCommentThread({
-    readComment: () => getRemoteComment(remoteIssueKey, comment.id, context.org, finalBudget), expectedId: comment.id,
-    readParent: id => getRemoteComment(remoteIssueKey, id, context.org, finalBudget),
-    projectType: () => getCommentProjectType(remoteIssueKey, context.org, finalBudget), hints: source, knownAncestry: verification.ancestry
-  });
+  let final;
+  try {
+    final = await verifyFreshCommentThread({
+      readComment: () => getRemoteComment(remoteIssueKey, comment.id, context.org, finalBudget), expectedId: comment.id,
+      readParent: id => getRemoteComment(remoteIssueKey, id, context.org, finalBudget),
+      projectType: () => getCommentProjectType(remoteIssueKey, context.org, finalBudget), hints: source, knownAncestry: verification.ancestry
+    });
+  } catch (error) {
+    error.parentId = extractParentIdFromRemoteComment(source);
+    error.ancestry = Array.from(new Map([...(verification.ancestry || []), ...(error.ancestry || [])]));
+    throw error;
+  }
   if (!final.allowed) return { status: 'COMMENT_REJECTED' };
   comment = final.comment;
   if (comment.author?.accountType === 'app' || isConnectorGeneratedComment(comment.body)) return { status: 'COMMENT_IGNORED_CONNECTOR' };
@@ -1150,19 +1177,21 @@ async function handleRemoteCommentCreated(payload, context) {
     responseText: commentText
   });
 
+  let verifiedAncestry = final.ancestry;
   await markSyncing(localKey);
   try {
     let response;
     try {
-      await markDeferredCommentSubmission({ direction: 'remote-to-local', orgId: context.org.id,
-        issueKey: remoteIssueKey, commentId: comment.id });
-      response = await createLocalComment(localKey, body, parentContext.localParentId, async () => {
+      const submissionContext = { ...context, commentSubmission: { direction: 'remote-to-local', orgId: context.org.id,
+        issueKey: remoteIssueKey, commentId: comment.id } };
+      response = await createLocalComment(localKey, body, parentContext.localParentId, submissionContext, async () => {
         const fallback = await verifyFreshCommentThread({
           readComment: () => getRemoteComment(remoteIssueKey, comment.id, context.org, finalBudget), expectedId: comment.id,
           readParent: id => getRemoteComment(remoteIssueKey, id, context.org, finalBudget),
           projectType: () => getCommentProjectType(remoteIssueKey, context.org, finalBudget), hints: final.comment, knownAncestry: final.ancestry
         });
         if (!fallback.allowed) throw Object.assign(new Error('Comment confidentiality rejected'), { code: 'COMMENT_REJECTED' });
+        verifiedAncestry = fallback.ancestry;
         const parent = await resolveLocalParentForIncomingComment(fallback.parent, context);
         return buildSyncedCommentADF({ orgName: context.org.name,
           userName: fallback.comment.author?.displayName || fallback.comment.author?.emailAddress || 'Unknown User',
@@ -1171,6 +1200,10 @@ async function handleRemoteCommentCreated(payload, context) {
             ? extractTextFromADF(fallback.comment.body) : fallback.comment.body || '')) });
       });
     } catch (error) {
+      if (isInboundScopeError(error) || error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
+        error.parentId = extractParentIdFromRemoteComment(final.comment) || verification.ancestry?.get(String(comment.id));
+        error.ancestry = error.ancestry || Array.from(verifiedAncestry || verification.ancestry || []);
+      }
       if (error?.code === 'COMMENT_WRITE_AMBIGUOUS') {
         await persistCommentReconciliation({
           context,
@@ -1248,13 +1281,13 @@ async function handleRemoteCommentCreated(payload, context) {
   return { status: 'COMMENT_SYNCED' };
 }
 
-async function createLocalComment(localIssueKey, body, parentLocalId = null, beforeFallback) {
+async function createLocalComment(localIssueKey, body, parentLocalId = null, context, beforeFallback) {
   if (!parentLocalId) {
-    return await postCommentOnce(localIssueKey, { body }, 'top-level');
+    return await postCommentOnce(localIssueKey, { body }, 'top-level', context);
   }
 
   const initialResponse = requireCommentResponse(
-    await postLocalComment(localIssueKey, { body, parent: { id: parentLocalId } })
+    await postLocalComment(localIssueKey, { body, parent: { id: parentLocalId } }, context)
   );
   if (initialResponse.ok) {
     return initialResponse;
@@ -1264,7 +1297,7 @@ async function createLocalComment(localIssueKey, body, parentLocalId = null, bef
   if (isParentRelatedCommentRejection(initialResponse.status, initialBody)) {
     console.log(`${LOG_EMOJI.WARNING} Parent-specific comment was rejected on ${localIssueKey}. Retrying once as top-level comment.`);
     const freshBody = await beforeFallback();
-    return await postCommentOnce(localIssueKey, { body: freshBody }, 'parent-fallback');
+    return await postCommentOnce(localIssueKey, { body: freshBody }, 'parent-fallback', context);
   }
 
   if (isAmbiguousCommentStatus(initialResponse.status)) {
@@ -1274,8 +1307,8 @@ async function createLocalComment(localIssueKey, body, parentLocalId = null, bef
   throw createRejectedCommentWriteError(initialResponse.status);
 }
 
-async function postCommentOnce(localIssueKey, payload, reason) {
-  const response = requireCommentResponse(await postLocalComment(localIssueKey, payload));
+async function postCommentOnce(localIssueKey, payload, reason, context) {
+  const response = requireCommentResponse(await postLocalComment(localIssueKey, payload, context));
   if (response.ok) {
     return response;
   }
@@ -1287,8 +1320,13 @@ async function postCommentOnce(localIssueKey, payload, reason) {
   throw createRejectedCommentWriteError(response.status);
 }
 
-async function postLocalComment(localIssueKey, payload) {
+async function postLocalComment(localIssueKey, payload, context) {
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localIssueKey] });
   await assertPilotWritesAllowed('comment_create_local');
+  if (!context.commentSubmissionStarted) {
+    await markDeferredCommentSubmission(context.commentSubmission);
+    context.commentSubmissionStarted = true;
+  }
   try {
     return await api.asApp().requestJira(route`/rest/api/3/issue/${localIssueKey}/comment`, {
       method: 'POST',
@@ -1685,6 +1723,7 @@ async function handleRemoteAttachmentCreated(payload, context) {
     return { status: 'ATTACHMENT_SYNC_DISABLED', code: 'ATTACHMENT_SYNC_DISABLED' };
   }
 
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localKey] });
   try {
     await syncRemoteAttachmentsToLocal(
       remoteKey,
@@ -1699,7 +1738,8 @@ async function handleRemoteAttachmentCreated(payload, context) {
       }
     );
     return { status: 'ATTACHMENT_SYNCED', code: 'ATTACHMENT_SYNCED' };
-  } catch {
+  } catch (error) {
+    if (isInboundScopeError(error)) throw error;
     return {
       status: 'ATTACHMENT_RECONCILIATION_REQUIRED',
       code: 'ATTACHMENT_RECONCILIATION_REQUIRED'
@@ -1725,6 +1765,7 @@ async function handleRemoteAttachmentDeleted(payload, context) {
     return { status: 'ATTACHMENT_ISSUE_UNMAPPED', code: 'ATTACHMENT_ISSUE_NOT_MAPPED' };
   }
 
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localKey] });
   const result = await propagateAttachmentDeletion({
     direction: 'remote-to-local',
     sourceAttachmentId: String(attachmentId),
@@ -1850,7 +1891,8 @@ async function findMappedLocalLink(sourceKey, destinationKey, linkTypeName, orgI
   return null;
 }
 
-async function deleteLocalIssueLink(localLinkId) {
+async function deleteLocalIssueLink(localLinkId, context, issueKeys) {
+  await assertInboundScope({ orgId: context.orgId, issueKeys });
   await assertPilotWritesAllowed('link_delete_local');
 
   let response;
@@ -1904,6 +1946,7 @@ async function handleRemoteIssueLinkCreated(payload, context) {
     return;
   }
 
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localOutwardKey, localInwardKey] });
   const existingLinks = await fetchLocalIssueLinks(localOutwardKey);
   if (!existingLinks) {
     console.log(`${LOG_EMOJI.WARNING} Could not load local issue ${localOutwardKey} links`);
@@ -1915,7 +1958,7 @@ async function handleRemoteIssueLinkCreated(payload, context) {
     return;
   }
 
-  const created = await createLocalIssueLink(localOutwardKey, localInwardKey, linkTypeName);
+  const created = await createLocalIssueLink(localOutwardKey, localInwardKey, linkTypeName, context);
   if (!created) {
     return;
   }
@@ -1943,6 +1986,7 @@ async function handleRemoteIssueLinkDeleted(payload, context) {
     return;
   }
 
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localSourceKey, localDestinationKey] });
   // A link can only be removed through its stored local link mapping. Issue
   // keys alone, summaries, or pending-link retries are never sufficient.
   const mappedLink = await findMappedLocalLink(
@@ -1957,7 +2001,7 @@ async function handleRemoteIssueLinkDeleted(payload, context) {
     return;
   }
 
-  const deletion = await deleteLocalIssueLink(mappedLink.localLinkId);
+  const deletion = await deleteLocalIssueLink(mappedLink.localLinkId, context, [localSourceKey, localDestinationKey]);
 
   if (deletion.outcome === 'deleted' || deletion.outcome === 'already_deleted') {
     await removeLinkMapping(mappedLink.localLinkId, context.orgId);
@@ -2012,7 +2056,7 @@ async function syncIncomingLinksForIssue(remoteIssue, localIssueKey, context) {
     const outwardKey = direction === 'outward' ? localIssueKey : localLinkedKey;
     const inwardKey = direction === 'outward' ? localLinkedKey : localIssueKey;
 
-    const created = await createLocalIssueLink(outwardKey, inwardKey, linkTypeName);
+    const created = await createLocalIssueLink(outwardKey, inwardKey, linkTypeName, context);
     if (created) {
       console.log(`${LOG_EMOJI.SUCCESS} Synced incoming link ${localIssueKey} ⇄ ${localLinkedKey} (${linkTypeName})`);
       workingLocalLinks.push({
@@ -2217,7 +2261,8 @@ function matchesLink(link, targetKey, linkTypeName) {
   return otherKey === targetKey;
 }
 
-async function createLocalIssueLink(outwardKey, inwardKey, linkTypeName) {
+async function createLocalIssueLink(outwardKey, inwardKey, linkTypeName, context) {
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [outwardKey, inwardKey] });
   await assertPilotWritesAllowed('link_create_local');
   const payload = {
     type: { name: linkTypeName },
@@ -2257,4 +2302,17 @@ async function recordInboundLinkMapping(sourceKey, targetKey, linkTypeName, orgI
     await storeLinkMapping(createdLink.id, 'inbound', orgId);
     console.log(`${LOG_EMOJI.INFO} Recorded inbound link mapping for ${sourceKey} ⇄ ${targetKey}`);
   }
+}
+
+async function deferIncomingCommentVerification(payload, orgId, error) {
+  const hint = extractParentIdFromRemoteComment(payload.comment);
+  if (hint === '!unverifiable' || error.parentId === '!unverifiable'
+      || (hint && error.parentId && hint !== error.parentId)) {
+    await rejectDeferredCommentAncestry({ direction: 'remote-to-local', orgId, issueKey: payload.issue?.key,
+      commentId: String(payload.comment?.id) });
+    throw Object.assign(new Error('Comment ancestry rejected'), { code: 'COMMENT_REJECTED' });
+  }
+  return deferCommentVerification({ direction: 'remote-to-local', orgId,
+    issueKey: payload.issue?.key, commentId: payload.comment?.id,
+    parentId: error.parentId || hint, ancestry: error.ancestry }, error);
 }

@@ -129,7 +129,7 @@ function baseOrg(overrides = {}) {
   };
 }
 
-function webhookFromOrg(targetOrg = baseOrg()) {
+function webhookFromOrg(targetOrg = baseOrg({ allowedProjects: ['LOCAL'] })) {
   kvsStore.get.mockImplementation(async (key) => {
     if (key === 'organizations') return [targetOrg];
     if (key === META_KEY) return { rotatedAt: '2026-01-01T00:00:00.000Z', rotatedByAccountId: 'admin-1' };
@@ -166,6 +166,7 @@ function webhookRequest(overrides = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.requireMock('../src/services/jira/local-client.js').getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
   kvsStore.get.mockResolvedValue(null);
   kvsStore.set.mockResolvedValue(undefined);
   kvsStore.getSecret.mockResolvedValue(null);

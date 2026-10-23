@@ -157,6 +157,7 @@ beforeEach(() => {
   mockStore.clear();
   mockSecretStore.clear();
   jest.clearAllMocks();
+  jest.requireMock('../src/services/jira/local-client.js').getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
   requestJira.mockReset();
   seedOrganization();
 });
