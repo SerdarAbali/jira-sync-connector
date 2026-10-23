@@ -36,12 +36,6 @@ jobs:
       - name: Secret and repository hygiene scan
         run: npm run check:secrets
 
-      - name: Configure Forge CLI for non-interactive use
-        run: ./node_modules/.bin/forge settings set usage-analytics false
-
-      - name: Forge lint (offline static checks)
-        run: npm run check:forge:offline
-
       - name: Install admin UI dependencies
         working-directory: static/admin-page
         run: npm ci
@@ -53,3 +47,9 @@ jobs:
       - name: Build admin UI
         working-directory: static/admin-page
         run: npm run build
+
+      - name: Configure Forge CLI for non-interactive use
+        run: ./node_modules/.bin/forge settings set usage-analytics false
+
+      - name: Forge lint (offline static checks)
+        run: npm run check:forge:offline

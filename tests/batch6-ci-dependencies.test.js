@@ -32,6 +32,9 @@ describe('Batch 6 CI and dependency reproducibility', () => {
     expect(workflow).toContain('npm run check:forge:offline');
     expect(workflow).toContain('working-directory: static/admin-page');
     expect(workflow).toContain('npm run build');
+    expect(workflow.indexOf('npm run build')).toBeLessThan(
+      workflow.indexOf('npm run check:forge:offline')
+    );
     expect(workflow).not.toMatch(/forge deploy|forge install|FORGE_(API|APP)|JIRA_TOKEN/i);
   });
 
