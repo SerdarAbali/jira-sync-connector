@@ -59,9 +59,8 @@ const DEFAULT_ISSUE_IMPORT_OPTIONS = {
   skipIfRemoteExists: false
 };
 
-// Authoritative administrator-UI version. Release metadata is derived from
-// this value; no final v2.1.0 tag exists for this release candidate.
-export const ADMIN_UI_VERSION = 'v2.1.0-rc3';
+// Authoritative administrator-UI version displayed in the admin header.
+export const ADMIN_UI_VERSION = 'v2.1.0';
 
 // Utility function for date formatting (European style)
 const formatDateTimeEuro = (timestamp, options = {}) => {
