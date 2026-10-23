@@ -1,3 +1,32 @@
+# [2.1.0](https://github.com/SerdarAbali/jira-sync-connector/compare/v2.0.0...v2.1.0) (2026-10-23)
+
+### Features
+
+- Added a guided connector setup wizard with connection, scope, direction, mappings, features, webhook, preflight, initial-sync, and activation steps.
+- Added secure bidirectional issue, comment, status, link, and attachment synchronization.
+- Added safe, resumable initial synchronization with preview classification, checksum-bound approval, parent ordering, operation ledgers, and leases.
+- Added opt-in recurring local-to-remote source reconciliation and stable administrator attention records.
+- Added global Synchronization Pause and Resume.
+- Added deleted-counterpart notices, verified remapping, controlled replacement, and explicit automatic-replacement opt-in.
+- Added strict project allow-list and optional JQL scope enforcement.
+
+### Security and reliability
+
+- Enforced Jira administrator authorization with default-deny resolver policies.
+- Stored API tokens and webhook secrets write-only in Forge secret storage.
+- Added authenticated, timing-safe webhook processing and duplicate/echo protection.
+- Added persistent issue and attachment operation ledgers; ambiguous writes are not automatically replayed.
+- Added secret-safe logging and audit redaction.
+- Jira issue deletion is not propagated.
+
+### Documentation
+
+- Consolidated installation, configuration, operations, security, troubleshooting, architecture, and release documentation.
+- Removed obsolete intermediate design and duplicate operational reports.
+
+See [docs/RELEASE_NOTES_V2.1.0.md](docs/RELEASE_NOTES_V2.1.0.md) for the complete release summary.
+
+
 # [2.0.0](https://github.com/SerdarAbali/jira-sync-connector/compare/v1.0.0...v2.0.0) (2026-09-19)
 
 ### Breaking Changes

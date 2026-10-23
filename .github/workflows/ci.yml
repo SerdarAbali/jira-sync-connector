@@ -22,7 +22,7 @@ jobs:
             static/admin-page/package-lock.json
 
       - name: Install root dependencies
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       - name: Run tests
         run: npm test -- --runInBand
@@ -36,8 +36,11 @@ jobs:
       - name: Secret and repository hygiene scan
         run: npm run check:secrets
 
-      - name: Forge lint
-        run: npm run check:forge
+      - name: Configure Forge CLI for non-interactive use
+        run: forge settings set usage-analytics false
+
+      - name: Forge lint (offline static checks)
+        run: npm run check:forge:offline
 
       - name: Install admin UI dependencies
         working-directory: static/admin-page

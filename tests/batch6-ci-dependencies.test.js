@@ -22,14 +22,14 @@ describe('Batch 6 CI and dependency reproducibility', () => {
 
   test('CI performs locked installs, tests, lint, audits, Forge lint, secret scan and UI build', () => {
     const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8');
-    expect(workflow).toContain('npm ci --legacy-peer-deps');
+    expect(workflow).toContain('npm ci');
+    expect(workflow).not.toContain('npm ci --legacy-peer-deps');
     expect(workflow).toContain('npm test -- --runInBand');
     expect(workflow).toContain('npm run lint');
     expect(workflow).toContain('npm audit --omit=dev');
     expect(workflow).toContain('npm run check:secrets');
-    expect(workflow).toContain('npm run check:forge');
+    expect(workflow).toContain('npm run check:forge:offline');
     expect(workflow).toContain('working-directory: static/admin-page');
-    expect(workflow).toContain('npm ci --legacy-peer-deps');
     expect(workflow).toContain('npm run build');
     expect(workflow).not.toMatch(/forge deploy|forge install|FORGE_(API|APP)|JIRA_TOKEN/i);
   });
@@ -66,13 +66,15 @@ describe('Batch 6 CI and dependency reproducibility', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
     expect(pkg.scripts['check:secrets']).toBe('node scripts/check-secrets.js');
     expect(pkg.scripts['check:forge']).toBe('forge lint');
+    expect(pkg.scripts['check:forge:offline']).toBe('node scripts/check-forge-offline.js');
     expect(pkg.scripts.test).toBe('jest');
     expect(pkg.devDependencies['@forge/cli']).toBe('14.2.0');
   });
 
-  test('CI uses the lockfile-installed Forge CLI and never downloads it dynamically', () => {
+  test('CI uses the lockfile-installed Forge lint and never downloads it dynamically', () => {
     const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8');
-    expect(workflow).toContain('npm run check:forge');
+    expect(workflow).toContain('npm run check:forge:offline');
+    expect(workflow).not.toContain('npm run check:forge\n');
     expect(workflow).not.toContain('npx --yes');
     expect(workflow).not.toContain('npx @forge/cli');
   });

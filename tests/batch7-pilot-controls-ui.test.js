@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
-const RECOVERY_PATH = path.join(process.cwd(), 'PILOT_RECOVERY.md');
+const RECOVERY_PATH = path.join(process.cwd(), 'docs/OPERATIONS.md');
 const source = fs.readFileSync(APP_PATH, 'utf8');
 const recovery = fs.readFileSync(RECOVERY_PATH, 'utf8');
 

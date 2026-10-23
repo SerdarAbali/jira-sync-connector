@@ -1,283 +1,218 @@
-# Jira Sync Connector
+# SyncApp: Jira Cloud-to-Jira Cloud Synchronization
 
-Atlassian Forge application for resilient org-to-org synchronization on Atlassian Forge. The app still treats Org A as the hub, but now mirrors the key updates, status changes, parents, and comments that originate in Org B back into Org A.
+SyncApp is an Atlassian Forge application that synchronizes issues between Jira Cloud sites. It is installed in one Jira Cloud site and connects directly to one or more remote Jira Cloud sites over Atlassian REST APIs and authenticated webhooks. No vendor-operated middleware or external application server is required.
 
-## Overview
+The installed site is the local source (hub). Each configured remote Jira site is a target. A target can operate in **push** mode, which is local-to-remote only, or **bidirectional** mode, which also accepts supported changes from that remote site.
 
-This application syncs issues from a source Jira organization to a target organization. It supports real-time webhook-based sync and scheduled hourly sync for reliability.
+## At a glance
 
-## Features
+| Area | Supported behavior |
+| --- | --- |
+| Topology | One local Jira Cloud site to one or more remote Jira Cloud sites |
+| Real-time sync | Jira events handled by Forge triggers |
+| Direction | Per-remote `push` or `bidirectional` |
+| Initial sync | Previewed, approved, resumable local-to-remote backfill |
+| Recurring recovery | Opt-in recurring local-to-remote reconciliation |
+| Scope | Required project allow-list plus optional JQL |
+| Credentials | Remote API token stored write-only in Forge Storage |
+| Middleware | None; Jira REST is called directly by the Forge app |
 
-### Sync Capabilities
+## What SyncApp synchronizes
 
-**Outbound (Org A → Org B)**
-- Issue creation and updates (summary, description, priority, labels, due date)
-- Status synchronization with configurable mappings
-- Epic/Parent relationships and subtasks
-- Comments with author attribution
-- Attachments (10MB limit per file)
-- Issue links (blocks, relates to, duplicates, etc.)
-- Components, Fix Versions, Affects Versions
-- Time tracking (original and remaining estimates)
-- Custom field mapping
-- User mapping for assignee and reporter
+### Issue creation and fields
 
-**Inbound (Org B → Org A, current coverage)**
-- Issue creation into the configured local project and deletions that mirror remote removals
-- Field mirroring for summary, description, priority, labels, due date, components, fix/affects versions, and time tracking
-- Assignee and reporter mapping using the existing user map (logs when unmapped)
-- Parent/Epic mapping so subtasks follow their hierarchy once the parent exists locally
-- Status transitions applied via reverse mappings to keep boards aligned
-- Comments recreated in Org A with the original author attribution, skip-if-duplicate protection, and loop prevention for SyncApp-authored confirmations
-- Inbound attachments (Remote → Local)
-- Inbound issue links (Remote → Local)
+SyncApp creates and updates counterpart issues. The standard fields include:
 
-### Reliability Features
-- Real-time webhook sync (1-3 seconds)
-- Hourly scheduled sync as backup (10-minute timeout)
-- Automatic retry for pending issue links
-- Opt-in recurring local-to-remote source reconciliation using the existing hourly recovery heartbeat (see `RECURRING_RECONCILIATION.md`)
-- Recreate deleted issues option (scans target org and recreates any issues that were deleted)
-- Attachment duplicate prevention (3-layer locking mechanism)
-- Exponential backoff with rate limit (429) handling
-- Parent/Epic sync depth limiting (max 5 levels)
+- summary and description
+- priority, labels, and due date
+- components, fix versions, and affects versions
+- original and remaining time estimates
+- parent and subtask relationships where the hierarchy can be resolved
+- mapped custom fields
+- assignee and reporter when a user mapping exists
 
-### Admin Interface
-- Multi-organization support
-- Project filtering (select which projects to sync)
-- User, field, and status mappings
-- Issue export (JQL-based, up to 250 issues)
-- Issue import (recreate from exported JSON)
-- Sync activity dashboard with statistics
-- API usage and rate limiting dashboard
-- Manual sync controls
+Descriptions retain Jira Document (ADF) content. Connector-owned cross-reference and counterpart-notice panels are managed separately and are never copied back to the other site as user content.
 
-## Installation
+### Comments
 
-### Prerequisites
-- Node.js 22.x
-- Forge CLI: npm install -g @forge/cli@latest
-- Two Jira Cloud instances with admin access
+Human-authored comments can be mirrored with author attribution and duplicate protection. Connector-generated comments and app-authored comments are skipped so they do not loop or overwrite user content. Comment synchronization is on by default and can be disabled per remote organization.
 
-### Setup
+### Status mappings and transitions
 
-1. Clone the repository
-   git clone https://github.com/SerdarAbali/jira-sync-connector.git
-   cd jira-sync-connector/SyncApp
+Status changes are applied with the target issue's available transitions. Administrators can map local and remote statuses by identifier or name. A transition is attempted only when the target workflow exposes a matching destination; unsupported workflow differences are reported rather than simulated.
 
-2. Install dependencies
-   npm install --legacy-peer-deps
+### Issue links
 
-3. Login to Forge
-   forge login
+Supported Jira issue links, such as blocks, relates to, and duplicates, can be synchronized in either direction. If a linked issue has not yet been mapped, the link is retained as a pending link and retried by the background maintenance path.
 
-4. Deploy and install
-   forge deploy
-   forge install
+### Secure attachments
 
-5. Configure
-   - Navigate to Jira Settings > Apps > Manage your apps
-   - Find "Sync Connector" and click Configure
-   - Add organization (URL, email, API token, project key)
-   - Load remote and local data
-   - Configure user, field, and status mappings
-   - Save settings
+Attachment synchronization is opt-in. It uses Jira attachment identifiers rather than trusting webhook-supplied URLs, checks the lower of the two Jira attachment limits and any configured connector limit, and stores operation records before writes. Upload and deletion attempts are tracked so an ambiguous write is not blindly repeated.
 
-## Configuration
+Attachment deletion propagation is **Off by default**. When enabled, only an explicitly mapped counterpart attachment is deleted; a Jira issue is never deleted.
 
-### Organization Setup
-Each organization requires:
-- Remote Jira URL (e.g., https://target-org.atlassian.net)
-- Admin email address
-- API token (generate at https://id.atlassian.com/manage-profile/security/api-tokens)
-- Target project key
+### Safe initial synchronization and backfill
 
-### Sync Options
-- Sync Comments: Include comments with author attribution
-- Sync Attachments: Transfer file attachments
-- Sync Links: Sync issue relationships
-- Recreate Deleted Issues: Automatically recreate issues that were deleted in target org
+Initial synchronization is a controlled local-to-remote backfill:
 
-### Mappings
+1. SyncApp builds a read-only preview of the configured local project and JQL scope.
+2. The preview classifies issues as eligible, already mapped, blocked, or conflicting.
+3. The administrator reviews counts and reason codes and explicitly approves the job.
+4. The preview and configuration are checksum-bound to the job.
+5. Work proceeds in bounded batches through the existing Forge queue, with an issue-create ledger, leases, parent ordering, and restart recovery.
+6. The job can be paused, resumed, or cancelled. Completed Jira writes are not reversed.
 
-User Mapping: Maps users between organizations for assignee/reporter fields. Unmapped users result in unassigned issues.
+An issue with an existing mapping is never sent through the create path. The backfill does not scan or create issues in remote Jira.
 
-Field Mapping: Maps custom field IDs between organizations. Only mapped fields are synced.
+### Guided setup
 
-Status Mapping: Maps status IDs when workflow names differ. Falls back to name matching if unmapped.
+The admin page includes a guided setup wizard covering:
 
-### Project Filtering
-Control which projects sync:
-1. Open Configuration tab
-2. Click "Load Projects"
-3. Select projects to sync
-4. Save
+- remote Jira connection
+- source project scope
+- push or bidirectional direction
+- user, field, status, issue-type, and project mappings
+- feature options
+- remote webhook configuration
+- communication preflight
+- initial synchronization
+- review and activation
 
-If no projects are selected, all projects sync (backward compatible).
+An existing organization can still be configured through the individual settings panels.
 
-## Usage
 
-### Sync Activity Tab
+### Recurring local-to-remote reconciliation
 
-Statistics: Webhook totals are connector-wide and show created, updated, comments synced, loops prevented, skipped safety outcomes, and a precise last-successful-Jira-write timestamp. Legacy scheduled totals show Checked, Updated, Already Current, Skipped, and Failed.
+Recurring source reconciliation is opt-in and **Off by default**. When enabled, it periodically re-evaluates the already configured **local** project scope:
 
-Legacy Scheduled Sync Timeline: Shows the last scheduled attempt and the next hourly heartbeat estimate.
+- unmapped local issues are eligible for creation through the safe create path
+- mapped issues that are already current produce no writes
+- outdated mapped issues are updated through the safe update path
+- a mapped issue is never sent to the create path, so reconciliation cannot create a second counterpart
 
-Background Maintenance:
-- Manual Sync: Force sync a specific issue by key
-- Retry Pending Links: Retry any issue links waiting for both issues to exist
-- Scan Deleted (when enabled): Scan all synced issues and recreate any that were deleted in target org
+This feature does not scan remote Jira and is not full bidirectional reconciliation. It uses the existing hourly recovery heartbeat, so exact-minute execution is not guaranteed.
 
-Issue Export/Import:
-- Export: Run JQL query to download issues as JSON
-- Import: Upload previously exported JSON to recreate issues
+### SYNC attention records and issue comments
 
-### Configuration Tab
+Recurring reconciliation maintains a stable attention record for each organization and source issue. A record can include the source and remote keys, reason code, attempt count, timestamps, notification acknowledgement, resolution metadata, and review-comment metadata.
 
-Allowed Projects: Select which local projects can sync to this organization.
+- **Resolve after Health Check** confirms both mapping directions and probes both issues before resolving the record. A failed probe leaves it open.
+- **Acknowledge Notifications** only mutes further administrator notifications. The technical record remains open and visible.
+- A resolved record reopens as a new episode if the issue fails again.
 
-Sync Options: Toggle features (comments, attachments, links, recreate deleted).
+When configured, SyncApp adds one marker-tagged review comment to the local issue after the failure threshold is reached. The marker text starts with `Jira Sync Connector recurring reconciliation review required.` The comment is never copied to the remote site.
 
-Import/Export Settings: Backup or restore organization configuration.
+`SYNC-123`-style keys are ordinary issue keys in a target project. They are not connector database identifiers. The connector mapping and attention record reference those Jira keys but are stored separately in Forge Storage.
 
-### Mappings Tab
+### Global Synchronization Write Control
 
-Configure user, field, and status mappings between source and target organizations.
+The **Synchronization Write Control** in the admin page provides a global emergency pause. While paused, all connector Jira writes are blocked in both directions, including issue, comment, attachment, link, and transition writes. Reads, configuration, diagnostics, and exports remain available.
 
-## Architecture
+Pause does not delete or modify issues, mappings, secrets, or organization configuration. Inbound webhook events received while paused are acknowledged and discarded; resume does not replay them or start a backfill. Use the separate initial-sync controls to resume an explicitly approved paused job.
 
-SyncApp/
-  src/
-    index.js                    Entry point (pure exports)
-    constants.js                Shared constants
-    utils/                      Utility functions (adf, retry, validation)
-    services/
-      storage/
-        kvs.js                  @forge/kvs wrapper
-        mappings.js             Issue mapping storage
-        flags.js                Sync flags & pending links
-        stats.js                API usage & audit tracking
-      jira/
-        local-client.js         Source Jira (@forge/api)
-        remote-client.js        Target Jira (fetch + Basic Auth)
-      sync/                     Sync operations
-      scheduled/                Scheduled sync
-    resolvers/                  Admin UI API handlers
-    triggers/                   Webhook handlers
-  static/admin-page/            React + Atlaskit admin UI
-  manifest.yml                  Forge configuration
+### Deleted-counterpart notices, remapping, and controlled replacement
 
-### Triggers
-- avi:jira:created:issue: New issue webhook
-- avi:jira:updated:issue: Issue update webhook
-- avi:jira:commented:issue: Comment webhook
-- avi:jira-issue-link:created: Link created webhook
-- avi:jira-issue-link:deleted: Link deleted webhook
-- avi:jira:deleted:issue: Issue deleted webhook
-- scheduledTrigger: Hourly sync (900s timeout)
+SyncApp treats a counterpart deletion as a mapping and safety event. It does **not** propagate a Jira issue deletion to the other site.
 
-### Storage (@forge/kvs)
-Uses `@forge/kvs` with transactions for atomic operations.
+When a deletion or unavailability is detected, SyncApp can:
 
-**Configuration:**
-- organizations: Array of org configurations
-- syncOptions:{orgId}: Feature toggles per org
-- userMappings:{orgId}, fieldMappings:{orgId}, statusMappings:{orgId}: Mappings per org
-- secret:{orgId}:token: API tokens (secure storage)
+- record the counterpart state and reason
+- add a connector-owned warning notice to the surviving issue's description
+- preserve existing user content
+- expose the pair in **Deleted Counterpart Recovery**
+- remap the pair only after both replacement issues are verified reachable
+- end synchronization while retaining an audit record
+- replace a confirmed-deleted counterpart only through an explicit administrator action or the explicit automatic-replacement opt-in
 
-**Issue Mappings:**
-- {orgId}:local-to-remote:{issueKey}: Local → Remote key mapping
-- {orgId}:remote-to-local:{remoteKey}: Remote → Local key mapping
-- mapping-meta:{orgId}:{localKey}: Queryable mapping metadata
+Automatic replacement after confirmed deletion is **Off by default**. The legacy `recreateDeletedIssues` setting does not enable it.
 
-**Sync State:**
-- syncing:{issueKey}: Sync-in-progress flag (TTL-based)
-- pending-links:{issueKey}: Pending link queue
-- pending-link-idx:{issueKey}: Queryable pending link index
-- attachment-lock:{orgId}:{attachmentId}: Attachment upload locks
+### Strict project and optional JQL scope
 
-**Statistics:**
-- scheduledSyncStats, webhookSyncStats, apiUsageStats, auditLog
+A remote organization must have at least one allowed local project. If no project is selected, synchronization is blocked rather than falling back to all projects. An optional JQL filter is applied **in addition to** the project allow-list, and both are enforced for outbound, inbound, scheduled, initial-sync, reconciliation, attachment, and manual paths as applicable.
+
+## What SyncApp does not do
+
+SyncApp does not:
+
+- scan remote Jira projects on a recurring schedule
+- clone workflows or workflow schemes
+- propagate Jira issue deletion to the other site
+- automatically replay an ambiguous Jira write
+- provide arbitrary non-Atlassian integrations
+- represent Marketplace approval or Runs on Atlassian eligibility
+
+Deleting an issue in either Jira site is intentionally not mirrored as a Jira issue deletion.
+
+
+## Requirements
+
+- Node.js 22.x for Forge CLI and repository tooling
+- Atlassian Forge CLI 14.x
+- A Jira Cloud site where the app is installed
+- Jira administrator permission on the local site
+- A remote Jira Cloud site, remote administrator email, and API token with the required Jira permissions
+- A Jira System Webhook on each bidirectional remote site
+
+The Forge manifest requests classic Jira scopes and `storage:app`; see [Security](docs/SECURITY.md) for the authorization model.
+
+## Install and configure
+
+```bash
+npm ci
+npm test -- --runInBand
+cd static/admin-page && npm ci && npm run build && cd ../..
+forge login
+forge deploy
+forge install
+```
+
+Then open **Jira Settings > Apps > Sync Connector** and use the guided setup wizard. Detailed instructions are in [Installation](docs/INSTALLATION.md) and [Configuration](docs/CONFIGURATION.md).
+
+## Operate and troubleshoot
+
+- [Operations](docs/OPERATIONS.md): pause/resume, backfill, recurring reconciliation, attention records, deleted counterparts, attachments, manual sync, pending links, rollback
+- [Troubleshooting](docs/TROUBLESHOOTING.md): missing issues, mapping conflicts, unknown create outcomes, webhook problems, permission upgrades
+- [Architecture](docs/ARCHITECTURE.md): triggers, queues, storage, ledgers, leases, Custom UI
+- [Release notes for v2.1.0](docs/RELEASE_NOTES_V2.1.0.md)
+
+## Repository layout
+
+```text
+src/
+  index.js                 Forge handler exports
+  resolvers/               Admin UI resolvers and authorization policy
+  services/jira/           Local and remote Jira clients
+  services/setup/          Guided setup validation and progress
+  services/storage/        Forge KVS wrappers, mappings, ledgers, stats
+  services/sync/           Issue, comment, link, attachment, backfill,
+                           reconciliation, pause, and recovery services
+  services/scheduled/      Legacy scheduled compatibility path
+  triggers/                Jira event, queue, and scheduled handlers
+  webtriggers/             Authenticated remote webhook endpoint
+static/admin-page/         React and Atlaskit Custom UI
+manifest.yml               Forge modules, runtime, and scopes
+docs/                      Current product and operations documentation
+```
 
 ## Development
 
-Build UI:
-   cd static/admin-page
-   npm run build
-   cd ../..
+```bash
+npm ci
+npm test -- --runInBand
+npm run lint
+npm audit --omit=dev
+npm run check:secrets
+npm run check:forge:offline
+npm run check:forge
+cd static/admin-page && npm ci && npm run build
+```
 
-Deploy:
-   forge deploy
+`npm run check:forge:offline` runs the Forge lint rule set without a login and is the deterministic CI check. `npm run check:forge` is the authenticated local release gate and is not run in CI, where Atlassian credentials are intentionally not available.
 
-View logs:
-   forge logs
+## Version
 
-Local development:
-   forge tunnel
+The authoritative package version is `package.json` (`2.1.0`). The admin header displays `v2.1.0`.
 
-## Troubleshooting
+## License and support
 
-Issues not syncing:
-- Check logs with forge logs
-- Verify remote credentials in admin UI
-- Ensure mappings are saved
-- Check project is in allowed list
-
-Attachments failing:
-- Verify file is under 10MB
-- Check download/upload permissions
-- Ensure Sync Attachments is enabled
-
-Links not syncing:
-- Both linked issues must be synced first
-- Pending links retry hourly
-- Ensure Sync Links is enabled
-
-Deleted issues not recreating:
-- Enable Recreate Deleted Issues in Sync Options
-- Click Scan & Recreate Now in Quick Actions
-- Or wait for next hourly sync
-
-Slow initial sync:
-- Forge cold starts can take several seconds
-- Subsequent syncs are faster (1-3 seconds)
-
-## Two-Way Sync Status
-
-- ✅ Incoming webhook/webtrigger pipeline with secret validation
-- ✅ Reverse field/user/status mapping, parent mirroring, and local transitions
-- ✅ Comment ingestion with deduplication, SyncApp loop guards, and per-comment tracking
-- ✅ Inbound attachments (Remote → Local) with duplicate prevention
-- ✅ Inbound issue links (Remote → Local)
-- 🔄 Next: inbound feature toggles in sync options plus diagnostics surfacing for webhook health
-
-## Roadmap
-
-Features under consideration for future releases:
-
-### High Priority
-- **Bi-directional Sync** - Two-way sync with conflict resolution
-- **Field Transformation Rules** - Transform values during sync (e.g., "High" → "Critical")
-- **JQL-based Sync Filters** - Sync only issues matching specific criteria
-
-### Medium Priority
-- **Bulk Initial Sync Wizard** - One-click sync all issues matching criteria
-- **Worklog/Time Tracking Sync** - Full worklog entries, not just estimates
-- **Component/Version Auto-Create** - Create missing components/versions in target
-- **Sync Pause/Resume** - Temporarily pause without losing configuration
-- **Email Notifications** - Alerts on sync failures or daily summaries
-
-### Future Enhancements
-- **Conflict Detection** - Alert when both sides changed, manual resolution
-- **Audit Log UI** - Full history of who synced what and when
-- **Watchers Sync** - Sync issue watchers between orgs
-- **Label Mapping** - Rename labels during sync
-
-## License
-
-MIT License - See LICENSE file
-
-## Support
-
-- GitHub Issues: https://github.com/SerdarAbali/jira-sync-connector/issues
-- Forge Documentation: https://developer.atlassian.com/platform/forge/
+MIT License; see [LICENSE](LICENSE). Report defects at <https://github.com/SerdarAbali/jira-sync-connector/issues>.

@@ -7,7 +7,7 @@ const PANEL_PATH = path.join(
   'static/admin-page/src/components/RecurringReconciliation.jsx'
 );
 const MANIFEST_PATH = path.join(process.cwd(), 'manifest.yml');
-const DOC_PATH = path.join(process.cwd(), 'RECURRING_RECONCILIATION.md');
+const DOC_PATH = path.join(process.cwd(), 'docs/OPERATIONS.md');
 
 const app = fs.readFileSync(APP_PATH, 'utf8');
 const panel = fs.readFileSync(PANEL_PATH, 'utf8');
