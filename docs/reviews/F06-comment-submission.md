@@ -291,7 +291,7 @@ deferred marker and never replays".
 
 ## Correction pass 3 — the phase and the F02 boundary are one transition
 
-Defect (reproduced by the Codex review): the pass-2 correction published F06's
+Defect (independently reproduced during review): the pass-2 correction published F06's
 retryable phase and F02's released boundary in two commits, phase first. Two
 deliveries can then interleave as follows:
 
@@ -349,7 +349,7 @@ Red-to-green evidence (new tests in `tests/f06-comment-submission.test.js`):
 - `a concurrent delivery never observes an armed phase with an old marker`
   suspends B in `getFullComment`, resumes it from a test hook the instant the
   `pre_submission` transaction commits, and asserts one POST. On the pass-2
-  ordering it fails with `Expected length: 1 / Received length: 0` — Codex's
+  ordering it fails with `Expected length: 1 / Received length: 0` — the
   defect reproduced deterministically, no timing dependence.
 - `a stale invocation publishes nothing once the phase is no longer its own`
   steals the phase after A wrote its boundary: the outcome is

@@ -19,7 +19,7 @@ const SECRET_PATTERNS = [
   { name: 'github-token', pattern: /\bghp_[A-Za-z0-9]{30,}\b/ },
   { name: 'slack-token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/ },
   { name: 'aws-access-key', pattern: /\bAKIA[A-Z0-9]{16}\b/ },
-  { name: 'openai-key', pattern: /\bsk-[A-Za-z0-9]{32,}\b/ },
+  { name: 'service-api-key', pattern: /\bsk-[A-Za-z0-9]{32,}\b/ },
   { name: 'authorization-header', pattern: /Authorization\s*[:=]\s*['"]?(?:Basic|Bearer)\s+[A-Za-z0-9+/=._-]{20,}/i },
   { name: 'generated-webhook-url', pattern: /https:\/\/[a-z0-9-]+\.webtrigger\.atlassian-dev\.net\/[A-Za-z0-9_-]+\/(?!abcdefghijklmnop(?:[^A-Za-z0-9_-]|$))[A-Za-z0-9_-]{16,}/i },
   { name: 'generated-callback-url', pattern: /https:\/\/[a-z0-9-]+\.atlassian-dev\.net\/[A-Za-z0-9_-]+\/(?!abcdefghijklmnop(?:[^A-Za-z0-9_-]|$))[A-Za-z0-9_-]{16,}/i }

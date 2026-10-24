@@ -27,6 +27,9 @@ jobs:
       - name: Run tests
         run: npm test -- --runInBand
 
+      - name: Repository neutrality (committed text)
+        run: npm run check:neutrality -- --committed
+
       - name: Lint source
         run: npm run lint
 

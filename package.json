@@ -18,7 +18,9 @@
     "test": "jest",
     "check:secrets": "node scripts/check-secrets.js",
     "check:forge": "forge lint",
-    "check:forge:offline": "node scripts/check-forge-offline.js"
+    "check:forge:offline": "node scripts/check-forge-offline.js",
+    "test:guarantees": "jest --runInBand --runTestsByPath tests/package1-outbound-scope.test.js tests/package1-outbound-guarantee.test.js",
+    "check:neutrality": "node scripts/check-neutrality.js"
   },
   "engines": {
     "node": ">=22.0.0"

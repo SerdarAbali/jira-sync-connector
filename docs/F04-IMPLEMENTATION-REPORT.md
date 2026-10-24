@@ -5,7 +5,7 @@ Repository: SerdarAbali/jira-sync-connector.
 Worktree: `/Users/serdar/Documents/Projects/jira-sync-project/f04-signed-webhooks`.
 Branch: `fix/f04-signed-webhooks`.
 HEAD/base: `5c9fccb00d3f055d5e40f91eb42434c98625993e`.
-All implementation changes are uncommitted and unstaged for independent DeepSeek review.
+All implementation changes are uncommitted and unstaged for independent review.
 
 ## Root cause and exact change
 
