@@ -7,6 +7,7 @@ const { redactText } = require('./redact');
 
 const USER_AGENT = 'jira-sync-connector-staging-preflight/1.0';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 256 * 1024;
 const PERMISSION_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const SENSITIVE_DEBUG_NAMESPACES = new Set(['http', 'https']);
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
@@ -301,16 +302,40 @@ function createHttpsRequest(options = {}) {
         reject(error);
       }
 
+      const method =
+        typeof requestOptions.method === 'string'
+          ? requestOptions.method.toUpperCase()
+          : 'GET';
+      if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) {
+        fail(new Error('The request method is not supported.'));
+        return;
+      }
+
+      let payload = null;
+      if (requestOptions.body !== undefined && requestOptions.body !== null) {
+        payload = JSON.stringify(requestOptions.body);
+        if (Buffer.byteLength(payload, 'utf8') > MAX_REQUEST_BYTES) {
+          fail(new Error('The Jira request body exceeded the permitted size.'));
+          return;
+        }
+      }
+
       const request = https.request(
         {
           protocol: url.protocol,
           hostname: url.hostname,
           port: url.port || 443,
           path: `${url.pathname}${url.search}`,
-          method: 'GET',
+          method,
           headers: {
             Accept: 'application/json',
             'User-Agent': USER_AGENT,
+            ...(payload === null
+              ? {}
+              : {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(payload, 'utf8'),
+                }),
             ...(requestOptions.headers || {}),
           },
           timeout: timeoutMs,
@@ -365,7 +390,7 @@ function createHttpsRequest(options = {}) {
         );
       });
       request.on('error', fail);
-      request.end();
+      request.end(payload === null ? undefined : payload);
     });
   };
 }

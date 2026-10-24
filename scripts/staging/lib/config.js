@@ -12,6 +12,7 @@ const PROJECT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const JIRA_CLOUD_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PERMISSION_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+const ISSUE_TYPE_PATTERN = /^[A-Za-z][A-Za-z0-9 _-]{0,79}$/;
 const ENV_FILE_MAX_BYTES = 64 * 1024;
 
 const DEFAULT_E2E_PERMISSIONS = [
@@ -48,6 +49,20 @@ const OPTIONAL_KEYS = [
   'STAGING_MAX_PROJECT_PAGES',
   'STAGING_E2E_PERMISSIONS',
   'STAGING_REPORT_DIR',
+  'STAGING_E2E_WRITE_MODE',
+  'STAGING_E2E_EVIDENCE_FILE',
+  'STAGING_E2E_ENVIRONMENT',
+  'STAGING_E2E_LOCAL_PROJECT',
+  'STAGING_E2E_REMOTE_PROJECT',
+  'STAGING_E2E_ISSUE_TYPE',
+  'STAGING_E2E_EVIDENCE_MAX_AGE_MS',
+  'STAGING_E2E_SYNC_TIMEOUT_MS',
+  'STAGING_E2E_POLL_INTERVAL_MS',
+  'STAGING_E2E_POLL_MAX_INTERVAL_MS',
+  'STAGING_E2E_MAX_POLLS',
+  'STAGING_E2E_DUPLICATE_SETTLE_MS',
+  'STAGING_E2E_CLEANUP',
+  'STAGING_E2E_REPORT_DIR',
 ];
 
 const KNOWN_ENV_KEYS = new Set([
@@ -696,6 +711,76 @@ function readInteger(env, key, defaultValue, minimum, maximum, issues) {
   return parsed;
 }
 
+function readChoice(env, key, defaultValue, allowed, issues) {
+  const raw = env[key];
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return defaultValue;
+  }
+
+  const value = String(raw).trim().toLowerCase();
+  if (!allowed.includes(value)) {
+    issues.push(
+      issue(
+        'configuration',
+        'invalid-choice',
+        key,
+        `${key} must be one of: ${allowed.join(', ')}.`,
+        `Set ${key} to one of: ${allowed.join(', ')}.`
+      )
+    );
+    return defaultValue;
+  }
+
+  return value;
+}
+
+function readBoolean(env, key, defaultValue, issues) {
+  const raw = env[key];
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return defaultValue;
+  }
+
+  const value = String(raw).trim().toLowerCase();
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+
+  issues.push(
+    issue(
+      'configuration',
+      'invalid-boolean',
+      key,
+      `${key} must be "true" or "false".`,
+      `Set ${key} to "true" or "false".`
+    )
+  );
+  return defaultValue;
+}
+
+function readProjectSelector(env, key, issues) {
+  const raw = env[key];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value) {
+    return null;
+  }
+  if (!PROJECT_KEY_PATTERN.test(value)) {
+    issues.push(
+      issue(
+        'configuration',
+        'invalid-project-key',
+        key,
+        `${key} must be a single Jira project key.`,
+        'Use one project key that starts with a letter and contains only letters, digits, and underscores.'
+      )
+    );
+    return null;
+  }
+  return value;
+}
+
 function buildConfig(env, options = {}) {
   const values = env && typeof env === 'object' ? env : {};
   const cwd = options.cwd || process.cwd();
@@ -902,6 +987,107 @@ function buildConfig(env, options = {}) {
     );
   }
 
+  const defaultE2EReportDir = path.resolve(cwd, 'artifacts/staging-e2e');
+  let e2eReportDir = defaultE2EReportDir;
+  const rawE2EReportDir = values.STAGING_E2E_REPORT_DIR;
+  const e2eReportDirValue =
+    rawE2EReportDir !== undefined && String(rawE2EReportDir).trim() !== ''
+      ? String(rawE2EReportDir).trim()
+      : 'artifacts/staging-e2e';
+  try {
+    e2eReportDir = resolveConfiguredReportDirectory(
+      cwd,
+      e2eReportDirValue,
+      fsImpl
+    ).dir;
+  } catch (error) {
+    issues.push(
+      issue(
+        'configuration',
+        'invalid-report-directory',
+        'STAGING_E2E_REPORT_DIR',
+        String(error.message || '').replace(/STAGING_REPORT_DIR/g, 'STAGING_E2E_REPORT_DIR'),
+        'Use a relative path under artifacts/, for example artifacts/staging-e2e.'
+      )
+    );
+  }
+
+  const e2eIssueType = String(values.STAGING_E2E_ISSUE_TYPE || '').trim() || 'Task';
+  if (!ISSUE_TYPE_PATTERN.test(e2eIssueType)) {
+    issues.push(
+      issue(
+        'configuration',
+        'invalid-issue-type',
+        'STAGING_E2E_ISSUE_TYPE',
+        'STAGING_E2E_ISSUE_TYPE is not a valid Jira issue type name.',
+        'Use a Jira issue type name such as Task or Story.'
+      )
+    );
+  }
+
+  const e2e = {
+    writeMode: typeof values.STAGING_E2E_WRITE_MODE === 'string'
+      ? values.STAGING_E2E_WRITE_MODE.trim()
+      : '',
+    evidenceFile: typeof values.STAGING_E2E_EVIDENCE_FILE === 'string'
+      ? values.STAGING_E2E_EVIDENCE_FILE.trim()
+      : '',
+    environment: readChoice(
+      values,
+      'STAGING_E2E_ENVIRONMENT',
+      'staging',
+      ['development', 'staging'],
+      issues
+    ),
+    localProject: readProjectSelector(values, 'STAGING_E2E_LOCAL_PROJECT', issues),
+    remoteProject: readProjectSelector(values, 'STAGING_E2E_REMOTE_PROJECT', issues),
+    issueType: e2eIssueType,
+    evidenceMaxAgeMs: readInteger(
+      values,
+      'STAGING_E2E_EVIDENCE_MAX_AGE_MS',
+      15 * 60 * 1000,
+      60 * 1000,
+      24 * 60 * 60 * 1000,
+      issues
+    ),
+    syncTimeoutMs: readInteger(
+      values,
+      'STAGING_E2E_SYNC_TIMEOUT_MS',
+      180 * 1000,
+      5000,
+      15 * 60 * 1000,
+      issues
+    ),
+    pollIntervalMs: readInteger(
+      values,
+      'STAGING_E2E_POLL_INTERVAL_MS',
+      2000,
+      250,
+      30000,
+      issues
+    ),
+    pollMaxIntervalMs: readInteger(
+      values,
+      'STAGING_E2E_POLL_MAX_INTERVAL_MS',
+      15000,
+      250,
+      60000,
+      issues
+    ),
+    maxPolls: readInteger(values, 'STAGING_E2E_MAX_POLLS', 60, 1, 600, issues),
+    duplicateSettleMs: readInteger(
+      values,
+      'STAGING_E2E_DUPLICATE_SETTLE_MS',
+      5000,
+      0,
+      60000,
+      issues
+    ),
+    cleanup: readBoolean(values, 'STAGING_E2E_CLEANUP', true, issues),
+    reportDir: e2eReportDir,
+    reportDirLabel: toRelativeLabel(cwd, e2eReportDir),
+  };
+
   return {
     config: {
       mode: 'read-only',
@@ -944,6 +1130,7 @@ function buildConfig(env, options = {}) {
         issues
       ),
       e2ePermissions: e2ePermissions.permissions,
+      e2e,
       reportDir,
       reportDirLabel: toRelativeLabel(cwd, reportDir),
       cwd,

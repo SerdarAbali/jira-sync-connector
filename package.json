@@ -21,8 +21,12 @@
     "check:forge:offline": "node scripts/check-forge-offline.js",
     "test:guarantees": "jest --runInBand --runTestsByPath tests/package1-outbound-scope.test.js tests/package1-outbound-guarantee.test.js",
     "test:staging": "jest --runInBand --runTestsByPath tests/staging-preflight.test.js",
+    "test:staging:e2e": "jest --runInBand --runTestsByPath tests/staging-e2e-runner.test.js tests/staging-e2e-cli.test.js",
     "staging:preflight": "node scripts/staging/preflight.js",
     "staging:report": "node scripts/staging/report.js",
+    "staging:e2e:plan": "node scripts/staging/e2e.js --plan",
+    "staging:e2e:dry-run": "node scripts/staging/e2e.js --dry-run",
+    "staging:e2e": "node scripts/staging/e2e.js",
     "check:neutrality": "node scripts/check-neutrality.js"
   },
   "engines": {

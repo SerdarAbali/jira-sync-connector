@@ -173,6 +173,7 @@ Then open **Jira Settings > Apps > Sync Connector** and use the guided setup wiz
 - [Operations](docs/OPERATIONS.md): pause/resume, backfill, recurring reconciliation, attention records, deleted counterparts, attachments, manual sync, pending links, rollback
 - [Troubleshooting](docs/TROUBLESHOOTING.md): missing issues, mapping conflicts, unknown create outcomes, webhook problems, permission upgrades
 - [Staging preflight](docs/STAGING_PREFLIGHT.md): read-only staging readiness checks, private reports, and exit codes
+- [Staging E2E](docs/STAGING_E2E.md): opt-in, write-gated synchronization tests, plan/dry-run modes, and safety gates
 - [Architecture](docs/ARCHITECTURE.md): triggers, queues, storage, ledgers, leases, Custom UI
 - [Release notes for v2.1.0](docs/RELEASE_NOTES_V2.1.0.md)
 

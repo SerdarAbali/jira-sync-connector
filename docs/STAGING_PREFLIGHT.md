@@ -184,4 +184,6 @@ synchronization behavior, Forge installation, webhook delivery, migration
 completion, Marketplace compliance, or end-to-end write safety. Project
 classification is not evidence that development configuration, callbacks, and
 pending work are absent. A separate, explicitly gated write runner is required
-before any E2E mutation; it is not part of this preflight.
+before any E2E mutation; it is not part of this preflight. The opt-in E2E suite
+that performs those mutations is documented in
+[`docs/STAGING_E2E.md`](./STAGING_E2E.md).
