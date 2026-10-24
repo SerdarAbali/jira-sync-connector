@@ -147,6 +147,14 @@ Batch size is 25, with at most five items processed per queue invocation. The pr
 
 Disabling reconciliation cancels an active run without reversing completed Jira writes. The hourly recovery heartbeat provides the scheduling resolution; no exact-minute guarantee exists.
 
+## Staging preflight configuration
+
+The read-only staging preflight uses its own `STAGING_*` variables and a local
+environment file. If the resolved credential file is inside the repository, Git
+must ignore it; file mode must be `600`. Reports are restricted to the canonical
+private `artifacts/` subtree. See [Staging preflight](STAGING_PREFLIGHT.md) for
+the variable list, host allow-list, report location, validation, and exit codes.
+
 - A missing or invalid issue-type mapping blocks a create rather than guessing.
 - A project mapping can direct different local projects to different remote projects.
 - The target project must be within the configured remote scope.

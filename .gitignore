@@ -8,6 +8,7 @@ node_modules/
 # Environment files (contains sensitive data!)
 .env
 .env.local
+.env.staging*
 *.env
 
 # Logs
@@ -34,3 +35,6 @@ logs*.txt
 *.log
 scr*.log
 latest-sync.log
+
+# Staging preflight reports may contain site and identity metadata
+artifacts/

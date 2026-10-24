@@ -192,6 +192,17 @@ The hourly scheduled-sync function remains for upgraded and legacy configuration
 
 Real-time Jira events remain the normal path. The scheduled and recovery paths exist to catch missed work without bypassing safety controls.
 
+## Staging readiness preflight
+
+Before a staging validation run, execute the read-only preflight described in
+[Staging preflight](STAGING_PREFLIGHT.md). It checks both staging sites, verifies
+staging project access and explicit project classification, and writes a private
+report. Development/staging operational isolation remains `unknown`; the check
+cannot establish that development configuration, callbacks, or pending work are
+absent. It never writes to Jira and never certifies operational isolation,
+Forge, or F07 state. A passing preflight is evidence of API-visible readiness,
+not end-to-end synchronization approval.
+
 ## Monitoring
 
 Use **Sync Activity** and **Diagnostics** to review:
