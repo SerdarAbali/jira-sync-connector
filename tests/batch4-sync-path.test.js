@@ -144,6 +144,7 @@ function authContext() {
 
 beforeEach(() => {
   mockStore.clear();
+  authContext();
   jest.clearAllMocks();
   getFullIssue.mockResolvedValue({ key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
   mockFetch.mockResolvedValue({ ok: true, status: 204, text: async () => '', json: async () => ({}) });

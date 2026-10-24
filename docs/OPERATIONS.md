@@ -123,7 +123,7 @@ Mapping checks:
 
 SyncApp does not propagate Jira issue deletion. A confirmed deletion or temporary unavailability becomes a counterpart status that blocks unsafe writes and is shown in **Deleted Counterpart Recovery**.
 
-A confirmed-deleted survivor may receive a connector-owned warning notice in its description. The notice is marker-tagged, preserves existing user content, and is never copied to the counterpart. A temporary 404 is classified as unavailable, not confirmed deleted, unless a verified deletion event establishes the state.
+A confirmed-deleted survivor may receive a connector-owned warning notice in its description. Remote notice addition/removal requires a currently verifiable, selected local source and an intact mapping pair. If the local issue was deleted, is excluded or cannot be read, the remote description remains unchanged; status records and administrative recovery remain available. A recovery action can complete its mapping/status changes while an old notice remains because its separate Jira write was not authorized. The notice is marker-tagged, preserves existing user content, and is never copied to the counterpart. A temporary 404 is classified as unavailable, not confirmed deleted, unless a verified deletion event establishes the state.
 
 Available actions:
 
@@ -169,7 +169,7 @@ Use it when:
 
 ## Pending-link maintenance
 
-When a linked issue has no mapping yet, the link is stored as pending rather than guessed or dropped. The hourly maintenance path and the **Retry Pending Links** action can retry it.
+When a linked issue has no mapping yet, the link is stored as pending rather than guessed or dropped. The hourly maintenance path and the **Retry Pending Links** action can retry it. Each new link write requires both current local endpoints to satisfy project authorization and JQL selection. Excluded/unverifiable pending links retain their retry evidence without consuming write-failure attempts. A previously confirmed remote link can repair storage without another Jira write.
 
 Before retrying:
 
@@ -223,7 +223,7 @@ For a documentation-only release, no Forge redeployment is required when the dep
 - a mapping is healthy but one issue is stale
 - an operator has verified that a retry is safe
 
-Do not use manual sync to resolve an unknown create outcome or a mapping conflict. Those require inspection first. Manual sync still respects global pause, project scope, direction, mappings, and counterpart status. A create path also applies the configured JQL filter; an update of an existing mapping is scoped by the project allow-list.
+Do not use manual sync to resolve an unknown create outcome or a mapping conflict. Those require inspection first. Manual sync still respects global pause, project scope, direction, mappings, and counterpart status. Both create and mapped-update paths apply the current configured JQL filter. Independent content writers do so too; a mapping does not exempt an issue from selection. Scope rejection is reported as a failed/deferred operation, not an ambiguous write. Initial/recurring workers stop before advancing the denied item's checkpoint. If earlier steps already succeeded, their destination data and durable records remain; use an explicit authorized manual/reconciliation flow for missing work once selection permits it. See [the outbound selection guarantee](PACKAGE1_OUTBOUND_SELECTION_GUARANTEE.md).
 
 ## Signed webhook cutover and rollback
 

@@ -38,6 +38,10 @@ jest.mock('../src/services/storage/stats.js', () => ({
   logAuditEntry: jest.fn(async () => undefined)
 }));
 
+jest.mock('../src/services/storage/kvs.js', () => ({ get: jest.fn(async key => key === 'organizations' ? [{ id: 'org-1', allowedProjects: ['LOCAL'] }] : null) }));
+jest.mock('../src/services/jira/local-client.js', () => ({ getFullIssue: jest.fn(async key => ({ key, fields: { project: { key: 'LOCAL' } } })) }));
+
+import { getLocalKey } from '../src/services/storage/mappings.js';
 import { fetch as mockFetch } from '@forge/api';
 import { syncIssueLinks } from '../src/services/sync/link-sync.js';
 import { processPendingLinksForNewlySyncedIssue } from '../src/services/sync/issue-sync.js';
@@ -52,6 +56,7 @@ import {
 } from '../src/services/storage/flags.js';
 
 const config = {
+  id: 'org-1',
   remoteUrl: 'https://remote.example.invalid',
   remoteEmail: 'sync@example.invalid',
   remoteApiToken: 'test-token'
@@ -81,6 +86,7 @@ function issueWithLink(key, linkedKey, direction, linkId = 'LINK-1') {
 beforeEach(() => {
   jest.clearAllMocks();
   linkMap.clear();
+  getLocalKey.mockImplementation(async key => key.replace('REMOTE-', 'LOCAL-'));
   getLinkMapping.mockImplementation(async (linkId, orgId) => linkMap.get(mappingKey(linkId, orgId)) || null);
   storeLinkMapping.mockImplementation(async (linkId, value, orgId) => {
     linkMap.set(mappingKey(linkId, orgId), value);

@@ -5,6 +5,7 @@ import * as storage from '../storage/kvs.js';
 import { storeCommentMapping } from '../storage/mappings.js';
 import { isKeyConflictError } from '../../utils/storage-errors.js';
 import { prepareDeferredSubmissionRelease } from './comment-verification-recovery.js';
+import { assertOutboundScope } from './outbound-scope.js';
 
 const PREFIX = 'comment-submission:';
 const RESULT_PREFIX = 'comment-submission-result:';
@@ -20,7 +21,8 @@ const FENCED = 'submission_may_have_started';
 // Raised by the submission guards, which all run before the SDK transport is
 // handed the request. Only these prove that no submission attempt occurred.
 export const PRE_SUBMISSION_CODES = new Set(['PILOT_PAUSED', 'PAUSE_STATE_UNAVAILABLE', 'LEASE_NOT_OWNED',
-  'LEASE_OWNERSHIP_UNAVAILABLE', 'LEASE_MIGRATION_REQUIRED']);
+  'LEASE_OWNERSHIP_UNAVAILABLE', 'LEASE_MIGRATION_REQUIRED',
+  'OUTBOUND_SCOPE_BLOCKED', 'OUTBOUND_SCOPE_UNVERIFIABLE']);
 // A fence younger than this may still belong to a delivery that is running in
 // another invocation. Inspection reports such a fence as in progress, and F02
 // recovery keeps it pending instead of escalating to manual attention.
@@ -200,6 +202,8 @@ export async function submitOutboundComment(scope, submit) {
   // A claim with no phase record cannot prove that submission never started.
   if (!operation && claim) return resumeOrAttention(scope, resultKey);
 
+  await assertOutboundScope({ orgId: scope.orgId, issueKey: scope.issueKey });
+
   const record = operationRecord(scope, { state: FENCED, token: operationToken(),
     reason: 'INTERRUPTED_SUBMISSION', createdAt: operation?.createdAt || Date.now() });
   // Only the owner of an armed phase (it proved no transport started) or of a
@@ -235,7 +239,13 @@ export async function submitOutboundComment(scope, submit) {
   let transportStarted = false;
   // The hook runs after the guards pass and immediately before the SDK request.
   // While it stays false, no submission attempt was made in this invocation.
-  const send = (url, options) => fetch(url, options, () => { transportStarted = true; });
+  const send = (url, options) => fetch(url, options, async () => {
+    await assertOutboundScope({ orgId: scope.orgId, issueKey: scope.issueKey });
+    // Scope reads are asynchronous. Recheck Pause/lease ownership after them,
+    // before recording that transport may have started.
+    await assertJiraSubmissionAllowed(url, options);
+    transportStarted = true;
+  });
 
   let result;
   try {

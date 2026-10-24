@@ -15,6 +15,7 @@ import { getRejectedFields, clearRejectedField } from '../services/storage/rejec
 import { createIssueForOrg, updateIssueForOrg } from '../services/sync/issue-sync.js';
 import { formatHttpFailure } from '../utils/http-error.js';
 import { safeErrorSummary } from '../utils/redaction.js';
+import { resolveTargetProjectKey } from '../services/sync/project-routing.js';
 
 const MAX_ISSUE_EXPORT = 250;
 const ISSUE_EXPORT_PAGE_SIZE = 50;
@@ -562,7 +563,10 @@ export function defineDataResolvers(resolver) {
           }
 
           if (remoteKey) {
-            await updateIssueForOrg(issueKey, remoteKey, issueData, org, mappings, syncOptions || {});
+            const updateResult = await updateIssueForOrg(issueKey, remoteKey, issueData, org, mappings, syncOptions || {});
+            if (!updateResult || (updateResult.skipped && updateResult.status !== 'ALREADY_CURRENT')) {
+              throw new Error(updateResult?.status || 'Remote issue update failed');
+            }
             results.updated++;
           } else {
             const createdKey = await createIssueForOrg(issueData, org, mappings, syncOptions || {});
@@ -664,7 +668,8 @@ export function defineDataResolvers(resolver) {
         const projectMappings = await kvsStore.get(
           storageOrgId ? `projectMappings:${storageOrgId}` : 'projectMappings'
         );
-        const expectedProjectKey = projectMappings?.[sourceProjectKey] || org.remoteProjectKey;
+        const routing = resolveTargetProjectKey(sourceProjectKey, { projectMappings, remoteProjectKey: org.remoteProjectKey });
+        const expectedProjectKey = routing.key;
         if (!expectedProjectKey) {
           return { success: false, code: 'TARGET_PROJECT_NOT_CONFIGURED', error: 'No remote project is configured' };
         }

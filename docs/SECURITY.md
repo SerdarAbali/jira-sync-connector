@@ -45,7 +45,7 @@ Synchronization scope is not advisory:
 - At least one allowed local project is required.
 - An empty allow-list blocks synchronization instead of allowing all projects.
 - The optional JQL filter is combined with the project restriction.
-- Outbound, inbound, scheduled, initial-sync, reconciliation, attachment, and manual paths apply the applicable scope checks.
+- Every new outbound issue/content mutation verifies current project authorization and configured JQL selection, including manual, webhook, scheduled, continuation and recovery work. Inbound writes use the separate project/direction authorization described below.
 - Bidirectional webhooks must also be restricted in remote Jira to the intended projects.
 - Initial sync validates the remote target project and local scope before preview.
 - A project mapping cannot silently move an issue outside the validated target scope.
@@ -95,12 +95,18 @@ write. Reauthorization permits a later eligible delivery; it starts no backfill.
 
 The optional organization JQL remains a **local source-selection** rule, consistent
 with CONFIGURATION.md and OPERATIONS.md: it governs source selection, initial sync,
-and existing create-path checks where a local source issue exists. Existing mapped
+and outbound create/update and independent content checks where a local source
+issue exists. Existing mapped
 inbound destination updates use the current project allow-list; F03 does not invent
 a destination-JQL requirement or evaluate a nonexistent local issue before inbound
 creation. The remote webhook's JQL remains an independent remote-side filter.
-Malformed JQL configuration fails closed. F03 does not change the separate outbound
-JQL implementation or its existing failure handling.
+Malformed JQL configuration fails closed. The outbound rule now applies at all
+identified production write boundaries, including comments/replies, attachments,
+both link endpoints, status and counterpart notices. It does not delete previously
+exported data when selection changes. A deleted/unreadable source cannot authorize
+a new remote notice or cleanup write. Historical write receipts may repair storage
+without another Jira mutation; they cannot authorize a new export. See
+[the outbound selection guarantee](PACKAGE1_OUTBOUND_SELECTION_GUARANTEE.md).
 
 ### F03 corrective recovery boundaries
 

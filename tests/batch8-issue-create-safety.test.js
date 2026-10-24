@@ -177,6 +177,8 @@ function operationKey(sourceKey = 'LOCAL-1') {
 beforeEach(() => {
   mockStore.clear();
   mockSecretStore.clear();
+  mockStore.set('organizations', [ORG]);
+  require('../src/services/jira/local-client.js').getFullIssue.mockImplementation(async key => localIssue(key));
   jest.clearAllMocks();
   mockFetch.mockReset();
   getRemoteIssue.mockResolvedValue({

@@ -22,6 +22,10 @@ const NON_RETRYABLE_CODES = new Set([
   'LEASE_MIGRATION_REQUIRED',
   'PILOT_PAUSED',
   'PAUSE_STATE_UNAVAILABLE',
+  // Source selection rejected before submission; preserve the reason and let
+  // the caller defer unverifiable scope without retrying inside this invocation.
+  'OUTBOUND_SCOPE_BLOCKED',
+  'OUTBOUND_SCOPE_UNVERIFIABLE',
   'RATE_LIMIT_DEFERRED',
   'RATE_LIMITED_WRITE_OUTCOME',
   'AMBIGUOUS_WRITE_OUTCOME',

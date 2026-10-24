@@ -128,7 +128,7 @@ Automatic replacement after confirmed deletion is **Off by default**. The legacy
 
 ### Strict project and optional JQL scope
 
-A remote organization must have at least one allowed local project. If no project is selected, synchronization is blocked rather than falling back to all projects. An optional JQL filter is applied **in addition to** the project allow-list, and both are enforced for outbound, inbound, scheduled, initial-sync, reconciliation, attachment, and manual paths as applicable.
+A remote organization must have at least one allowed local project. If no project is selected, synchronization is blocked rather than falling back to all projects. An optional JQL filter restricts outbound source selection **in addition to** the project allow-list. Every new outbound issue, comment/reply, attachment, link, transition and counterpart-notice write verifies current source eligibility, including manual, scheduled, queued and recovered work. Links require both local endpoints to be eligible. Inbound synchronization uses its separate project/direction policy; local source JQL is not an inbound destination permission. Leaving JQL scope does not remove existing destination content. See [the outbound selection guarantee](docs/PACKAGE1_OUTBOUND_SELECTION_GUARANTEE.md).
 
 ## What SyncApp does not do
 

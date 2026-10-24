@@ -19,7 +19,12 @@ jest.mock('@forge/api', () => ({
   default: { asApp: () => ({ requestJira: jest.fn() }) },
   fetch: jest.fn(), route: (s, ...v) => s.reduce((out, x, i) => out + x + (v[i] ?? ''), '')
 }));
-jest.mock('../src/services/storage/kvs', () => ({ get: jest.fn(async () => null) }));
+jest.mock('../src/services/storage/kvs', () => ({ get: jest.fn(async key => {
+  if (key === 'syncConfig') return { allowedProjects: ['LOCAL'] };
+  if (key.startsWith('remote-to-local:')) return key.slice('remote-to-local:'.length).replace('REMOTE-', 'LOCAL-');
+  if (key.startsWith('local-to-remote:')) return key.slice('local-to-remote:'.length).replace('LOCAL-', 'REMOTE-');
+  return null;
+}) }));
 jest.mock('../src/services/storage/stats', () => ({ trackApiCall: jest.fn(), logAuditEntry: jest.fn() }));
 
 const options = { orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' };
@@ -260,7 +265,8 @@ test('search POST remains read-only during migration; issue POST remains blocked
 
 test('nested clients can submit with a valid lease, proving lost-ownership coverage reaches transport', async () => {
   const lease = await claim();
-  const requestJira = jest.fn(async () => ({ ok: true, status: 204 }));
+  const requestJira = jest.fn(async path => ({ ok: true, status: 204,
+    json: async () => ({ key: String(path).split('/').pop().split('?')[0], fields: { project: { key: 'LOCAL' } } }) }));
   jest.spyOn(api, 'asApp').mockReturnValue({ requestJira });
   await runWithIssueLease(lease, async () => {
     expect(await updateLocalIssueDescription('LOCAL-1', { type: 'doc', version: 1, content: [] })).toBe(true);
@@ -271,7 +277,7 @@ test('nested clients can submit with a valid lease, proving lost-ownership cover
       remoteUrl: 'https://remote.example.invalid', remoteEmail: 'test', remoteApiToken: 'test'
     } })).toMatchObject({ deleted: true });
   });
-  expect(requestJira).toHaveBeenCalledTimes(2); expect(fetch).toHaveBeenCalledTimes(2);
+  expect(requestJira).toHaveBeenCalledTimes(4); expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 test('renewal response delayed past original expiry cannot revive the worker', async () => {

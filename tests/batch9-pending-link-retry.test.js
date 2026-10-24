@@ -56,6 +56,8 @@ jest.mock('../src/services/storage/stats.js', () => ({
   trackWebhookSync: jest.fn(async () => undefined)
 }));
 
+import { getFullIssue } from '../src/services/jira/local-client.js';
+import { getLocalKey } from '../src/services/storage/mappings.js';
 import { fetch as mockFetch } from '@forge/api';
 import { retryAllPendingLinks } from '../src/services/scheduled/scheduled-sync.js';
 import { fetchRemoteIssueLinks } from '../src/services/sync/link-sync.js';
@@ -84,6 +86,9 @@ function emptyStats() {
 beforeEach(() => {
   mockStore.clear();
   jest.clearAllMocks();
+  mockStore.set('organizations', [{ ...config, allowedProjects: ['LOCAL'] }]);
+  getFullIssue.mockImplementation(async key => ({ key, fields: { project: { key: 'LOCAL' } } }));
+  getLocalKey.mockImplementation(async key => key.replace('REMOTE-', 'LOCAL-'));
   fetchRemoteIssueLinks.mockResolvedValue({ ok: true, links: [] });
   getRemoteKey.mockImplementation(async key => {
     if (key === 'LOCAL-A') return 'REMOTE-A';

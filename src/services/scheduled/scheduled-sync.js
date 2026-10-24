@@ -11,6 +11,7 @@ import { getFullIssue } from '../jira/local-client.js';
 import { updateRemoteIssue } from '../sync/issue-sync.js';
 import { syncIssueLinks, remoteLinkMatches, fetchRemoteIssueLinks } from '../sync/link-sync.js';
 import { getReconciliationSettings } from '../sync/reconciliation-settings.js';
+import { assertOutboundRemoteScope, isOutboundScopeError } from '../sync/outbound-scope.js';
 
 async function checkIfIssueNeedsSync(issueKey, issue, config, mappings, syncOptions = {}, orgId = null) {
   // Check if issue was created by remote sync
@@ -232,6 +233,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
           }
 
           await assertPilotWritesAllowed('link_create_remote');
+          await assertOutboundRemoteScope({ orgId, remoteKeys: [remoteIssueKey, remoteLinkedKey] });
           const response = await executeWriteOnce(
             async () => fetch(
               `${config.remoteUrl}/rest/api/3/issueLink`,
@@ -280,7 +282,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
         } catch (error) {
           console.error(`${LOG_EMOJI.ERROR} Error creating pending link:`, error);
 
-          if (error?.code === 'PILOT_PAUSED') {
+          if (error?.code === 'PILOT_PAUSED' || isOutboundScopeError(error)) {
             totalStillPending++;
             if (stats) {
               recordEvent(stats, {
@@ -288,7 +290,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
                 issueKey: localIssueKey,
                 linkedIssueKey: pendingLink.linkedIssueKey,
                 direction: pendingLink.direction,
-                reason: 'pilot-paused'
+                reason: isOutboundScopeError(error) ? error.code : 'pilot-paused'
               });
             }
           } else if (error?.code === 'AMBIGUOUS_WRITE_OUTCOME' || error?.code === 'RATE_LIMITED_WRITE_OUTCOME') {
@@ -593,8 +595,8 @@ export async function performScheduledSync() {
           if (syncCheck.action === 'update') {
             console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
             const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
-            if (syncDetails?.skipped) {
-              if (syncDetails.status === 'ALREADY_CURRENT') {
+            if (!syncDetails || syncDetails.skipped) {
+              if (syncDetails?.status === 'ALREADY_CURRENT') {
                 stats.issuesAlreadyCurrent++;
               } else {
                 stats.issuesSkipped++;
@@ -604,7 +606,7 @@ export async function performScheduledSync() {
                 issueKey,
                 remoteKey: syncCheck.remoteKey,
                 orgName,
-                reason: syncDetails.status || 'update-skipped'
+                reason: syncDetails?.status || 'update-skipped'
               });
               continue;
             }

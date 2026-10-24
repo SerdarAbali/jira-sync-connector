@@ -96,6 +96,8 @@ function localIssue(description) {
 describe('Cross-reference local write safety', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    require('../src/services/storage/kvs.js').get.mockImplementation(async key => key === 'organizations' ? [{ ...org, allowedProjects: ['LOCAL'] }] : null);
+    require('../src/services/jira/local-client.js').getFullIssue.mockResolvedValue(localIssue(null));
     fetch.mockResolvedValue({ ok: true, status: 204, text: async () => '' });
     getOrgName.mockResolvedValue('Local Org');
     updateLocalIssueDescription.mockResolvedValue(true);

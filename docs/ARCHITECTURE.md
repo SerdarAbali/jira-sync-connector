@@ -46,7 +46,7 @@ The local site's product events are the primary synchronization path:
 - attachment created
 - attachment deleted
 
-The trigger handlers validate and normalize the event, resolve the issue and organization, apply project and JQL scope, detect loops, acquire the appropriate lease or ledger claim, and call the shared sync service. The attachment trigger ignores self-authored events.
+The trigger handlers validate and normalize the event, resolve the issue and organization, detect loops and call shared services. Outbound services enforce current project authorization and JQL source selection at each new write boundary, including delayed/recovered content; entry-point checks alone do not grant continuing authority. Applicable leases, submission ledgers and Pause remain independent guards. The attachment trigger ignores self-authored events.
 
 Real-time delivery is not treated as exactly-once. Duplicate events are expected and are suppressed by hashes, mappings, operation records, and idempotent service paths.
 
@@ -207,7 +207,7 @@ A mapping alone cannot prevent two workers from creating the same issue. A lease
 ## Security boundaries
 
 - Admin resolvers check Jira administrator permission as the user.
-- Project and JQL scope is rechecked on each path.
+- New outbound writes recheck current project authorization and JQL source selection at shared semantic boundaries. Link endpoints and exported parent/Epic references are checked together. Inbound writes retain their separate project/direction policy; local source JQL is not inbound destination permission. See [the outbound selection guarantee](PACKAGE1_OUTBOUND_SELECTION_GUARANTEE.md).
 - Remote tokens and webhook secrets are stored as secrets and redacted.
 - Inbound webhook authentication is timing-safe and path-based.
 - Global pause is checked immediately before writes.

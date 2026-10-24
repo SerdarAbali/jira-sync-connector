@@ -3,6 +3,7 @@ import { fetch } from '../jira/guarded-api.js';
 import { getFullIssue, probeLocalIssue, updateLocalIssueDescription } from '../jira/local-client.js';
 import { probeRemoteIssue } from '../jira/remote-client.js';
 import { getPilotPause } from './pilot-pause.js';
+import { assertOutboundRemoteScope, isOutboundScopeError } from './outbound-scope.js';
 import {
   COUNTERPART_STATUS_VALUES,
   normalizeCounterpartStatusClass
@@ -95,6 +96,7 @@ async function updateRemoteDescription({ key, org, info }) {
     if (JSON.stringify(original) === JSON.stringify(updated)) {
       return { success: true, changed: false };
     }
+    await assertOutboundRemoteScope({ orgId: org.id, remoteKeys: [key] });
     const write = await fetch(`${org.remoteUrl}/rest/api/3/issue/${key}?notifyUsers=false`, {
       method: 'PUT',
       redirect: 'error',
@@ -108,7 +110,8 @@ async function updateRemoteDescription({ key, org, info }) {
       return { success: false, skipped: true, code: 'NOTICE_WRITE_FAILED' };
     }
     return { success: true, changed: true };
-  } catch {
+  } catch (error) {
+    if (isOutboundScopeError(error)) return { success: false, skipped: true, code: error.code, reason: error.reason };
     return { success: false, skipped: true, code: 'NOTICE_WRITE_FAILED' };
   }
 }

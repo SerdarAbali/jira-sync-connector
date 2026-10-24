@@ -191,6 +191,8 @@ function createdProjectKeys() {
 beforeEach(() => {
   mockStore.clear();
   mockSecretStore.clear();
+  mockStore.set('organizations', [makeOrg(), makeOrg({ id: 'org-2' })]);
+  mockStore.set('syncConfig', makeOrg({ id: 'legacy' }));
   jest.clearAllMocks();
   mockFetch.mockReset();
   mockFetch.mockResolvedValue({
@@ -333,3 +335,98 @@ import {
   storeMapping
 } from '../src/services/storage/mappings.js';
 import { getFullIssue } from '../src/services/jira/local-client.js';
+
+
+describe('Package 1 source selection at manual and recursive boundaries', () => {
+  test.each([
+    ['selected', { issues: [{ key: 'LOCAL-1' }], isLast: true }, true],
+    ['different key', { issues: [{ key: 'LOCAL-9' }], isLast: true }, false],
+    ['no match', { issues: [], isLast: true }, false],
+    ['malformed', { total: 1 }, false],
+    ['incomplete', { issues: [] }, false],
+    ['API failure', null, false]
+  ])('manual JQL verification: %s', async (_name, response, allowed) => {
+    const org = makeOrg({ jqlFilter: 'labels = selected' });
+    mockStore.set('organizations', [org]);
+    getOrganizationsWithTokens.mockResolvedValue([org]);
+    seedOrg(org.id);
+    const { default: api } = require('@forge/api');
+    api.asApp().requestJira.mockImplementation(async url => String(url).includes('/search/jql')
+      ? { ok: response !== null, status: response ? 200 : 503, json: async () => response }
+      : { ok: true, json: async () => [] });
+    const result = await invokeForceSync({ issueKey: 'LOCAL-1', orgId: org.id });
+    expect(result.success).toBe(allowed);
+    expect(createCalls()).toHaveLength(allowed ? 1 : 0);
+    if (!allowed) expect(storeMapping).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['excluded Epic project', 'PRIVATE', '', false, 'epic'],
+    ['authorized Epic', 'LOCAL', '', true, 'epic'],
+    ['Epic excluded by JQL', 'LOCAL', 'labels = selected', false, 'epic'],
+    ['excluded parent project', 'PRIVATE', '', false, 'parent'],
+    ['authorized parent', 'LOCAL', '', true, 'parent'],
+    ['parent excluded by JQL', 'LOCAL', 'labels = selected', false, 'parent']
+  ])('recursive hierarchy: %s', async (_name, project, jqlFilter, allowed, relationship) => {
+    const org = makeOrg({ jqlFilter });
+    mockStore.set('organizations', [org]);
+    getOrganizationsWithTokens.mockResolvedValue([org]);
+    seedOrg(org.id);
+    const root = localIssue();
+    if (relationship === 'epic') root.fields.customfield_10014 = 'EPIC-2';
+    else root.fields.parent = { key: 'EPIC-2' };
+    const epic = localIssue('EPIC-2');
+    epic.fields.project.key = project;
+    epic.fields.issuetype.name = 'Epic';
+    getFullIssue.mockImplementation(async key => key === 'EPIC-2' ? epic : root);
+    const { default: api } = require('@forge/api');
+    api.asApp().requestJira.mockImplementation(async url => ({ ok: true, json: async () =>
+      String(url).includes('/search/jql') ? { issues: [{ key: 'LOCAL-1' }], isLast: true }
+        : [{ id: 'customfield_10014', name: 'Epic Link', schema: { custom: 'com.pyxis.greenhopper.jira:gh-epic-link' } }]
+    }));
+    mockFetch.mockImplementation(async (url, init) => ({ ok: true, status: 201, json: async () =>
+      url.endsWith('/field') ? [{ id: 'customfield_10014', name: 'Epic Link' }]
+        : { key: JSON.parse(init.body).fields.issuetype.name === 'Epic' ? 'OTHER-2' : 'OTHER-1' }
+    }));
+    await invokeForceSync({ issueKey: 'LOCAL-1', orgId: org.id });
+    if (allowed) {
+      expect(createCalls()).toHaveLength(2);
+      const fields = JSON.parse(createCalls()[1][1].body).fields;
+      if (relationship === 'epic') expect(fields.customfield_10014).toBe('OTHER-2');
+      else expect(fields.parent).toEqual({ key: 'OTHER-2' });
+    } else {
+      expect(createCalls()).toHaveLength(0);
+      expect(storeMapping).not.toHaveBeenCalled();
+    }
+  });
+});
+
+
+test.each([false, true])('webhook JQL verification failure cannot advance success (mapped=%p)', async mapped => {
+  const org = makeOrg({ jqlFilter: 'labels = selected' });
+  mockStore.set('organizations', [org]);
+  getOrganizationsWithTokens.mockResolvedValue([org]);
+  getRemoteKey.mockResolvedValue(mapped ? 'OTHER-1' : null);
+  seedOrg(org.id);
+  const { default: api } = require('@forge/api');
+  api.asApp().requestJira.mockResolvedValue({ ok: false, status: 503 });
+  await require('../src/services/sync/issue-sync.js').syncIssue({ issue: { key: 'LOCAL-1' }, eventType: 'jira:issue_updated' });
+  expect(createCalls()).toHaveLength(0);
+  expect(mockFetch).not.toHaveBeenCalled();
+  expect(storeMapping).not.toHaveBeenCalled();
+  expect(require('../src/services/storage/mappings.js').setLastSyncedLocalUpdated).not.toHaveBeenCalled();
+});
+
+test.each([true, false])('webhook verifies the specific source key without total (selected=%p)', async selected => {
+  const org = makeOrg({ jqlFilter: 'labels = selected' });
+  mockStore.set('organizations', [org]);
+  getOrganizationsWithTokens.mockResolvedValue([org]);
+  seedOrg(org.id);
+  const { default: api } = require('@forge/api');
+  api.asApp().requestJira.mockImplementation(async url => ({ ok: true, json: async () =>
+    String(url).includes('/search/jql') ? { issues: [{ key: selected ? 'LOCAL-1' : 'LOCAL-9' }], isLast: true } : []
+  }));
+  await require('../src/services/sync/issue-sync.js').syncIssue({ issue: { key: 'LOCAL-1' }, eventType: 'jira:issue_updated' });
+  expect(createCalls()).toHaveLength(selected ? 1 : 0);
+  if (!selected) expect(storeMapping).not.toHaveBeenCalled();
+});

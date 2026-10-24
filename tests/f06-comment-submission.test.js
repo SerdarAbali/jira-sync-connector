@@ -34,7 +34,7 @@ const ok = data => ({ ok: true, status: 201, json: async () => data });
 const posts = () => mockFetch.mock.calls.filter(([, o]) => o?.method === 'POST');
 let store, requests, spies, failure, getFailure, transactionFailure, afterRearm;
 beforeEach(() => {
-  store = new Map(); requests = []; failure = null; getFailure = null; transactionFailure = null;
+  store = new Map([['organizations', [org, { ...org, id: 'org-2' }]]]); requests = []; failure = null; getFailure = null; transactionFailure = null;
   afterRearm = null;
   // Key-Value Store transactions share this test's basic store model.
   require('./helpers/forge-lease-runtime').state.basicStore = store;

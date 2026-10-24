@@ -51,6 +51,7 @@ import {
   normalizeCounterpartStatusClass
 } from './counterpart-status.js';
 import { probeCounterpart } from './counterpart-probe.js';
+import { assertOutboundScope, assertOutboundScopes, isOutboundScopeError } from './outbound-scope.js';
 import { resolveTargetProjectKey } from './project-routing.js';
 
 // Cache for Epic Link field IDs
@@ -174,64 +175,7 @@ async function getRemoteEpicLinkFieldId(org) {
   return null;
 }
 
-/**
- * Check if an issue matches the organization's JQL filter
- * @param {string} issueKey - The issue key to check
- * @param {string} jqlFilter - The JQL filter to match against
- * @returns {Promise<boolean>} - True if issue matches filter (or no filter set)
- */
-async function matchesJqlFilter(issueKey, jqlFilter) {
-  // No filter means all issues match
-  if (!jqlFilter || jqlFilter.trim() === '') {
-    return true;
-  }
-  
-  try {
-    // Search for the specific issue with the JQL filter appended
-    const combinedJql = `key = ${issueKey} AND (${jqlFilter})`;
-    const response = await api.asApp().requestJira(route`/rest/api/3/search/jql`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        jql: combinedJql,
-        maxResults: 1,
-        fields: ['key']
-      })
-    });
-    
-    if (!response.ok) {
-      // If JQL is invalid, log warning but allow sync (fail-open)
-      console.log(`${LOG_EMOJI.WARNING} JQL filter check failed (status ${response.status}), allowing sync`);
-      return true;
-    }
-    
-    const result = await response.json();
-    const matches = result.total > 0;
-    
-    if (!matches) {
-      console.log(`${LOG_EMOJI.INFO} Issue ${issueKey} does not match the configured JQL filter`);
-    }
-    
-    return matches;
-  } catch (error) {
-    // On error, allow sync to proceed (fail-open)
-    console.log(`${LOG_EMOJI.WARNING} JQL filter check error: ${error.message}, allowing sync`);
-    return true;
-  }
-}
-
-/**
- * Sync Epic Link from local to remote issue
- * Returns the remote epic key if successful, null otherwise
- */
-/**
- * Sync Epic Link from local to remote issue
- * Returns the remote epic key if successful, null otherwise
- * @param {number} depth - Current recursion depth (default 0)
- */
+/** Resolve a selected source Epic to a destination issue-key string. */
 async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) {
   const localEpicFieldId = await getLocalEpicLinkFieldId();
   if (!localEpicFieldId) {
@@ -242,16 +186,26 @@ async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) 
   if (!localEpicKey) {
     return null; // No epic link on source issue
   }
+  if (typeof localEpicKey !== 'string' || !/^[A-Z][A-Z0-9_]*-\d+$/.test(localEpicKey)) {
+    throw new Error('Unsupported source Epic Link value');
+  }
   
+  if (issue.fields.parent?.key) {
+    if (issue.fields.parent.key !== localEpicKey) throw new Error('Ambiguous source parent and Epic Link');
+    return null; // The supported parent relationship is already handled.
+  }
+
   console.log(`🎯 Issue has Epic Link: ${localEpicKey}`);
   
   // Find the remote epic link field
   const remoteEpicFieldId = await getRemoteEpicLinkFieldId(org);
   if (!remoteEpicFieldId) {
     console.log(`${LOG_EMOJI.WARNING} Remote org ${org.id || 'organization'} doesn't have Epic Link field (might be next-gen project)`);
-    return null;
+    throw new Error('Destination Epic Link field unavailable; hierarchy requires review');
   }
   
+  await assertOutboundScope({ orgId, issueKey: localEpicKey });
+
   // Check if the epic is synced to remote
   let remoteEpicKey = await getRemoteKey(localEpicKey, orgId);
   
@@ -260,7 +214,8 @@ async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) 
     console.log(`🎯 Epic ${localEpicKey} not synced yet, syncing epic first (depth: ${depth + 1})...`);
     const epicIssue = await getFullIssue(localEpicKey);
     if (epicIssue) {
-      remoteEpicKey = await createRemoteIssueForOrg(epicIssue, org, mappings, null, syncResult, orgId, depth + 1);
+      const epicResult = await createRemoteIssueForOrg(epicIssue, org, mappings, null, syncResult, orgId, depth + 1);
+      remoteEpicKey = epicResult?.key;
       if (remoteEpicKey) {
         console.log(`🎯 Epic synced: ${localEpicKey} → ${remoteEpicKey}`);
       }
@@ -269,12 +224,11 @@ async function syncEpicLink(issue, org, mappings, syncResult, orgId, depth = 0) 
     console.log(`${LOG_EMOJI.WARNING} Max depth reached, skipping epic ${localEpicKey} sync`);
   }
   
-  if (remoteEpicKey) {
-    return { fieldId: remoteEpicFieldId, epicKey: remoteEpicKey };
+  if (typeof remoteEpicKey === 'string' && /^[A-Z][A-Z0-9_]*-\d+$/.test(remoteEpicKey)) {
+    return { fieldId: remoteEpicFieldId, epicKey: remoteEpicKey, localEpicKey };
   }
   
-  console.log(`${LOG_EMOJI.WARNING} Could not sync Epic Link - epic ${localEpicKey} not available`);
-  return null;
+  throw new Error('Destination Epic mapping unavailable; hierarchy requires review');
 }
 
 /**
@@ -401,15 +355,6 @@ export async function syncIssue(event) {
     if (!isAllowed) {
       console.log(`⏭️ Skipping ${issueKey} for ${org.id || 'organization'} - project ${projectKey} not in allowed list`);
       continue;
-    }
-
-    // Check if issue matches JQL filter (if configured)
-    if (org.jqlFilter) {
-      const matchesFilter = await matchesJqlFilter(issueKey, org.jqlFilter);
-      if (!matchesFilter) {
-        console.log(`⏭️ Skipping ${issueKey} for ${org.id || 'organization'} - does not match JQL filter`);
-        continue;
-      }
     }
 
     // Fetch org-specific mappings
@@ -609,6 +554,7 @@ async function createRemoteIssueForOrg(issue, org, mappings, syncOptions, syncRe
 
 async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null, depth = 0) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
+  await assertOutboundScope({ orgId, issueKey: issue.key });
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
 
   if (!syncOptions?.replacementOfRemoteKey) {
@@ -742,6 +688,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
   }
 
   if (issue.fields.parent && issue.fields.parent.key) {
+    await assertOutboundScope({ orgId, issueKey: issue.fields.parent.key });
     let remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
     
     // If parent isn't synced yet, sync it first (respecting depth limit)
@@ -752,7 +699,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
         // Recursively create the parent (without syncOptions to avoid infinite loops with attachments)
         const parentSyncOptions = syncOptions?.dryRun ? { dryRun: true } : null;
         const parentResult = await createRemoteIssueForOrg(parentIssue, org, mappings, parentSyncOptions, syncResult, orgId, depth + 1);
-        remoteParentKey = parentResult?.key || parentResult;
+        remoteParentKey = parentResult?.key;
         
         if (remoteParentKey) {
           console.log(`${LOG_EMOJI.LINK} Parent synced: ${issue.fields.parent.key} → ${remoteParentKey}`);
@@ -762,11 +709,11 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       console.log(`${LOG_EMOJI.WARNING} Max depth reached, skipping parent ${issue.fields.parent.key} sync`);
     }
     
-    if (remoteParentKey) {
+    if (typeof remoteParentKey === 'string' && /^[A-Z][A-Z0-9_]*-\d+$/.test(remoteParentKey)) {
       remoteIssue.fields.parent = { key: remoteParentKey };
       console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
     } else {
-      console.log(`⚠️ Could not sync parent ${issue.fields.parent.key}, creating child without parent link`);
+      throw new Error('Destination parent mapping unavailable; hierarchy requires review');
     }
   }
 
@@ -776,6 +723,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     remoteIssue.fields[epicLinkResult.fieldId] = epicLinkResult.epicKey;
     console.log(`🎯 Mapped Epic Link: → ${epicLinkResult.epicKey}`);
   }
+  const sourceScopeKeys = [issue.key, issue.fields.parent?.key, epicLinkResult?.localEpicKey].filter(Boolean);
 
   if (issue.fields.assignee && issue.fields.assignee.accountId) {
     const mappedAssignee = mapUserToRemote(issue.fields.assignee.accountId, mappings.userMappings);
@@ -863,6 +811,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       await markSyncing(issue.key);
       await assertPilotWritesAllowed('issue_create_remote');
 
+      await assertOutboundScopes({ orgId, issueKeys: sourceScopeKeys });
       const createClaim = await beginIssueCreateOperation({
         orgId,
         direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
@@ -886,6 +835,14 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
         return null;
       }
 
+      try {
+        await assertOutboundScopes({ orgId, issueKeys: sourceScopeKeys });
+      } catch (error) {
+        if (isOutboundScopeError(error)) {
+          await markIssueCreateFailedDefinitive(createClaim.operation, { reasonCode: error.code });
+        }
+        throw error;
+      }
       const submission = await markIssueCreateSubmissionStarted(createClaim.operation);
       if (!submission.ok) {
         if (syncResult) syncResult.addWarning(submission.code);
@@ -945,7 +902,6 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
         } else {
           await storeMapping(issue.key, result.key, orgId);
         }
-      await setLastSyncedLocalUpdated(issue.key, issue.fields.updated, orgId);
 
       // Process any pending links that were waiting for this issue to be synced
       await processPendingLinksForNewlySyncedIssue(issue.key, result.key, org, orgId);
@@ -1048,6 +1004,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           let updateResponse = null;
           try {
             updateResponse = await executeWriteWithRetry(async () => {
+              await assertOutboundScope({ orgId, issueKey: issue.key });
               return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
                 method: 'PUT',
                 headers: {
@@ -1112,6 +1069,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           console.log(`🖼️ Updating description with corrected media references...`);
           try {
             await executeWriteWithRetry(async () => {
+              await assertOutboundScope({ orgId, issueKey: issue.key });
               return await fetch(`${org.remoteUrl}/rest/api/3/issue/${result.key}?notifyUsers=false`, {
                 method: 'PUT',
                 headers: {
@@ -1178,6 +1136,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       });
 
       await clearSyncFlag(issue.key);
+      await setLastSyncedLocalUpdated(issue.key, issue.fields.updated, orgId);
       return { key: result.key, details: syncDetails };
     } else {
       const responseStatus = Number(response.status);
@@ -1197,6 +1156,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
     console.error(`${LOG_EMOJI.ERROR} Error creating remote issue:`, error);
     if (syncResult) syncResult.addError(`Error creating remote issue: ${safeErrorSummary(error.message)}`);
     await clearSyncFlag(issue.key);
+    if (isOutboundScopeError(error) && !syncResult) throw error;
   }
 
   return null;
@@ -1249,6 +1209,7 @@ export async function updateRemoteIssueForOrg(localKey, remoteKey, issue, org, m
 
 async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, mappings, syncOptions, syncResult = null, orgIdOverride = null) {
   const orgId = orgIdOverride !== null ? orgIdOverride : (org.id === 'legacy' ? null : org.id);
+  await assertOutboundScope({ orgId, issueKey: issue.key });
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
 
   await markSyncing(localKey);
@@ -1489,11 +1450,13 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
     }
 
     if (issue.fields.parent && issue.fields.parent.key) {
+      await assertOutboundScope({ orgId, issueKey: issue.fields.parent.key });
       const remoteParentKey = await getRemoteKey(issue.fields.parent.key, orgId);
-      if (remoteParentKey) {
-        updateData.fields.parent = { key: remoteParentKey };
-        console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
+      if (typeof remoteParentKey !== 'string' || !/^[A-Z][A-Z0-9_]*-\d+$/.test(remoteParentKey)) {
+        throw new Error('Destination parent mapping unavailable; hierarchy requires review');
       }
+      updateData.fields.parent = { key: remoteParentKey };
+      console.log(`🔗 Mapped parent: ${issue.fields.parent.key} → ${remoteParentKey}`);
     } else if (issue.fields.parent === null) {
       updateData.fields.parent = null;
       console.log(`🔗 Removing parent link`);
@@ -1596,6 +1559,8 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
         // every submission, so a pause activated during a rate-limit wait stops
         // the retried write.
         response = await executeWriteWithRetry(async () => {
+          await assertOutboundScopes({ orgId,
+            issueKeys: [issue.key, issue.fields.parent?.key, epicLinkResult?.localEpicKey].filter(Boolean) });
           return await fetch(`${org.remoteUrl}/rest/api/3/issue/${remoteKey}?notifyUsers=false`, {
             method: 'PUT',
             headers: {
@@ -1618,15 +1583,6 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
       if (response.ok || response.status === HTTP_STATUS.NO_CONTENT) {
         console.log(`${LOG_EMOJI.SUCCESS} Updated ${remoteKey} fields`);
-        await setLastSyncedLocalUpdated(localKey, issue.fields.updated, orgId);
-        await recordLatestAccepted({
-          orgId,
-          direction: 'local-to-remote',
-          localKey,
-          remoteKey,
-          sourceUpdated: issue.fields.updated,
-          fieldHash: sourceHash
-        });
         await recordDestinationWrite({
           orgId,
           localKey,
@@ -1708,6 +1664,15 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
           syncDetails.status = transitioned || false;
         }
         await resolveCounterpartStatus({ orgId, localKey, remoteKey });
+        await setLastSyncedLocalUpdated(localKey, issue.fields.updated, orgId);
+        await recordLatestAccepted({
+          orgId,
+          direction: 'local-to-remote',
+          localKey,
+          remoteKey,
+          sourceUpdated: issue.fields.updated,
+          fieldHash: sourceHash
+        });
         return syncDetails;
       } else {
         console.error(`${LOG_EMOJI.ERROR} Update failed`);
@@ -1730,6 +1695,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
     } catch (error) {
       console.error(`${LOG_EMOJI.ERROR} Error updating remote issue:`, error);
       if (syncResult) syncResult.addError(`Error updating remote issue: ${safeErrorSummary(error.message)}`);
+      if (isOutboundScopeError(error) && !syncResult) throw error;
       return null;
     }
   } finally {

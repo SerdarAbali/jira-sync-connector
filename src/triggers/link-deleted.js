@@ -1,6 +1,7 @@
 import api, { route, fetch } from '../services/jira/guarded-api.js';
 import { getRemoteKey, getOrganizationsWithTokens, removeLinkMapping } from '../services/storage/mappings.js';
 import { assertPilotWritesAllowed } from '../services/sync/pilot-pause.js';
+import { assertOutboundRemoteScope } from '../services/sync/outbound-scope.js';
 
 export async function run(event, context) {
   console.log(`🔗🗑️ Link deleted trigger fired`);
@@ -113,6 +114,7 @@ export async function run(event, context) {
 
         // Delete the link
         await assertPilotWritesAllowed('link_delete_remote');
+        await assertOutboundRemoteScope({ orgId, remoteKeys: [remoteSourceKey, remoteDestKey] });
         const deleteResponse = await fetch(
           `${org.remoteUrl}/rest/api/3/issueLink/${matchingLink.id}`,
           {

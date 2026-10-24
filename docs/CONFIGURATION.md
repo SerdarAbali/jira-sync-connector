@@ -36,10 +36,12 @@ An empty token on update means "keep the existing token". Use the explicit token
 The project allow-list is mandatory for synchronization. An organization with no allowed project is blocked rather than being treated as "all projects".
 
 - Allowed projects are local source project keys.
-- The optional JQL filter is appended to the allowed-project restriction.
+- The optional JQL filter further restricts outbound sources inside the allowed projects. It applies to every new outbound write, including comments/replies, attachments, links, status transitions and counterpart notices, as well as issue creation/updates. Queued and recovered work rechecks current eligibility at execution time. Both local link endpoints must be selected; a mapping is not continuing export permission.
 - Both constraints apply to the local source scope.
 - A remote webhook must independently be restricted to the intended remote projects.
 - Initial synchronization requires at least one allowed project and validates its project and JQL scope before preview.
+
+An excluded or unverifiable source produces no new outbound write; existing destination content is retained. A deleted/unreadable local issue cannot authorize a remote counterpart notice. Local source JQL is not an inbound destination permission. See [the outbound selection guarantee](PACKAGE1_OUTBOUND_SELECTION_GUARANTEE.md).
 
 JQL is limited to 500 characters by the setup and initial-sync validation. Avoid volatile clauses, such as relative dates, when approving an initial sync because the preview is checksum-bound to the configuration.
 

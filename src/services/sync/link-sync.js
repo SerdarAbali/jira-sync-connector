@@ -1,4 +1,4 @@
-import { fetch } from '../jira/guarded-api.js';
+import { fetch, assertJiraSubmissionAllowed } from '../jira/guarded-api.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { safeErrorSummary } from '../../utils/redaction.js';
@@ -6,6 +6,7 @@ import { executeWriteOnce } from '../../utils/retry.js';
 import { getLinkMapping, storeLinkMapping, getRemoteKey } from '../storage/mappings.js';
 import { storePendingLink, removePendingLink } from '../storage/flags.js';
 import { assertPilotWritesAllowed } from './pilot-pause.js';
+import { assertOutboundRemoteScope, isOutboundScopeError } from './outbound-scope.js';
 
 function buildRemoteLinkLookupUrl(config, remoteIssueKey) {
   return `${config.remoteUrl}/rest/api/3/issue/${remoteIssueKey}?fields=issuelinks`;
@@ -87,6 +88,8 @@ export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKe
 
   try {
     const response = await executeWriteOnce(async () => {
+      await assertJiraSubmissionAllowed('/rest/api/3/issueLink', { method: 'POST' });
+      await assertOutboundRemoteScope({ orgId: config.id, remoteKeys: [sourceRemoteKey, targetRemoteKey] });
       return await fetch(
         `${config.remoteUrl}/rest/api/3/issueLink`,
         {
@@ -108,6 +111,7 @@ export async function createLinkOnRemote(config, sourceRemoteKey, targetRemoteKe
       return { success: false, error: formatHttpFailure(response.status) };
     }
   } catch (error) {
+    if (isOutboundScopeError(error)) throw error;
     const safeFailure = safeErrorSummary(error.message);
     console.error(`${LOG_EMOJI.ERROR} Error creating link: ${safeFailure}`);
     return { success: false, error: safeFailure };
@@ -227,6 +231,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
       }
 
       await assertPilotWritesAllowed('link_create_remote');
+      await assertOutboundRemoteScope({ orgId: orgId || config.id, remoteKeys: [remoteIssueKey, remoteLinkedKey] });
       const response = await fetch(
         `${config.remoteUrl}/rest/api/3/issueLink`,
         {
@@ -254,6 +259,7 @@ export async function syncIssueLinks(localIssueKey, remoteIssueKey, issue, confi
       }
 
     } catch (error) {
+      if (isOutboundScopeError(error)) throw error;
       console.error(`${LOG_EMOJI.ERROR} Error syncing link ${link.id}:`, error);
       const linkedKey = link.outwardIssue?.key || link.inwardIssue?.key || 'unknown';
       if (syncResult) syncResult.addLinkFailure(linkedKey, safeErrorSummary(error.message));

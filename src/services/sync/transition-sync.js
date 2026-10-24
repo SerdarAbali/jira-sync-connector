@@ -1,11 +1,12 @@
 import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
-import api, { fetch, route } from '../jira/guarded-api.js';
+import api, { fetch, route, assertJiraSubmissionAllowed } from '../jira/guarded-api.js';
 import { LOG_EMOJI, HTTP_STATUS } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { reverseMapping } from '../../utils/mapping.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { safeErrorSummary } from '../../utils/redaction.js';
 import { assertPilotWritesAllowed } from './pilot-pause.js';
+import { assertOutboundRemoteScope, isOutboundScopeError } from './outbound-scope.js';
 
 export async function transitionRemoteIssue(remoteKey, statusName, config, statusMappings, syncResult = null) {
   const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
@@ -74,6 +75,8 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
     await assertPilotWritesAllowed('transition_remote');
 
     const transitionResponse = await executeWriteOnce(async () => {
+      await assertJiraSubmissionAllowed(`/rest/api/3/issue/${remoteKey}/transitions`, { method: 'POST' });
+      await assertOutboundRemoteScope({ orgId: config.id, remoteKeys: [remoteKey] });
       return await fetch(
         `${config.remoteUrl}/rest/api/3/issue/${remoteKey}/transitions?notifyUsers=false`,
         {
@@ -99,6 +102,7 @@ export async function transitionRemoteIssue(remoteKey, statusName, config, statu
       return false;
     }
   } catch (error) {
+    if (isOutboundScopeError(error)) throw error;
     const safeFailure = safeErrorSummary(error.message);
     console.error(`${LOG_EMOJI.ERROR} Error transitioning issue: ${safeFailure}`);
     if (syncResult) syncResult.addTransitionFailure(statusName, safeFailure);

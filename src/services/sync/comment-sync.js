@@ -16,6 +16,7 @@ import { submitOutboundComment, PRE_SUBMISSION_CODES } from './comment-submissio
 import { commentReadBudget } from '../jira/comment-read.js';
 import { getCommentProjectType } from '../jira/comment-project.js';
 import { deferCommentVerification, markDeferredCommentSubmission, assertCommentVerificationReady } from './comment-verification-recovery.js';
+import { isOutboundScopeError } from './outbound-scope.js';
 // Threading helpers were removed because Jira flattens replies; we now embed context inline.
 
 /**
@@ -119,6 +120,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
         synced++;
         if (syncResult) syncResult.details.comments.success++;
       } catch (error) {
+        if (isOutboundScopeError(error)) throw error;
         if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
           await deferCommentVerification({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy', issueKey: localKey, commentId: comment.id }, error);
           skipped++; continue;
@@ -136,6 +138,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     return { synced, skipped, failed };
     
   } catch (error) {
+    if (isOutboundScopeError(error)) throw error;
     console.error('Error syncing comments:', safeErrorForLog(error));
     return { synced: 0, skipped: 0, failed: 0 };
   }
@@ -304,6 +307,10 @@ export async function syncComment(event, recoveryOrgId = null) {
         parentLocalId, parentRemoteId: null
       });
     } catch (error) {
+      if (isOutboundScopeError(error)) {
+        recoveryOutcome = { status: 'COMMENT_RETRY', reason: error.reason, code: error.code };
+        continue;
+      }
       if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
         await deferCommentVerification({ direction: 'local-to-remote', orgId: org.id || 'legacy', issueKey, commentId }, error);
         recoveryOutcome = { status: error.code };

@@ -133,6 +133,8 @@ const baseKvsGet = kvs.get.getMockImplementation();
 beforeEach(() => {
   jest.clearAllMocks();
   mockStore.clear();
+  mockStore.set('organizations', [{ ...org, allowedProjects: ['LOCAL'] }]);
+  require('../src/services/jira/local-client.js').getFullIssue.mockResolvedValue(localIssue());
   kvs.get.mockImplementation(baseKvsGet);
   fetch.mockResolvedValue(readOnlyResponse);
 });
@@ -333,6 +335,29 @@ describe('F05 bounded retry budgets', () => {
     expect(result).toBeNull();
     expect(putCalls()).toHaveLength(1);
   }, 15000);
+
+  test.each([
+    ['blocked', 'PROJECT_NOT_ALLOWED'],
+    ['unverifiable', 'SOURCE_SELECTION_UNAVAILABLE']
+  ])('a production PUT reports its original %s scope rejection before submission', async (mode, reason) => {
+    const { getFullIssue } = require('../src/services/jira/local-client.js');
+    getFullIssue.mockResolvedValueOnce(localIssue()); // Entry scope check succeeds.
+    if (mode === 'blocked') {
+      getFullIssue.mockResolvedValueOnce({ ...localIssue(), fields: { project: { key: 'OTHER' } } });
+    } else {
+      getFullIssue.mockRejectedValueOnce(new Error('source unavailable'));
+    }
+    const syncResult = { addError: jest.fn() };
+
+    const result = await updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), org, mappings, syncOptions, syncResult);
+
+    expect(result).toBeNull();
+    expect(getFullIssue).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.filter(([, options]) => ['POST', 'PUT', 'DELETE'].includes(options?.method))).toHaveLength(0);
+    expect(setLastSyncedLocalUpdated).not.toHaveBeenCalled();
+    expect(syncResult.addError).toHaveBeenCalledWith(`Error updating remote issue: Outbound source selection denied: ${reason}`);
+    expect(syncResult.addError).toHaveBeenCalledTimes(1);
+  });
 
 describe('F05 Retry-After representation', () => {
   test('seconds, HTTP-date and oversized deadlines are parsed and bounded', () => {

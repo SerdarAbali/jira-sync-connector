@@ -234,6 +234,21 @@ describe('Batch 8 force-recreate removal', () => {
 });
 
 describe('Batch 8 explicit-key create reconciliation', () => {
+  test.each([null, '', 'invalid-key'])('rejects explicit invalid routing %p without resolving the ledger', async mapping => {
+    seedOrg();
+    await seedAmbiguousOperation();
+    mockStore.set('projectMappings:org-1', { LOCAL: mapping });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ fields: { project: { key: 'REMOTE' } } }) });
+    const result = await defineResolvers().reconcileIssueCreate({ payload: {
+      orgId: 'org-1', direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+      sourceKey: 'LOCAL-1', jiraIssueKey: 'REMOTE-9'
+    } });
+    expect(result.success).toBe(false);
+    expect(storeMapping).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockStore.get(localOperationKey()).state).toBe(ISSUE_CREATE_STATES.PENDING);
+  });
+
   test('requires an explicit Jira key and ignores summary matching', async () => {
     seedOrg();
     await seedAmbiguousOperation();
@@ -257,8 +272,9 @@ describe('Batch 8 explicit-key create reconciliation', () => {
     expect(storeMapping).not.toHaveBeenCalled();
   });
 
-  test('resolves the operation and stores the mapping without creating or deleting an issue', async () => {
+  test.each([undefined, { LOCAL: 'REMOTE' }])('resolves with valid or intentionally absent routing %p', async projectMappings => {
     seedOrg();
+    if (projectMappings) mockStore.set('projectMappings:org-1', projectMappings);
     const operation = await seedAmbiguousOperation();
     const definitions = defineResolvers();
     mockFetch.mockResolvedValueOnce({

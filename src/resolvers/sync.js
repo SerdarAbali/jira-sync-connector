@@ -90,7 +90,11 @@ export function defineSyncResolvers(resolver) {
         try {
           if (existingRemoteKey) {
             console.log(`🔄 Force UPDATE for ${org.id || 'organization'}: ${issueKey} → ${existingRemoteKey}`);
-            await updateRemoteIssue(issueKey, existingRemoteKey, issue, org, mappings, null, syncOptions);
+            const updateResult = await updateRemoteIssue(issueKey, existingRemoteKey, issue, org, mappings, null, syncOptions);
+            if (!updateResult || (updateResult.skipped && updateResult.status !== 'ALREADY_CURRENT')) {
+              results.push({ org: org.name, success: false, error: updateResult?.status || 'Remote issue update failed' });
+              continue;
+            }
             results.push({ org: org.name, success: true, message: `Updated ${issueKey} → ${existingRemoteKey}` });
           } else {
             console.log(`✨ Force CREATE for ${org.id || 'organization'}: ${issueKey}`);

@@ -41,6 +41,7 @@ import {
   sanitizeAttachmentOperation
 } from './attachment-operation.js';
 import { assertInboundScope, isInboundScopeError } from './inbound-scope.js';
+import { assertOutboundScope, isOutboundScopeError } from './outbound-scope.js';
 import { assertPilotWritesAllowed } from './pilot-pause.js';
 import { isValidIssueKey, isValidAttachmentId, normalizeAttachmentMimeType, sanitizeAttachmentFilename } from '../../utils/attachment-url.js';
 import { safeErrorSummary } from '../../utils/redaction.js';
@@ -312,6 +313,7 @@ async function processOneUpload({
     };
   }
 
+  if (sourceIsLocal(direction)) await assertOutboundScope({ orgId: orgId || config?.id, issueKey: localKey });
   const claim = await beginAttachmentUploadOperation({
     orgId,
     direction,
@@ -375,6 +377,8 @@ async function processOneUpload({
 
     if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
       await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
+    } else {
+      await assertOutboundScope({ orgId: orgId || config?.id, issueKey: localKey });
     }
     await assertPilotWritesAllowed('attachment_upload');
     // Metadata retrieval, validation and download are complete. Only now may
@@ -420,7 +424,7 @@ async function processOneUpload({
     success(syncResult);
     return { status: 'ATTACHMENT_SYNCED', destinationAttachmentId: uploaded.id };
   } catch (error) {
-    if (isInboundScopeError(error) && !writeStarted) {
+    if ((isInboundScopeError(error) || isOutboundScopeError(error)) && !writeStarted) {
       await markDefinitive(operation, error.code);
       throw error;
     }
@@ -530,7 +534,7 @@ async function syncAttachmentDirection({
         mapping[sourceAttachmentId] = result.destinationAttachmentId;
       }
     } catch (error) {
-      if (isInboundScopeError(error)) throw error;
+      if (isInboundScopeError(error) || isOutboundScopeError(error)) throw error;
       failure(syncResult, safeErrorSummary(error?.code || 'ATTACHMENT_SYNC_FAILED'));
     }
   }
@@ -615,6 +619,8 @@ export async function propagateAttachmentDeletion({
 
   if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
     await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
+  } else {
+    await assertOutboundScope({ orgId: orgId || config?.id, issueKey: localKey });
   }
   const mappedDestinationAttachmentId = normalizeMappingValue(
     await getAttachmentMapping(sourceAttachmentId, orgId, direction)
@@ -646,6 +652,8 @@ export async function propagateAttachmentDeletion({
   try {
     if (direction === ATTACHMENT_DIRECTIONS.REMOTE_TO_LOCAL) {
       await assertInboundScope({ orgId: orgId || config?.id, issueKeys: [localKey] });
+    } else {
+      await assertOutboundScope({ orgId: orgId || config?.id, issueKey: localKey });
     }
     await assertPilotWritesAllowed('attachment_delete');
     // Persist the DELETE boundary immediately before the request. If the
@@ -685,7 +693,7 @@ export async function propagateAttachmentDeletion({
         : ATTACHMENT_SYNC_CODES.DELETE_COMPLETE
     };
   } catch (error) {
-    if (isInboundScopeError(error) && !writeStarted) {
+    if ((isInboundScopeError(error) || isOutboundScopeError(error)) && !writeStarted) {
       await markAttachmentDeletionFailedDefinitive(claim.operation, { failureCode: error.code });
       throw error;
     }

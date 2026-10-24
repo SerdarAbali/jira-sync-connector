@@ -7,6 +7,7 @@ import * as kvsStore from '../src/services/storage/kvs.js';
 import {
   getOrganizationsWithTokens,
   getRemoteKey,
+  getLocalKey,
   getRemoteCommentId
 } from '../src/services/storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../src/services/jira/local-client.js';
@@ -122,14 +123,16 @@ describe('Pilot safety: ambiguous non-idempotent writes are attempted once', () 
     api.asApp().requestJira.mockResolvedValue({ ok: true, json: async () => [] });
     fetch.mockRejectedValue(new Error('simulated network timeout'));
     getOrganizationsWithTokens.mockResolvedValue([org]);
-    getRemoteKey.mockResolvedValue('REMOTE-1');
+    getRemoteKey.mockImplementation(async key => key.replace('LOCAL-', 'REMOTE-'));
+    getLocalKey.mockImplementation(async key => key.replace('REMOTE-', 'LOCAL-'));
     getRemoteCommentId.mockResolvedValue(null);
-    getFullIssue.mockResolvedValue(issue);
+    getFullIssue.mockImplementation(async key => ({ ...issue, key }));
     getFullComment.mockResolvedValue({ id: 'C1', body: 'hello', jsdPublic: true, author: { displayName: 'User' } });
     getOrgName.mockResolvedValue('Local Org');
     isSyncing.mockResolvedValue(false);
     kvsStore.get.mockImplementation(async (key) => {
       if (mockOperationStore.has(key)) return mockOperationStore.get(key);
+      if (key === 'organizations') return [{ ...org, allowedProjects: ['LOCAL'] }];
       if (key === 'syncConfig') return null;
       if (key === 'syncOptions:org-1') return { syncComments: true };
       return null;

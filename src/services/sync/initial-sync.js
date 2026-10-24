@@ -10,6 +10,7 @@ import {
 } from '../storage/mappings.js';
 import { getFullIssue } from '../jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from './issue-sync.js';
+import { isOutboundScopeError } from './outbound-scope.js';
 import {
   getIssueCreateOperation,
   ISSUE_CREATE_STATES,
@@ -932,7 +933,7 @@ export async function processReconciliationCandidate({
     return {
       issueKey,
       outcome: 'failed',
-      reasonCode: error instanceof InitialSyncError
+      reasonCode: error instanceof InitialSyncError || isOutboundScopeError(error)
         ? error.code
         : INITIAL_SYNC_REASONS.INTERNAL_ERROR
     };
@@ -1297,6 +1298,7 @@ export async function resumeInitialSync({ orgId } = {}) {
       };
     }
 
+    await loadOrganizationForJob(normalizedOrgId, job.configuration);
     const timestamp = new Date().toISOString();
     const next = {
       ...job,
@@ -1378,12 +1380,16 @@ async function loadOrganizationForJob(orgId, approvedConfiguration) {
       'The target organization credential is missing.'
     );
   }
-  if (normalizeRemoteUrl(org.remoteUrl) !== approvedConfiguration?.remoteUrl
+  const currentScope = normalizeConfigurationSnapshot(org, {}, {});
+  if ((org.jqlFilter != null && typeof org.jqlFilter !== 'string')
+      || JSON.stringify(currentScope.allowedProjects) !== JSON.stringify(approvedConfiguration?.allowedProjects)
+      || currentScope.jqlFilter !== approvedConfiguration?.jqlFilter
+      || normalizeRemoteUrl(org.remoteUrl) !== approvedConfiguration?.remoteUrl
       || (typeof org.remoteProjectKey === 'string' ? org.remoteProjectKey : '')
         !== approvedConfiguration?.remoteProjectKey) {
     throw new InitialSyncError(
       INITIAL_SYNC_REASONS.TARGET_CONFIGURATION_CHANGED,
-      'The approved target organization or default target project changed. Run preview again.'
+      'The approved project scope, JQL, or target configuration changed. Run preview again.'
     );
   }
   return org;
@@ -1508,6 +1514,7 @@ async function processMappedItem(job, org, issueKey, remoteKey) {
 
   let result;
   try {
+    org = await loadOrganizationForJob(job.orgId, job.configuration);
     result = await updateRemoteIssue(
       issueKey,
       remoteKey,
@@ -1517,7 +1524,8 @@ async function processMappedItem(job, org, issueKey, remoteKey) {
       null,
       job.configuration.syncOptions
     );
-  } catch {
+  } catch (error) {
+    if (error?.code === INITIAL_SYNC_REASONS.TARGET_CONFIGURATION_CHANGED || isOutboundScopeError(error)) throw error;
     result = null;
   }
 
@@ -1553,6 +1561,7 @@ async function processMappedItem(job, org, issueKey, remoteKey) {
 }
 
 async function processSingleItem(job, org, issueKey, { reconcileMapped = false } = {}) {
+  org = await loadOrganizationForJob(job.orgId, job.configuration);
   if (!isValidIssueKey(issueKey)) {
     return { issueKey, outcome: 'failed', reasonCode: INITIAL_SYNC_REASONS.INVALID_ISSUE_KEY };
   }
@@ -1594,6 +1603,7 @@ async function processSingleItem(job, org, issueKey, { reconcileMapped = false }
 
   let result;
   try {
+    org = await loadOrganizationForJob(job.orgId, job.configuration);
     result = await createRemoteIssue(
       issue,
       org,
@@ -1601,7 +1611,8 @@ async function processSingleItem(job, org, issueKey, { reconcileMapped = false }
       null,
       job.configuration.syncOptions
     );
-  } catch {
+  } catch (error) {
+    if (error?.code === INITIAL_SYNC_REASONS.TARGET_CONFIGURATION_CHANGED || isOutboundScopeError(error)) throw error;
     result = null;
   }
 
@@ -1859,12 +1870,12 @@ export async function processInitialSyncJob({
   } catch (error) {
     await markJobFailed(
       latestJob,
-      error instanceof InitialSyncError ? error.code : INITIAL_SYNC_REASONS.INTERNAL_ERROR,
+      error instanceof InitialSyncError || isOutboundScopeError(error) ? error.code : INITIAL_SYNC_REASONS.INTERNAL_ERROR,
       lock
     );
     return {
       success: false,
-      code: error instanceof InitialSyncError ? error.code : INITIAL_SYNC_REASONS.INTERNAL_ERROR
+      code: error instanceof InitialSyncError || isOutboundScopeError(error) ? error.code : INITIAL_SYNC_REASONS.INTERNAL_ERROR
     };
   } finally {
     await releaseInitialSyncProcessingLease(lock);

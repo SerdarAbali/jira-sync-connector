@@ -934,6 +934,11 @@ export async function processReconciliationJob({
         issueKey
       });
 
+      if (['OUTBOUND_SCOPE_BLOCKED', 'OUTBOUND_SCOPE_UNVERIFIABLE'].includes(outcome?.reasonCode)) {
+        await failReconciliationJob({ orgId: normalizedOrgId, job, code: outcome.reasonCode, lease, now });
+        return { success: false, code: outcome.reasonCode, processed: processedThisRun };
+      }
+
       if (outcome?.outcome === 'global_pause') {
         const deferred = await deferReconciliationJob({
           orgId: normalizedOrgId,

@@ -18,6 +18,7 @@ jest.mock('../src/services/sync/issue-sync.js', () => ({
 
 jest.mock('../src/services/storage/mappings.js', () => ({
   getRemoteKey: jest.fn(),
+  getLocalKey: jest.fn(async key => key.replace('REMOTE-', 'LOCAL-')),
   getLinkMapping: jest.fn(),
   storeLinkMapping: jest.fn(),
   getOrganizationsWithTokens: jest.fn(),
@@ -36,6 +37,9 @@ jest.mock('../src/services/sync/pilot-pause.js', () => ({
 jest.mock('../src/services/storage/stats.js', () => ({
   trackApiCall: jest.fn(async () => undefined)
 }));
+
+jest.mock('../src/services/storage/kvs.js', () => ({ get: jest.fn(async key => key === 'organizations' ? [{ id: 'org-1', allowedProjects: ['LOCAL'] }] : null) }));
+jest.mock('../src/services/jira/local-client.js', () => ({ getFullIssue: jest.fn(async key => ({ key, fields: { project: { key: 'LOCAL' } } })) }));
 
 import api, { fetch as mockFetch } from '@forge/api';
 import { run as runLinkCreated } from '../src/triggers/link.js';
@@ -131,7 +135,7 @@ function linkedIssue() {
 
 async function runMappedLinkSync() {
   getLinkMapping.mockResolvedValue(null);
-  getRemoteKey.mockImplementation(async key => (key === 'LOCAL-2' ? 'REMOTE-2' : null));
+  getRemoteKey.mockImplementation(async key => key.replace('LOCAL-', 'REMOTE-'));
   mockFetch.mockResolvedValue({ ok: true, status: 201 });
 
   const result = await syncIssueLinks(
@@ -261,7 +265,7 @@ describe('issue-link event hotfix', () => {
     expect(calls).toHaveLength(1);
     expect(calls.some(([url]) => /summary|\/search/i.test(url))).toBe(false);
     expect(calls.some(([, options]) => /summary/i.test(options.body))).toBe(false);
-    expect(getRemoteKey).toHaveBeenCalledTimes(1);
+    expect(getRemoteKey).toHaveBeenCalledTimes(3);
     expect(getRemoteKey).toHaveBeenCalledWith('LOCAL-2', 'org-1');
   });
 });

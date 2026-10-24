@@ -729,7 +729,9 @@ describe('initial sync controls and restart recovery', () => {
 
   test.each([
     ['remoteUrl', 'https://different-target.example'],
-    ['remoteProjectKey', 'OTHER']
+    ['remoteProjectKey', 'OTHER'],
+    ['allowedProjects', []],
+    ['jqlFilter', 'labels = revoked']
   ])('fails closed before writes when the approved %s changes', async (field, value) => {
     searchIssues = [issue('LOCAL-1')];
     const preview = await makePreview();
@@ -911,5 +913,37 @@ describe('initial sync controls and restart recovery', () => {
     expect(persisted).not.toContain(SECRET_SUMMARY);
     expect(queued).not.toContain(SECRET_SUMMARY);
     expect(persisted).not.toContain('PRIVATE_ISSUE_CONTENT_DO_NOT_STORE_LOCAL-1');
+  });
+});
+
+
+describe('Package 1 active-job authorization changes', () => {
+  test.each([['allowedProjects', []], ['jqlFilter', 'labels = revoked']])('rechecks %s between individual items', async (field, value) => {
+    searchIssues = [issue('LOCAL-1'), issue('LOCAL-2')];
+    const started = await startFromPreview(await makePreview());
+    createRemoteIssue.mockClear();
+    createRemoteIssue.mockImplementationOnce(async () => {
+      mockStore.set('organizations', [{ ...ORG, [field]: value }]);
+      return { key: 'REMOTE-1' };
+    });
+    const result = await processInitialSyncJob({ orgId: ORG.id, jobId: started.job.jobId, maxItems: 2 });
+    expect(result.code).toBe(INITIAL_SYNC_REASONS.TARGET_CONFIGURATION_CHANGED);
+    expect(createRemoteIssue).toHaveBeenCalledTimes(1);
+    const status = await getInitialSyncStatus({ orgId: ORG.id });
+    expect(status.status.state).toBe(INITIAL_SYNC_STATES.FAILED);
+    expect(status.status.progress.processed).toBe(1);
+  });
+
+  test.each([['allowedProjects', []], ['jqlFilter', 'labels = revoked']])('rechecks %s on resumption', async (field, value) => {
+    searchIssues = [issue('LOCAL-1')];
+    await startFromPreview(await makePreview());
+    await pauseInitialSync({ orgId: ORG.id });
+    createRemoteIssue.mockClear();
+    mockQueuePush.mockClear();
+    mockStore.set('organizations', [{ ...ORG, [field]: value }]);
+    const result = await resumeInitialSync({ orgId: ORG.id });
+    expect(result.code).toBe(INITIAL_SYNC_REASONS.TARGET_CONFIGURATION_CHANGED);
+    expect(createRemoteIssue).not.toHaveBeenCalled();
+    expect(mockQueuePush).not.toHaveBeenCalled();
   });
 });
