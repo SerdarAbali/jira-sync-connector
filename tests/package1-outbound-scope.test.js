@@ -56,7 +56,9 @@ test.each([
 
 beforeEach(() => {
   jest.resetAllMocks();
-  storage.get.mockResolvedValue([org]);
+  // Every Forge KVS key is modelled, so the global pause lookup must be a
+  // missing record (active) rather than the organization list.
+  storage.get.mockImplementation(async key => (key === 'pilotPause' ? null : [org]));
   getFullIssue.mockResolvedValue({ id: '10001', key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } });
   request.mockResolvedValue(response({ issues: [{ key: 'LOCAL-1' }], isLast: true }));
 });

@@ -27,7 +27,20 @@ export class PilotPausedError extends Error {
 }
 
 function normalizeStoredState(stored) {
-  if (!stored || stored.paused !== true) {
+  // A missing record means active: this preserves upgraded installations, which
+  // behaved exactly this way before the emergency pause existed.
+  if (stored === null || stored === undefined) {
+    return { ...ACTIVE_STATE };
+  }
+
+  // Fail closed. An existing record that is not an object with a boolean
+  // `paused` decision was never written by pausePilot/resumePilot, so its
+  // intent is unknown. Unknown intent must never authorize a Jira mutation.
+  if (typeof stored !== 'object' || Array.isArray(stored) || typeof stored.paused !== 'boolean') {
+    return { ...ACTIVE_STATE, paused: true };
+  }
+
+  if (stored.paused === false) {
     return { ...ACTIVE_STATE };
   }
 
@@ -40,8 +53,9 @@ function normalizeStoredState(stored) {
 }
 
 /**
- * Missing state means active. This preserves upgraded installations exactly as
- * they behaved before the emergency pause existed.
+ * Reads the stored pause decision. A missing record means active; a malformed
+ * existing record means paused so that an unreadable decision can never
+ * authorize writes.
  */
 export async function getPilotPause() {
   const stored = await kvsStore.get(PILOT_PAUSE_KEY);

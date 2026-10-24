@@ -112,6 +112,8 @@ If synchronization is unexpectedly blocked:
 4. Do not resume until the condition that required the pause is understood.
 5. Resume as a Jira administrator. Resume does not replay missed events or start a backfill.
 
+When the state is paused but `pausedAt`, `pausedBy`, and the reason code are all empty, the stored pause record is unreadable. The connector treats an unreadable record as paused and authorizes no Jira writes. Resume as a Jira administrator to replace it with a readable active record.
+
 If pause cannot be cleared, check administrator permission and `forge logs`. Do not redeploy an older version as an emergency stop.
 
 ## Forge permission upgrade
