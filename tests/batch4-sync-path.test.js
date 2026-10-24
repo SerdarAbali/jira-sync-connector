@@ -247,14 +247,14 @@ describe('Batch 4 issue write paths', () => {
 
     const marker = mockStore.get(echoMarkerKey({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: 'remote' }));
     expect(marker).toEqual(expect.objectContaining({
-      fieldHash: hashSynchronizedFields(remoteEchoFields, { includeStatus: false })
+      fieldHash: hashSynchronizedFields(remoteEchoFields, { includeStatus: true })
     }));
     await expect(findAppCausedEcho({
       orgId: 'org-1',
       localKey: 'LOCAL-1',
       remoteKey: 'REMOTE-1',
       observedSide: 'remote',
-      fieldHash: hashSynchronizedFields(remoteEchoFields, { includeStatus: false })
+      fieldHash: hashSynchronizedFields(remoteEchoFields, { includeStatus: true })
     })).resolves.toEqual(expect.objectContaining({ echo: true }));
     expect(JSON.stringify(marker)).not.toContain('Keep this');
   });
@@ -334,14 +334,14 @@ describe('Batch 4 inbound and safety regressions', () => {
     );
     const marker = mockStore.get(echoMarkerKey({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: 'local' }));
     expect(marker).toEqual(expect.objectContaining({
-      fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: false })
+      fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: true })
     }));
     await expect(findAppCausedEcho({
       orgId: 'org-1',
       localKey: 'LOCAL-1',
       remoteKey: 'REMOTE-1',
       observedSide: 'local',
-      fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: false })
+      fieldHash: hashSynchronizedFields(localDestinationFields, { includeStatus: true })
     })).resolves.toEqual(expect.objectContaining({ echo: true }));
   });
 
@@ -408,5 +408,76 @@ describe('Batch 4 inbound and safety regressions', () => {
     const latest = await getLatestAccepted({ orgId: 'org-1', direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1' });
     expect(latest).toBeNull();
     expect(storeMapping).not.toHaveBeenCalled();
+  });
+});
+
+describe('Package 2 B03: status-aware echo boundaries', () => {
+  const state = require('../src/services/sync/sync-state.js');
+  const destination = require('../src/services/sync/destination-state.js');
+  const outbound = require('../src/services/sync/issue-sync.js');
+  const transitions = require('../src/services/sync/transition-sync.js');
+  const maps = require('../src/services/storage/mappings.js');
+
+  test.each(['local', 'remote'])('%s status-only edits survive a real destination fingerprint', async side => {
+    const original = localIssue({ status: { id: '1', name: 'To Do' } });
+    getFullIssue.mockResolvedValue(original);
+    getRemoteIssue.mockResolvedValue({ ...original, key: 'REMOTE-1' });
+    const prior = side === 'local'
+      ? await destination.resolveLocalDestinationHash({ localKey: 'LOCAL-1' })
+      : await destination.resolveRemoteDestinationHash({ org: ORG, remoteKey: 'REMOTE-1' });
+    await state.recordDestinationWrite({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1',
+      observedSide: side, fieldHash: prior.hash });
+    const changed = localIssue({ status: { id: '2', name: 'In Progress' }, updated: '2026-10-21T12:00:05.000Z' });
+    if (side === 'local') {
+      getFullIssue.mockResolvedValue(changed);
+      maps.getOrganizationsWithTokens.mockResolvedValue([{ ...ORG, allowedProjects: ['LOCAL'] }]);
+      maps.getRemoteKey.mockResolvedValue('REMOTE-1');
+      await outbound.syncIssue({ issue: { key: 'LOCAL-1' }, changelog: { items: [{ field: 'status' }] } });
+      expect(transitions.transitionRemoteIssue).toHaveBeenCalled();
+      expect(mockFetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true);
+    } else {
+      getRemoteIssue.mockResolvedValue({ ...changed, key: 'REMOTE-1' });
+      await processIncomingWebhook({ webhookEvent: 'jira:issue_updated', issue: { key: 'REMOTE-1', fields: changed.fields },
+        changelog: { items: [{ field: 'status' }] } }, { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
+      expect(transitions.transitionLocalIssue).toHaveBeenCalled();
+      expect(mockRequestJira.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true);
+    }
+  });
+
+  test.each(['local', 'remote'])('%s genuine echoes remain suppressed', async side => {
+    const original = localIssue({ status: { id: '1', name: 'To Do' } });
+    getFullIssue.mockResolvedValue(original);
+    getRemoteIssue.mockResolvedValue({ ...original, key: 'REMOTE-1' });
+    const prior = side === 'local'
+      ? await destination.resolveLocalDestinationHash({ localKey: 'LOCAL-1' })
+      : await destination.resolveRemoteDestinationHash({ org: ORG, remoteKey: 'REMOTE-1' });
+    await state.recordDestinationWrite({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: side, fieldHash: prior.hash });
+    if (side === 'local') {
+      maps.getOrganizationsWithTokens.mockResolvedValue([{ ...ORG, allowedProjects: ['LOCAL'] }]);
+      maps.getRemoteKey.mockResolvedValue('REMOTE-1');
+      await outbound.syncIssue({ issue: { key: 'LOCAL-1' } });
+    } else {
+      await processIncomingWebhook({ webhookEvent: 'jira:issue_updated', issue: { key: 'REMOTE-1', fields: original.fields } },
+        { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
+    }
+    expect(mockFetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
+    expect(mockRequestJira.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
+  });
+
+  test('destination marker observes the remote status after the mapped transition', async () => {
+    const remote = localIssue({ status: { id: '10', name: 'Open' } });
+    getRemoteIssue.mockImplementation(async () => ({ ...remote, key: 'REMOTE-1' }));
+    transitions.transitionRemoteIssue.mockImplementationOnce(async () => {
+      remote.fields.status = { id: '20', name: 'Active' }; return true;
+    });
+    await outbound.updateIssueForOrg('LOCAL-1', 'REMOTE-1', localIssue(), ORG, mappings(),
+      { syncAttachments: false, syncLinks: false, syncComments: false });
+    expect(mockStore.get(echoMarkerKey({ orgId: 'org-1', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', observedSide: 'remote' })).fieldHash)
+      .toBe(hashSynchronizedFields(remote.fields));
+  });
+
+  test('different status identifiers with the same name are distinct', () => {
+    expect(hashSynchronizedFields({ status: { id: '1', name: 'Active' } }))
+      .not.toBe(hashSynchronizedFields({ status: { id: '2', name: 'Active' } }));
   });
 });

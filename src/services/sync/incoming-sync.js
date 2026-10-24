@@ -1,3 +1,4 @@
+import { claimInboundCommentSubmission, readInboundCommentReceipt, recordInboundCommentReceipt } from './inbound-comment-submission.js';
 import { runWithIssueLease } from './issue-lease-context.js';
 const BASE_REMOTE_FIELDS = [
   'summary',
@@ -114,7 +115,7 @@ function remoteMappedFieldIds(fieldMappings) {
 function hashRemoteFields(fields, context) {
   return hashSynchronizedFields(fields, {
     customFieldIds: remoteMappedFieldIds(context?.mappings?.fieldMappings),
-    includeStatus: false
+    includeStatus: true
   });
 }
 
@@ -1149,10 +1150,13 @@ async function handleRemoteCommentCreated(payload, context) {
   }
 
   await assertInboundScope({ orgId: context.orgId, issueKeys: [localKey] });
+  const submissionScope = { orgId: context.orgId, remoteIssueKey, localKey, commentId: comment.id };
   const dedupKey = buildIncomingCommentKey(context.orgId, comment.id);
   const alreadyProcessed = await kvsStore.get(dedupKey);
   if (alreadyProcessed) {
     console.log(`${LOG_EMOJI.INFO} Comment ${comment.id} already processed, skipping duplicate event`);
+    const receipt = await readInboundCommentReceipt(submissionScope);
+    if (receipt) await storeCommentMapping(receipt.destinationCommentId, comment.id, context.orgId);
     return { status: 'COMMENT_ALREADY_MAPPED' };
   }
 
@@ -1161,6 +1165,14 @@ async function handleRemoteCommentCreated(payload, context) {
   if (reconciliationRequired) {
     console.warn(`${LOG_EMOJI.WARNING} Comment ${comment.id} requires reconciliation; not replaying ambiguous write`);
     return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
+  }
+
+  const receipt = await readInboundCommentReceipt(submissionScope);
+  if (receipt) {
+    await kvsStore.set(dedupKey, { processedAt: new Date().toISOString(),
+      localCommentId: receipt.destinationCommentId, remoteCommentId: comment.id });
+    await storeCommentMapping(receipt.destinationCommentId, comment.id, context.orgId);
+    return { status: 'COMMENT_ALREADY_MAPPED' };
   }
 
   // Always use the authoritative REST body and metadata. Never merge omitted
@@ -1219,7 +1231,7 @@ async function handleRemoteCommentCreated(payload, context) {
   try {
     let response;
     try {
-      const submissionContext = { ...context, commentSubmission: { direction: 'remote-to-local', orgId: context.org.id,
+      const submissionContext = { ...context, submissionScope, commentSubmission: { direction: 'remote-to-local', orgId: context.org.id,
         issueKey: remoteIssueKey, commentId: comment.id } };
       response = await createLocalComment(localKey, body, parentContext.localParentId, submissionContext, async () => {
         const fallback = await verifyFreshCommentThread({
@@ -1286,6 +1298,7 @@ async function handleRemoteCommentCreated(payload, context) {
     }
 
     const localCommentId = createdComment.id;
+    await recordInboundCommentReceipt(submissionScope, localCommentId);
     const parentMarkers = {
       parentId: createdComment?.parentId || null,
       jsdParentId: createdComment?.jsdParentId || null,
@@ -1360,10 +1373,17 @@ async function postCommentOnce(localIssueKey, payload, reason, context) {
 async function postLocalComment(localIssueKey, payload, context) {
   await assertInboundScope({ orgId: context.orgId, issueKeys: [localIssueKey] });
   await assertPilotWritesAllowed('comment_create_local');
+  // Reject current scope before either F02's submission marker or the permanent
+  // claim. A provably unsent denial must leave both boundaries unconsumed.
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localIssueKey] });
   if (!context.commentSubmissionStarted) {
     await markDeferredCommentSubmission(context.commentSubmission);
+    await claimInboundCommentSubmission(context.submissionScope);
     context.commentSubmissionStarted = true;
   }
+  // Retain the transport-side check: revocation during claim persistence still
+  // blocks POST. An already acquired claim is conservatively retained.
+  await assertInboundScope({ orgId: context.orgId, issueKeys: [localIssueKey] });
   try {
     return await api.asApp().requestJira(route`/rest/api/3/issue/${localIssueKey}/comment`, {
       method: 'POST',

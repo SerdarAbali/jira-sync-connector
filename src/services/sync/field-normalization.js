@@ -165,7 +165,7 @@ export function buildNormalizedSynchronizedFields(fields, options = {}) {
     parent: source.parent && typeof source.parent.key === 'string' ? source.parent.key : null,
     status: options.includeStatus === false
       ? null
-      : (isPlainObject(source.status) ? normalizeText(source.status.name) : null),
+      : (isPlainObject(source.status) ? { id: normalizeText(source.status.id), name: normalizeText(source.status.name) } : null),
     issueType: isPlainObject(source.issuetype) ? normalizeText(source.issuetype.name) : null,
     custom: {}
   };

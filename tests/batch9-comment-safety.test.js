@@ -27,6 +27,10 @@ jest.mock('../src/services/storage/kvs.js', () => ({
     }
     mockStore.set(key, value);
   }),
+  createIfNotExists: jest.fn(async (key, value) => {
+    if (mockStore.has(key)) throw Object.assign(new Error('conflict'), { code: 'KEY_ALREADY_EXISTS' });
+    mockStore.set(key, value);
+  }),
   setWithTtl: jest.fn(async (key, value) => { mockStore.set(key, value); })
 }));
 
@@ -259,5 +263,159 @@ describe('Batch 9 inbound threaded-comment safety', () => {
     expect(mockStore.get(reconciliationKey())).toEqual(expect.objectContaining({
       state: 'reconciliation_required'
     }));
+  });
+});
+
+describe('Package 2 B04: durable inbound comment submission', () => {
+  const storage = require('../src/services/storage/kvs.js');
+  const clearReplay = () => mockStore.delete(markerKeyForCurrentPayload());
+  const posts = () => requestJira.mock.calls.filter(([, opts]) => opts?.method === 'POST');
+
+  afterEach(() => {
+    storage.set.mockImplementation(async (key, value) => { mockStore.set(key, value); });
+    storage.createIfNotExists.mockImplementation(async (key, value) => {
+      if (mockStore.has(key)) throw Object.assign(new Error('conflict'), { code: 'KEY_ALREADY_EXISTS' });
+      mockStore.set(key, value);
+    });
+  });
+
+  test('post-POST receipt failure followed by redeliveries never repeats POST', async () => {
+    requestJira.mockResolvedValue(okResponse());
+    storage.set.mockImplementation(async (key, value) => {
+      if (key.startsWith('org-1:incoming-comment:')) throw new Error('receipt unavailable');
+      mockStore.set(key, value);
+    });
+    await processIncomingWebhook(payload, auth());
+    clearReplay();
+    await processIncomingWebhook(payload, auth());
+    clearReplay();
+    await processIncomingWebhook(payload, auth());
+    expect(posts()).toHaveLength(1);
+  });
+
+  test('all receipt storage unavailable after transport still prevents redelivery', async () => {
+    let sent = false;
+    storage.createIfNotExists.mockImplementation(async (key, value) => {
+      if (sent || mockStore.has(key)) throw new Error('storage unavailable');
+      mockStore.set(key, value);
+    });
+    requestJira.mockImplementation(async () => { sent = true; return okResponse(); });
+    storage.set.mockImplementation(async (key, value) => {
+      if (sent) throw new Error('storage unavailable');
+      mockStore.set(key, value);
+    });
+    await processIncomingWebhook(payload, auth());
+    clearReplay();
+    await processIncomingWebhook(payload, auth());
+    expect(posts()).toHaveLength(1);
+  });
+
+  test('expired replay marker during a live submission cannot admit a concurrent POST', async () => {
+    let resume, entered;
+    const held = new Promise(resolve => { resume = resolve; });
+    const reached = new Promise(resolve => { entered = resolve; });
+    requestJira.mockImplementation(async () => { entered(); if (posts().length === 1) await held; return okResponse(); });
+    const first = processIncomingWebhook(payload, auth());
+    await reached;
+    try {
+      clearReplay();
+      await processIncomingWebhook(payload, auth());
+    } finally { resume(); await first; }
+    expect(posts()).toHaveLength(1);
+  });
+
+  test('a durable destination identity repairs failed mapping without another POST', async () => {
+    requestJira.mockResolvedValue(okResponse());
+    storeCommentMapping.mockRejectedValueOnce(new Error('mapping unavailable'));
+    await processIncomingWebhook(payload, auth());
+    clearReplay();
+    await processIncomingWebhook(payload, auth());
+    expect(posts()).toHaveLength(1);
+    expect(storeCommentMapping).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Package 2 B04 adjacent submission guards', () => {
+  const storage = require('../src/services/storage/kvs.js');
+  const resetClaim = () => storage.createIfNotExists.mockImplementation(async (key, value) => {
+    if (mockStore.has(key)) throw Object.assign(new Error('conflict'), { code: 'KEY_ALREADY_EXISTS' });
+    mockStore.set(key, value);
+  });
+  afterEach(() => {
+    resetClaim();
+    storage.set.mockImplementation(async (key, value) => { mockStore.set(key, value); });
+    require('../src/services/sync/pilot-pause.js').getPilotPause.mockResolvedValue({ paused: false });
+    require('../src/services/storage/mappings.js').getLocalKey.mockResolvedValue('LOCAL-1');
+  });
+
+  test('failed durable claim sends no POST', async () => {
+    storage.createIfNotExists.mockRejectedValueOnce(new Error('claim unavailable'));
+    const result = await processIncomingWebhook(payload, auth());
+    expect(result.status).toBe(503);
+    expect(requestJira).not.toHaveBeenCalled();
+  });
+
+  test('late Pause after claiming remains fenced on redelivery', async () => {
+    storage.createIfNotExists.mockImplementationOnce(async (key, value) => {
+      mockStore.set(key, value);
+      require('../src/services/sync/pilot-pause.js').assertPilotWritesAllowed.mockRejectedValueOnce(
+        Object.assign(new Error('paused'), { code: 'PILOT_PAUSED' }));
+    });
+    await processIncomingWebhook(payload, auth());
+    mockStore.delete(markerKeyForCurrentPayload());
+    require('../src/services/sync/pilot-pause.js').getPilotPause.mockResolvedValue({ paused: false });
+    await processIncomingWebhook(payload, auth());
+    expect(requestJira).not.toHaveBeenCalled();
+  });
+
+  test('authorization revoked while claiming cannot send content', async () => {
+    storage.createIfNotExists.mockImplementationOnce(async (key, value) => {
+      mockStore.set(key, value); mockStore.set('organizations', [{ ...ORG, allowedProjects: [] }]);
+    });
+    await processIncomingWebhook(payload, auth());
+    expect(requestJira).not.toHaveBeenCalled();
+  });
+
+  test('a confirmed receipt repairs a failed dedup write using no source content or POST', async () => {
+    requestJira.mockResolvedValue(okResponse());
+    let failDedup = true;
+    storage.set.mockImplementation(async (key, value) => {
+      if (failDedup && key.startsWith('org-1:incoming-comment:')) { failDedup = false; throw new Error('dedup unavailable'); }
+      mockStore.set(key, value);
+    });
+    await processIncomingWebhook(payload, auth());
+    mockStore.delete(markerKeyForCurrentPayload());
+    requestJira.mockClear();
+    const source = require('../src/services/jira/remote-client.js').getRemoteComment;
+    source.mockClear();
+    await processIncomingWebhook(payload, auth());
+    expect(requestJira).not.toHaveBeenCalled();
+    expect(source).not.toHaveBeenCalled();
+    expect(storeCommentMapping).toHaveBeenCalledWith('LOCAL-COMMENT-1', 'REMOTE-COMMENT-1', 'org-1');
+  });
+});
+
+describe('Package 2 B04 final pre-claim authorization', () => {
+  test('a scope rejection before submission leaves no permanent fence or F02 write boundary', async () => {
+    const storage = require('../src/services/storage/kvs.js');
+    const pause = require('../src/services/sync/pilot-pause.js');
+    const pending = 'comment-verification:remote-to-local:org-1:REMOTE-1:REMOTE-COMMENT-1';
+    mockStore.set(pending, { direction: 'remote-to-local', orgId: 'org-1', issueKey: 'REMOTE-1',
+      commentId: 'REMOTE-COMMENT-1', createdAt: Date.now(), notBefore: 0, attempts: 0 });
+    pause.assertPilotWritesAllowed.mockImplementationOnce(async () => {
+      mockStore.set('organizations', [{ ...ORG, allowedProjects: [] }]);
+    });
+    requestJira.mockResolvedValue(okResponse());
+    await processIncomingWebhook(payload, auth());
+    expect(requestJira).not.toHaveBeenCalled();
+    expect(storage.createIfNotExists).not.toHaveBeenCalled();
+    expect([...mockStore.keys()].filter(key => key.startsWith('inbound-comment-submission:'))).toEqual([]);
+    expect(mockStore.get(pending)?.state).not.toBe('write_started');
+    expect([...mockStore.keys()].some(key => key.startsWith('comment-verification-submission:'))).toBe(false);
+    mockStore.set('organizations', [ORG]);
+    mockStore.delete(markerKeyForCurrentPayload());
+    const retry = await processIncomingWebhook(payload, auth());
+    expect(retry.status).toBe(200);
+    expect(requestJira.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
   });
 });

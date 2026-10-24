@@ -1,4 +1,5 @@
-import api, { route, fetch } from '../jira/guarded-api.js';
+import { runScheduledScan, scheduledScopeSignature } from './scheduled-scan.js';
+import { fetch } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI, SCHEDULED_SYNC_DELAY_MS, MAX_PENDING_LINK_ATTEMPTS, MAX_ERROR_ENTRIES } from '../../constants.js';
 import { safeErrorSummary, boundHistory } from '../../utils/redaction.js';
@@ -62,7 +63,7 @@ function recordScheduledError(stats, message) {
   stats.errors = boundHistory(stats.errors, MAX_ERROR_ENTRIES);
 }
 
-export async function retryAllPendingLinks(config, mappings, stats) {
+export async function retryAllPendingLinks(config, mappings, stats, deadline = Infinity) {
   console.log(`🔄 Starting pending link retry...`);
 
   let totalRetried = 0;
@@ -85,6 +86,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
 
     // Process each issue's pending links
     for (const localIssueKey of pendingLinksIndex) {
+      if (Date.now() >= deadline) break;
       const pendingLinks = await getPendingLinks(localIssueKey);
 
       if (!pendingLinks || pendingLinks.length === 0) {
@@ -115,6 +117,7 @@ export async function retryAllPendingLinks(config, mappings, stats) {
       const auth = Buffer.from(`${config.remoteEmail}:${config.remoteApiToken}`).toString('base64');
 
       for (const pendingLink of orgPendingLinks) {
+        if (Date.now() >= deadline) break;
         totalRetried++;
 
         const remoteLinkedKey = await getRemoteKey(pendingLink.linkedIssueKey, orgId);
@@ -409,7 +412,9 @@ export async function performScheduledSync() {
     issuesRecreated: 0,
     lastSuccessfulJiraWrite: null,
     errors: [],
-    events: []
+    events: [],
+    incomplete: false,
+    scans: {}
   };
 
   try {
@@ -418,6 +423,7 @@ export async function performScheduledSync() {
       // Check for timeout before starting org
       if (Date.now() - startTime > TIMEOUT_THRESHOLD_MS) {
         console.warn(`⚠️ Scheduled sync approaching timeout. Stopping early.`);
+        stats.incomplete = true;
         recordScheduledError(stats, 'Sync stopped early due to timeout risk');
         break;
       }
@@ -530,126 +536,108 @@ export async function performScheduledSync() {
       }
 
       const jql = scheduledConfig.syncScope === 'recent'
-        ? `${baseFilter} AND updated >= -24h ORDER BY updated DESC`
-        : `${baseFilter} ORDER BY updated DESC`;
+        ? `${baseFilter} AND updated >= -24h ORDER BY updated ASC, key ASC`
+        : `${baseFilter} ORDER BY updated ASC, key ASC`;
       
       console.log('🔍 Querying mapped issues');
       
-      const searchBody = {
-        jql,
-        maxResults: 100,
-        fields: ['key', 'summary', 'updated'],
-        expand: 'names'
-      };
+      const signature = scheduledScopeSignature(org, scheduledConfig);
+      const scan = await runScheduledScan({ orgId, signature, jql,
+        deadline: startTime + TIMEOUT_THRESHOLD_MS,
+        isCurrent: async () => {
+          const current = (await getOrganizationsWithTokens()).find(candidate => (candidate.id || 'legacy') === orgId);
+          return current && scheduledScopeSignature(current, await kvsStore.get('scheduledSyncConfig')) === signature
+            && !await getLegacyScheduledSkipReason(orgId);
+        },
+        onIssue: async issueKey => {
+          stats.issuesChecked++;
 
-      const searchResponse = await api.asApp().requestJira(
-        route`/rest/api/3/search/jql`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(searchBody)
-        }
-      );
-
-      if (!searchResponse.ok) {
-        throw new Error(`Failed to fetch issues: ${formatHttpFailure(searchResponse.status)}`);
-      }
-
-      const searchResults = await searchResponse.json();
-      
-      console.log(`📋 Found ${searchResults.issues.length} issues to check for ${orgName}`);
-      
-      for (const issueData of searchResults.issues) {
-        // Check for timeout inside the issue loop
-        if (Date.now() - startTime > TIMEOUT_THRESHOLD_MS) {
-          console.warn(`⚠️ Scheduled sync approaching timeout. Stopping issue loop for ${orgName}.`);
-          recordScheduledError(stats, `Sync stopped early for ${orgName} due to timeout risk`);
-          break;
-        }
-
-        stats.issuesChecked++;
-        const issueKey = issueData.key;
-        
-        try {
-          const issue = await getFullIssue(issueKey);
-          if (!issue) {
-            console.log(`⏭️ Could not fetch ${issueKey}`);
-            stats.issuesSkipped++;
-            continue;
-          }
-          
-          const syncCheck = await checkIfIssueNeedsSync(issueKey, issue, config, mappings, effectiveSyncOptions, orgId);
-          
-          if (!syncCheck.needsSync) {
-            console.log(`⏭️ ${issueKey} - ${syncCheck.reason}`);
-            if (syncCheck.reason === 'already-synced') {
-              stats.issuesAlreadyCurrent++;
-            } else {
+          try {
+            const issue = await getFullIssue(issueKey);
+            if (!issue) {
+              console.log(`⏭️ Could not fetch ${issueKey}`);
               stats.issuesSkipped++;
+              return false;
             }
-            continue;
-          }
-          
-          if (syncCheck.action === 'update') {
-            console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
-            const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
-            if (!syncDetails || syncDetails.skipped) {
-              if (syncDetails?.status === 'ALREADY_CURRENT') {
+
+            const syncCheck = await checkIfIssueNeedsSync(issueKey, issue, config, mappings, effectiveSyncOptions, orgId);
+
+            if (!syncCheck.needsSync) {
+              console.log(`⏭️ ${issueKey} - ${syncCheck.reason}`);
+              if (syncCheck.reason === 'already-synced') {
                 stats.issuesAlreadyCurrent++;
               } else {
                 stats.issuesSkipped++;
               }
+              return true;
+            }
+
+            if (syncCheck.action === 'update') {
+              console.log(`🔄 Scheduled UPDATE: ${issueKey} → ${syncCheck.remoteKey}`);
+              const syncDetails = await updateRemoteIssue(issueKey, syncCheck.remoteKey, issue, config, mappings, null, effectiveSyncOptions);
+              if (!syncDetails || syncDetails.skipped) {
+                if (syncDetails?.status === 'ALREADY_CURRENT') {
+                  stats.issuesAlreadyCurrent++;
+                } else {
+                  stats.issuesSkipped++;
+                }
+                recordEvent(stats, {
+                  type: 'skip',
+                  issueKey,
+                  remoteKey: syncCheck.remoteKey,
+                  orgName,
+                  reason: syncDetails?.status || 'update-skipped'
+                });
+                return syncDetails?.status === 'ALREADY_CURRENT';
+              }
+
+              // Force verification of links for the mapped issue during the
+              // scheduled update path.
+              if (effectiveSyncOptions.syncLinks !== false) {
+                const linkResult = await syncIssueLinks(issueKey, syncCheck.remoteKey, issue, config, null, orgId, true);
+                if (linkResult && linkResult.synced > 0) {
+                  console.log(`🔗 Force-synced ${linkResult.synced} link(s) for ${issueKey}`);
+                  if (syncDetails) syncDetails.links = linkResult.synced;
+                }
+              }
+
+              stats.issuesUpdated++;
+              stats.lastSuccessfulJiraWrite = new Date().toISOString();
               recordEvent(stats, {
-                type: 'skip',
+                type: 'update',
                 issueKey,
                 remoteKey: syncCheck.remoteKey,
                 orgName,
-                reason: syncDetails?.status || 'update-skipped'
+                details: syncDetails || { fields: true }
               });
-              continue;
             }
-            
-            // Force verification of links for the mapped issue during the
-            // scheduled update path.
-            if (effectiveSyncOptions.syncLinks !== false) {
-              const linkResult = await syncIssueLinks(issueKey, syncCheck.remoteKey, issue, config, null, orgId, true);
-              if (linkResult && linkResult.synced > 0) {
-                console.log(`🔗 Force-synced ${linkResult.synced} link(s) for ${issueKey}`);
-                if (syncDetails) syncDetails.links = linkResult.synced;
-              }
-            }
-            
-            stats.issuesUpdated++;
-            stats.lastSuccessfulJiraWrite = new Date().toISOString();
+
+            await sleep(SCHEDULED_SYNC_DELAY_MS);
+
+          } catch (error) {
+            console.error(`Error syncing ${issueKey}:`, error);
+            stats.issuesFailed++;
+            recordScheduledError(stats, `${issueKey}: ${error.message}`);
             recordEvent(stats, {
-              type: 'update',
+              type: 'error',
               issueKey,
-              remoteKey: syncCheck.remoteKey,
-              orgName,
-              details: syncDetails || { fields: true }
+              message: error.message,
+              orgName
             });
+            return false;
           }
-          
-          await sleep(SCHEDULED_SYNC_DELAY_MS);
-          
-        } catch (error) {
-          console.error(`Error syncing ${issueKey}:`, error);
-          stats.issuesFailed++;
-          recordScheduledError(stats, `${issueKey}: ${error.message}`);
-          recordEvent(stats, {
-            type: 'error',
-            issueKey,
-            message: error.message,
-            orgName
-          });
+          return true;
         }
-      }
+      });
+      stats.scans[orgId] = scan;
+      if (!scan.complete) stats.incomplete = true;
 
       // Retry pending links for this org
       try {
-        const pendingLinkResults = await retryAllPendingLinks(config, mappings, stats);
+        const pendingLinkResults = !['SYNC_ALREADY_IN_PROGRESS', 'LEASE_STORAGE_ERROR'].includes(scan.reason)
+          && Date.now() < startTime + TIMEOUT_THRESHOLD_MS
+          ? await retryAllPendingLinks(config, mappings, stats, startTime + TIMEOUT_THRESHOLD_MS)
+          : { success: 0, stillPending: 0 };
         console.log(`🔗 Pending links for ${orgName}: ${pendingLinkResults.success} synced, ${pendingLinkResults.stillPending} still pending`);
       } catch (error) {
         console.error(`Error retrying pending links for ${orgName}:`, error);
@@ -657,6 +645,8 @@ export async function performScheduledSync() {
       
     } catch (error) {
       console.error(`Error processing org ${orgName}:`, error);
+      stats.incomplete = true;
+      stats.scans[orgId] = { complete: false, reason: 'scan-failed' };
       stats.issuesFailed++;
       recordScheduledError(stats, `${orgName}: ${error.message}`);
       recordEvent(stats, {
@@ -673,6 +663,7 @@ export async function performScheduledSync() {
   console.log(`\n✅ Scheduled sync complete:`, stats);
   return stats;
   } catch (error) {
+    stats.incomplete = true;
     console.error('Fatal error in scheduled sync:', error);
     return stats;
   }

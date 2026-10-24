@@ -55,7 +55,7 @@ export async function resolveRemoteDestinationHash({
       available: true,
       hash: hashSynchronizedFields(issue.fields, {
         customFieldIds: remoteMappedFieldIds(mappings.fieldMappings),
-        includeStatus: false
+        includeStatus: true
       })
     };
   } catch {
@@ -84,7 +84,7 @@ export async function resolveLocalDestinationHash({
       available: true,
       hash: hashSynchronizedFields(issue.fields, {
         customFieldIds: localMappedFieldIds(mappings.fieldMappings),
-        includeStatus: false
+        includeStatus: true
       })
     };
   } catch {

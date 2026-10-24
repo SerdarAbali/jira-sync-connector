@@ -62,6 +62,7 @@ const ORG = {
 describe('Pilot safety: scheduled sync is update-only and fail-closed', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    require('./helpers/forge-lease-runtime').state.basicStore = new Map();
     getOrganizationsWithTokens.mockResolvedValue([ORG]);
     getRemoteKey.mockResolvedValue(null);
     getLocalKey.mockResolvedValue(null);
@@ -75,7 +76,7 @@ describe('Pilot safety: scheduled sync is update-only and fail-closed', () => {
     });
     api.asApp().requestJira.mockResolvedValue({
       ok: true,
-      json: async () => ({ issues: [{ key: 'LOCAL-1' }] })
+      json: async () => ({ issues: [{ key: 'LOCAL-1' }], isLast: true })
     });
   });
 

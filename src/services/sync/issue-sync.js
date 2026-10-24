@@ -98,7 +98,7 @@ function localMappedFieldIds(fieldMappings) {
 function hashLocalFields(fields, mappings = {}) {
   return hashSynchronizedFields(fields, {
     customFieldIds: localMappedFieldIds(mappings.fieldMappings),
-    includeStatus: false
+    includeStatus: true
   });
 }
 
@@ -1592,32 +1592,6 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
           sourceUpdated: issue.fields.updated,
           fieldHash: sourceHash
         });
-        const remoteDestination = await resolveRemoteDestinationHash({
-          org,
-          remoteKey,
-          mappings
-        });
-        if (remoteDestination.available) {
-          await recordDestinationWrite({
-            orgId,
-            localKey,
-            remoteKey,
-            direction: 'local-to-remote',
-            observedSide: 'remote',
-            sourceUpdated: issue.fields.updated,
-            fieldHash: remoteDestination.hash
-          });
-        } else {
-          await recordSyncDecision({
-            decision: 'echo_hash_unavailable',
-            orgId,
-            localKey,
-            remoteKey,
-            direction: 'local-to-remote',
-            sourceUpdated: issue.fields.updated,
-            reason: remoteDestination.reason
-          });
-        }
 
         // Also update local issue with cross-reference (if enabled)
         if (crossReferenceEnabled) {
@@ -1663,6 +1637,33 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
           const transitioned = await transitionRemoteIssue(remoteKey, issue.fields.status.name, org, mappings.statusMappings, syncResult);
           syncDetails.status = transitioned || false;
         }
+        const remoteDestination = await resolveRemoteDestinationHash({
+          org,
+          remoteKey,
+          mappings
+        });
+        if (remoteDestination.available) {
+          await recordDestinationWrite({
+            orgId,
+            localKey,
+            remoteKey,
+            direction: 'local-to-remote',
+            observedSide: 'remote',
+            sourceUpdated: issue.fields.updated,
+            fieldHash: remoteDestination.hash
+          });
+        } else {
+          await recordSyncDecision({
+            decision: 'echo_hash_unavailable',
+            orgId,
+            localKey,
+            remoteKey,
+            direction: 'local-to-remote',
+            sourceUpdated: issue.fields.updated,
+            reason: remoteDestination.reason
+          });
+        }
+
         await resolveCounterpartStatus({ orgId, localKey, remoteKey });
         await setLastSyncedLocalUpdated(localKey, issue.fields.updated, orgId);
         await recordLatestAccepted({

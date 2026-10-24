@@ -109,7 +109,7 @@ function seedScheduledRun() {
   });
   api.asApp().requestJira.mockResolvedValue({
     ok: true,
-    json: async () => ({ issues: [{ key: 'LOCAL-1' }] })
+    json: async () => ({ issues: [{ key: 'LOCAL-1' }], isLast: true })
   });
 }
 
@@ -125,6 +125,7 @@ function definedResolvers(definer) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  require('./helpers/forge-lease-runtime').state.basicStore = new Map();
   seedScheduledRun();
   getReconciliationSettings.mockResolvedValue({
     recurringReconciliationEnabled: false,
