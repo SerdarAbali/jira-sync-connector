@@ -40,7 +40,7 @@ function scanText(text) {
 }
 
 function listTrackedFiles() {
-  const output = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' });
+  const output = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' });
   return output.split('\0').filter(Boolean);
 }
 

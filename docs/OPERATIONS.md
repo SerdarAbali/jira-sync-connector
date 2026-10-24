@@ -224,3 +224,7 @@ For a documentation-only release, no Forge redeployment is required when the dep
 - an operator has verified that a retry is safe
 
 Do not use manual sync to resolve an unknown create outcome or a mapping conflict. Those require inspection first. Manual sync still respects global pause, project scope, direction, mappings, and counterpart status. A create path also applies the configured JQL filter; an update of an existing mapping is scoped by the project allow-list.
+
+## Signed webhook cutover and rollback
+
+Follow the [F04 coordinated switch runbook](F04-SIGNED-WEBHOOKS.md). Prefer configuration repair or a signed-capable rollback build. Returning to a bearer-URL build reduces security and requires separate emergency approval. Paused or missed inbound deliveries are not automatically replayed.

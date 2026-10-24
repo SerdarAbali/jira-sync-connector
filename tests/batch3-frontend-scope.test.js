@@ -18,7 +18,7 @@ describe('Batch 3 frontend webhook-rotation scope', () => {
   test('rotation state and handler are defined in ConfigurationPanel', () => {
     for (const identifier of [
       'rotatingWebhookSecret',
-      'rotatedWebhookCallbackUrl',
+      'rotatedWebhookSigningSecret',
       'handleRotateWebhookSecret',
       'selectedOrg',
       'onRefreshOrganizations',
@@ -30,7 +30,7 @@ describe('Batch 3 frontend webhook-rotation scope', () => {
 
   test('rotation state and handler are not left in SyncActivityPanel', () => {
     expect(syncActivity).not.toContain('rotatingWebhookSecret');
-    expect(syncActivity).not.toContain('rotatedWebhookCallbackUrl');
+    expect(syncActivity).not.toContain('rotatedWebhookSigningSecret');
     expect(syncActivity).not.toContain('handleRotateWebhookSecret');
   });
 
@@ -44,17 +44,17 @@ describe('Batch 3 frontend webhook-rotation scope', () => {
   });
 
   test('callback URL is one-time, cleared on org change/dismiss, and not logged or persisted', () => {
-    expect(configuration).toContain('setRotatedWebhookCallbackUrl(result.callbackUrl)');
-    expect(configuration).toContain('setRotatedWebhookCallbackUrl(null)');
+    expect(configuration).toContain('setRotatedWebhookSigningSecret(result.secret)');
+    expect(configuration).toContain('setRotatedWebhookSigningSecret(null)');
     expect(configuration).toContain('[selectedOrg?.id]');
-    expect(configuration).not.toMatch(/console\.(log|warn|error)\([^)]*rotatedWebhookCallbackUrl/);
+    expect(configuration).not.toMatch(/console\.(log|warn|error)\([^)]*rotatedWebhookSigningSecret/);
     expect(configuration).not.toContain('localStorage');
     expect(configuration).not.toContain('sessionStorage');
   });
 
-  test('missing callback URL shows a safe error instead of success or the secret', () => {
-    expect(configuration).toContain('callback URL could not be generated');
-    expect(configuration).not.toContain('result.secret');
+  test('one-time signing secret is displayed separately from the reusable URL', () => {
+    expect(configuration).toContain('selectedOrg.incomingWebhookUrl');
+    expect(configuration).toContain('result.secret');
   });
 
   test('no unsupported custom-header instructions remain in the UI', () => {

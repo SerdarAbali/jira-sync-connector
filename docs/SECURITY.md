@@ -32,9 +32,9 @@ Remote API tokens and incoming webhook secrets are stored with Forge secret stor
 - An absent or empty token on update keeps the existing secret.
 - Token replacement is explicit.
 - Tokens are omitted from logs, audit records, exports, and error summaries.
-- Incoming webhook credentials are compared with a timing-safe comparison.
-- Webhook credentials are accepted only in the opaque path, never in query parameters.
-- Rotating the webhook secret invalidates the previous callback URL immediately.
+- Incoming webhooks require HMAC-SHA256 over the original UTF-8 body string, with timing-safe digest comparison.
+- The callback path is `/signed/<orgId>` and contains no credential. Legacy bearer URLs and stored legacy credentials cannot authenticate.
+- Rotating the signing secret immediately invalidates the previous signing key; the callback URL remains stable.
 
 Do not store credentials in issue fields, comments, repository files, test fixtures, screenshots, or support attachments. If a token is exposed, replace it at Atlassian and in SyncApp, then rotate the webhook secret.
 
@@ -370,15 +370,24 @@ The Forge web-trigger is the only inbound network endpoint.
 
 - `POST` and `application/json` are required.
 - Credentials in query parameters are rejected.
-- The path must contain exactly an organization ID and opaque credential.
-- The organization is selected by ID before the stored secret is compared.
-- The secret comparison is timing-safe.
+- The path must contain exactly `signed` and a validated organization ID.
+- Only that organization’s `webhookSigningSecret` is loaded from Forge secret storage.
+- Exactly one `X-Hub-Signature` value with `sha256=` and 64 hexadecimal characters is required. HMAC verification precedes JSON parsing.
+- Missing, duplicate, malformed, unsupported-algorithm, wrong-key and storage-failure authentication checks fail closed.
+- Object-body substitutions are rejected at the HTTP boundary.
+- The SHA-256 digest comparison uses Node `timingSafeEqual`.
+- Server-only recovery dispatch validates persisted identifiers and shares synchronization processing; it never creates signatures or reads webhook credentials.
 - Non-bidirectional organizations are rejected.
 - The payload event must be recognized.
 - The body is limited to 1 MiB.
 - Receipt proof stores only non-sensitive metadata.
 - While global pause is active, the event is acknowledged and discarded, not queued.
 - Authentication failures return a generic response that does not disclose which check failed.
+
+HMAC validates request authenticity and body integrity; it does not prove delivery
+freshness. Existing duplicate suppression is not cryptographic replay prevention.
+Replay of a captured valid request remains a residual risk, mitigated in part by
+current authorization and source-state verification.
 
 ## Global write pause
 
@@ -430,3 +439,5 @@ Do not open a public issue containing a token, callback credential, customer iss
 - Recurring reconciliation allows one active job per organization.
 - A stale worker cannot treat lease expiration as ownership.
 - Lease storage errors fail safely rather than proceeding without protection.
+
+For the signing contract, coordinated cutover, and emergency rollback constraints, see [F04 signed webhooks](F04-SIGNED-WEBHOOKS.md).

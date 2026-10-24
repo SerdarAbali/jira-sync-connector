@@ -1,6 +1,7 @@
 import { fetch, webTrigger } from '@forge/api';
 import { randomBytes } from 'crypto';
 import * as kvsStore from '../services/storage/kvs.js';
+import { webhookReceiptKey } from '../services/storage/webhook-receipt.js';
 import { MAX_STORAGE_SIZE } from '../constants.js';
 import { redactSecrets } from '../utils/redaction.js';
 import { 
@@ -74,12 +75,16 @@ function tokenSecretKey(orgId) {
   return `secret:${orgId}:token`;
 }
 
+function signingSecretKey(orgId) {
+  return `secret:${orgId}:webhookSigningSecret`;
+}
+
 function incomingSecretKey(orgId) {
   return `secret:${orgId}:incomingSecret`;
 }
 
 function webhookMetadataKey(orgId) {
-  return `webhookSecretMeta:${orgId}`;
+  return `webhookSigningSecretMeta:${orgId}`;
 }
 
 function generateWebhookSecret() {
@@ -98,10 +103,10 @@ function sanitizeWebhookUrl(url) {
   }
 }
 
-function buildWebhookCallbackUrl(baseUrl, orgId, secret) {
+function buildWebhookCallbackUrl(baseUrl, orgId) {
   const safeBase = sanitizeWebhookUrl(baseUrl);
-  if (!safeBase || !orgId || !secret) return null;
-  return `${safeBase.replace(/\/$/, '')}/${orgId}/${secret}`;
+  if (!safeBase || !orgId) return null;
+  return `${safeBase.replace(/\/$/, '')}/signed/${orgId}`;
 }
 
 function toSafeOrganization(org, { hasToken, webhookConfigured, webhookMetadata, webhookUrl } = {}) {
@@ -207,14 +212,14 @@ export function defineConfigResolvers(resolver) {
     return await Promise.all(orgs.map(async (org) => {
       const [token, webhookSecret, webhookMetadata] = await Promise.all([
         kvsStore.getSecret(tokenSecretKey(org.id)),
-        kvsStore.getSecret(incomingSecretKey(org.id)),
+        kvsStore.getSecret(signingSecretKey(org.id)),
         kvsStore.get(webhookMetadataKey(org.id))
       ]);
 
       let webhookUrl = null;
       if (org.syncDirection === 'bidirectional') {
         try {
-          webhookUrl = await webTrigger.getUrl('incoming-webhook');
+          webhookUrl = buildWebhookCallbackUrl(await webTrigger.getUrl('incoming-webhook'), org.id);
         } catch (e) {
           console.error('Failed to get webtrigger url');
         }
@@ -230,7 +235,7 @@ export function defineConfigResolvers(resolver) {
   });
 
   // Add new organization
-  resolver.define('addOrganization', async ({ payload, context }) => {
+  resolver.define('addOrganization', async ({ payload }) => {
     try {
       // Validate input
       const validated = validateOrganizationPayload(payload);
@@ -243,11 +248,6 @@ export function defineConfigResolvers(resolver) {
         await kvsStore.setSecret(tokenSecretKey(orgId), validated.remoteApiToken);
       }
 
-      // Incoming webhook credentials always live in secret storage.
-      const incomingSecret = generateWebhookSecret();
-      await kvsStore.setSecret(incomingSecretKey(orgId), incomingSecret);
-      await recordWebhookRotation(orgId, context?.accountId);
-      
       const newOrg = {
         id: orgId,
         name: validated.name,
@@ -269,7 +269,7 @@ export function defineConfigResolvers(resolver) {
         success: true,
         organization: toSafeOrganization(newOrg, {
           hasToken: !!validated.remoteApiToken,
-          webhookConfigured: true
+          webhookConfigured: false
         })
       };
     } catch (error) {
@@ -279,7 +279,7 @@ export function defineConfigResolvers(resolver) {
   });
 
   // Update organization. An absent or empty token means "keep existing".
-  resolver.define('updateOrganization', async ({ payload, context }) => {
+  resolver.define('updateOrganization', async ({ payload }) => {
     try {
       // Validate org ID
       if (!payload.id) {
@@ -303,15 +303,6 @@ export function defineConfigResolvers(resolver) {
 
       // Handle sync direction change
       const syncDirection = payload.syncDirection || orgs[index].syncDirection || 'push';
-      
-      // Generate an incoming secret only if bidirectional and none exists.
-      if (syncDirection === 'bidirectional') {
-        const existingSecret = await kvsStore.getSecret(incomingSecretKey(payload.id));
-        if (!existingSecret) {
-          await kvsStore.setSecret(incomingSecretKey(payload.id), generateWebhookSecret());
-          await recordWebhookRotation(payload.id, context?.accountId);
-        }
-      }
       
       orgs[index] = {
         ...orgs[index],
@@ -387,7 +378,9 @@ export function defineConfigResolvers(resolver) {
       await Promise.all([
         kvsStore.deleteSecret(tokenSecretKey(payload.id)),
         kvsStore.deleteSecret(incomingSecretKey(payload.id)),
-        kvsStore.del(webhookMetadataKey(payload.id))
+        kvsStore.deleteSecret(signingSecretKey(payload.id)),
+        kvsStore.del(webhookMetadataKey(payload.id)),
+        kvsStore.del(webhookReceiptKey(payload.id))
       ]);
       
       // Clean up org-specific mappings
@@ -421,12 +414,14 @@ export function defineConfigResolvers(resolver) {
       }
 
       const secret = generateWebhookSecret();
-      await kvsStore.setSecret(incomingSecretKey(orgId), secret);
+      // Invalidate setup proof before replacing the key. A failed reset leaves the key unchanged.
+      await kvsStore.del(webhookReceiptKey(orgId));
+      await kvsStore.setSecret(signingSecretKey(orgId), secret);
       await recordWebhookRotation(orgId, context?.accountId);
 
       let callbackUrl = null;
       try {
-        callbackUrl = buildWebhookCallbackUrl(await webTrigger.getUrl('incoming-webhook'), orgId, secret);
+        callbackUrl = buildWebhookCallbackUrl(await webTrigger.getUrl('incoming-webhook'), orgId);
       } catch {
         callbackUrl = null;
       }
@@ -437,11 +432,11 @@ export function defineConfigResolvers(resolver) {
         oneTimeDisplay: true,
         secret,
         callbackUrl,
-        message: 'Copy this one-time callback URL into Jira System Webhooks now. It cannot be retrieved again.'
+        message: 'Copy the one-time signing secret into the Jira System Webhook Secret field and set the callback URL together. Previous signatures stop working immediately.'
       };
     } catch (error) {
       console.error('Error rotating webhook secret');
-      return { success: false, error: error.message };
+      return { success: false, error: 'Webhook signing secret could not be rotated' };
     }
   });
 
@@ -725,7 +720,7 @@ export function defineConfigResolvers(resolver) {
     }
   });
 
-  resolver.define('importOrgSettings', async ({ payload, context }) => {
+  resolver.define('importOrgSettings', async ({ payload }) => {
     try {
       const orgId = payload?.orgId;
       let importData = payload?.data;
@@ -772,7 +767,6 @@ export function defineConfigResolvers(resolver) {
         }
         if (importedIncomingSecret) {
           await kvsStore.setSecret(incomingSecretKey(orgId), importedIncomingSecret);
-          await recordWebhookRotation(orgId, context?.accountId);
         }
 
         orgs[orgIndex] = {

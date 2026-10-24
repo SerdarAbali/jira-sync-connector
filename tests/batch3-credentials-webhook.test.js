@@ -4,7 +4,7 @@ import { buildWebhookFingerprint } from '../src/services/sync/webhook-replay.js'
 import { logAuditEntry } from '../src/services/storage/stats.js';
 import * as mappings from '../src/services/storage/mappings.js';
 import { secureCompare } from '../src/utils/secure-compare.js';
-import { randomBytes } from 'crypto';
+import { createHmac, randomBytes } from 'crypto';
 import api from '@forge/api';
 import * as kvsStore from '../src/services/storage/kvs.js';
 
@@ -109,8 +109,8 @@ defineConfigResolvers(fakeResolver);
 const FAKE_TOKEN = 'fake-api-token-value';
 const FAKE_WEBHOOK_SECRET = 'fake-webhook-secret-0123456789abcdef';
 const TOKEN_KEY = 'secret:org-1:token';
-const INCOMING_KEY = 'secret:org-1:incomingSecret';
-const META_KEY = 'webhookSecretMeta:org-1';
+const INCOMING_KEY = 'secret:org-1:webhookSigningSecret';
+const META_KEY = 'webhookSigningSecretMeta:org-1';
 
 function configCall(name, payload = {}, context = { accountId: 'admin-1' }) {
   return definitions[name]({ payload, context });
@@ -154,11 +154,12 @@ function webhookRequest(overrides = {}) {
   return {
     method: 'POST',
     queryParameters: {},
-    userPath: `/org-1/${FAKE_WEBHOOK_SECRET}`,
+    userPath: '/signed/org-1',
     body: defaultBody,
     ...overrides,
     headers: {
       'Content-Type': ['application/json'],
+      'X-Hub-Signature': [`sha256=${createHmac('sha256', FAKE_WEBHOOK_SECRET).update(typeof overrides.body === 'string' ? overrides.body : defaultBody, 'utf8').digest('hex')}`],
       ...(overrides.headers || {})
     }
   };
@@ -209,7 +210,7 @@ describe('Batch 3 credential write-only behavior', () => {
     });
     expect(result[0].remoteApiToken).toBeUndefined();
     expect(result[0].incomingSecret).toBeUndefined();
-    expect(result[0].incomingWebhookUrl).toBe('https://example.invalid/webhook');
+    expect(result[0].incomingWebhookUrl).toBe('https://example.invalid/webhook/signed/org-1');
     expect(serialized).not.toContain(FAKE_TOKEN);
     expect(serialized).not.toContain(FAKE_WEBHOOK_SECRET);
     expect(serialized).not.toContain('OLD_SECRET');
@@ -270,9 +271,9 @@ describe('Batch 3 credential write-only behavior', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(randomBytes).toHaveBeenCalledWith(32);
+    expect(randomBytes).not.toHaveBeenCalled();
+    expect(result.organization.webhookConfigured).toBe(false);
     expect(kvsStore.setSecret).toHaveBeenCalledWith(expect.stringMatching(/^secret:org-\d+:token$/), 'new-token');
-    expect(kvsStore.setSecret).toHaveBeenCalledWith(expect.stringMatching(/^secret:org-\d+:incomingSecret$/), expect.any(String));
     const savedOrgs = kvsStore.set.mock.calls.find(([key]) => key === 'organizations')[1];
     expect(JSON.stringify(savedOrgs)).not.toContain('new-token');
     expect(savedOrgs[0].remoteApiToken).toBeUndefined();
@@ -428,7 +429,7 @@ describe('Batch 3 webhook secret rotation', () => {
     expect(result.oneTimeDisplay).toBe(true);
     expect(result.secret).toHaveLength(43);
     expect(result.secret).not.toContain(FAKE_TOKEN);
-    expect(result.callbackUrl).toBe(`https://example.invalid/webhook/org-1/${result.secret}`);
+    expect(result.callbackUrl).toBe('https://example.invalid/webhook/signed/org-1');
     expect(kvsStore.setSecret).toHaveBeenCalledWith(INCOMING_KEY, result.secret);
     expect(kvsStore.setSecret).not.toHaveBeenCalledWith(TOKEN_KEY, expect.anything());
     expect(kvsStore.setSecret).toHaveBeenCalledTimes(1);
@@ -461,7 +462,7 @@ describe('Batch 3 webhook secret rotation', () => {
     const result = await configCall('getOrganizations');
     expect(JSON.stringify(result)).not.toContain(FAKE_WEBHOOK_SECRET);
     expect(result[0].incomingSecret).toBeUndefined();
-    expect(result[0].incomingWebhookUrl).toBe('https://example.invalid/webhook');
+    expect(result[0].incomingWebhookUrl).toBe('https://example.invalid/webhook/signed/org-1');
     expect(JSON.stringify(result)).not.toContain('/org-1/');
   });
 });
@@ -469,14 +470,14 @@ describe('Batch 3 webhook secret rotation', () => {
 
 
 describe('Batch 3 native Jira webhook path authentication', () => {
-  test('native Jira-style POST without custom authentication headers authenticates through userPath', async () => {
+  test('signed Jira-style POST authenticates with HMAC', async () => {
     webhookFromOrg();
     const response = await runWebhook(webhookRequest());
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['Content-Type']).toEqual(['application/json']);
     expect(JSON.parse(response.body)).toEqual({ message: 'Processed' });
-    expect(secureCompare).toHaveBeenCalledWith(FAKE_WEBHOOK_SECRET, FAKE_WEBHOOK_SECRET);
+    expect(kvsStore.getSecret).toHaveBeenCalledWith(INCOMING_KEY);
   });
 
   test('every webhook response uses a Forge array Content-Type', async () => {
@@ -546,7 +547,7 @@ describe('Batch 3 native Jira webhook path authentication', () => {
   test('wrong organization path is rejected', async () => {
     webhookFromOrg();
     const response = await runWebhook(webhookRequest({
-      userPath: `/org-999/${FAKE_WEBHOOK_SECRET}`
+      userPath: `/signed/org-999`
     }));
 
     expect(response.statusCode).toBe(401);
@@ -591,18 +592,18 @@ describe('Batch 3 native Jira webhook path authentication', () => {
     expect(kvsStore.get).not.toHaveBeenCalled();
   });
 
-  test('constant-time comparison is used', async () => {
+  test('signed request selects the signing secret', async () => {
     webhookFromOrg();
     const response = await runWebhook(webhookRequest());
 
     expect(response.statusCode).toBe(200);
-    expect(secureCompare).toHaveBeenCalled();
+    expect(kvsStore.getSecret).toHaveBeenCalledWith(INCOMING_KEY);
   });
 
   test('unknown organization and wrong secret return identical responses', async () => {
     webhookFromOrg();
     const unknown = await runWebhook(webhookRequest({
-      userPath: `/org-999/${FAKE_WEBHOOK_SECRET}`
+      userPath: `/signed/org-999`
     }));
     const wrongSecret = await runWebhook(webhookRequest({
       userPath: '/org-1/wrong-secret-0123456789abcdef'

@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 const mockStore = new Map();
 const mockSecrets = new Map();
 
@@ -69,7 +70,7 @@ jest.mock('../src/utils/mapping.js', () => ({
   mapUserToLocal: jest.fn()
 }));
 
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { run as runWebhook } from '../src/webtriggers/incoming-webhook.js';
 import api, { fetch as mockFetch } from '@forge/api';
 
@@ -95,7 +96,7 @@ let localLinks = [];
 
 function seedOrganization({ syncDirection = 'bidirectional', paused = false } = {}) {
   mockStore.set('organizations', [{ ...ORG, syncDirection }]);
-  mockSecrets.set('secret:org-1:incomingSecret', CREDENTIAL);
+  mockSecrets.set('secret:org-1:webhookSigningSecret', CREDENTIAL);
   mockSecrets.set('secret:org-1:token', 'remote-token');
   if (paused) {
     mockStore.set('pilotPause', {
@@ -133,9 +134,9 @@ function systemLinkEvent(webhookEvent = 'issuelink_deleted', overrides = {}) {
 function webhookRequest(payload) {
   return {
     method: 'POST',
-    headers: { 'Content-Type': ['application/json'] },
+    headers: { 'Content-Type': ['application/json'], 'X-Hub-Signature': [`sha256=${createHmac('sha256', CREDENTIAL).update(JSON.stringify(payload), 'utf8').digest('hex')}`] },
     queryParameters: {},
-    userPath: `/org-1/${CREDENTIAL}`,
+    userPath: '/signed/org-1',
     body: JSON.stringify(payload)
   };
 }
@@ -251,7 +252,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_created'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result.status).toBe(200);
@@ -268,7 +269,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result.status).toBe(200);
@@ -288,7 +289,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     const deleteCalls = callsFor('DELETE');
@@ -305,7 +306,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result.status).toBe(200);
@@ -321,7 +322,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result.status).toBe(200);
@@ -338,7 +339,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result.status).toBe(200);
@@ -356,7 +357,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result.status).toBe(200);
@@ -373,7 +374,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     const result = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(result).toEqual({
@@ -393,11 +394,11 @@ describe('inbound issue-link deletion hotfix', () => {
 
     await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted', { id: 90001 }),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
     const duplicate = await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted', { id: 90001, timestamp: 1780000005000 }),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     expect(duplicate.status).toBe(200);
@@ -413,7 +414,7 @@ describe('inbound issue-link deletion hotfix', () => {
 
     await processIncomingWebhook(
       systemLinkEvent('issuelink_deleted'),
-      { orgId: 'org-1', credential: CREDENTIAL }
+      { orgId: 'org-1', signingSecret: CREDENTIAL }
     );
 
     const emitted = JSON.stringify([

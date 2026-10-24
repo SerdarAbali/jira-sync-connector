@@ -56,7 +56,7 @@ jest.mock('../src/services/sync/pilot-pause.js', () => ({
 }));
 
 import { syncComment, syncAllComments } from '../src/services/sync/comment-sync.js';
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { getFullIssue, getFullComment } from '../src/services/jira/local-client.js';
 import { getRemoteComment } from '../src/services/jira/remote-client.js';
 import { getOrganizationsWithTokens, storeCommentMapping, getRemoteCommentId } from '../src/services/storage/mappings.js';
@@ -78,7 +78,7 @@ const org = {
   syncDirection: 'bidirectional', allowedProjects: ['LOCAL']
 };
 const issue = { key: 'LOCAL-1', fields: { project: { key: 'LOCAL' } } };
-const auth = { orgId: 'org-1', credential: 'abcdefghijklmnop' };
+const auth = { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' };
 const privateText = 'CONFIDENTIAL_F02_BODY';
 const safeComment = (id = '101') => ({
   id, body: 'ordinary comment', jsdPublic: true, properties: [],
@@ -247,7 +247,14 @@ describe('F02 corrective pass through production source clients', () => {
     const pending = Array.from(mockStore).filter(([key]) => key.startsWith('comment-verification:'));
     expect(pending).toHaveLength(2);
     jest.setSystemTime(Math.max(...pending.map(([, value]) => value.notBefore)) + 1);
-    const result = await runRecoveryHeartbeat();
+    // F04: durable recovery must work even when neither webhook credential exists.
+    const originalGetSecret = kvs.getSecret.getMockImplementation();
+    kvs.getSecret.mockClear().mockImplementation(async key =>
+      /:(incomingSecret|webhookSigningSecret)$/.test(key) ? null : originalGetSecret(key));
+    let result;
+    try { result = await runRecoveryHeartbeat(); }
+    finally { kvs.getSecret.mockImplementation(originalGetSecret); }
+    expect(kvs.getSecret.mock.calls.some(([key]) => /:(incomingSecret|webhookSigningSecret)$/.test(key))).toBe(false);
     expect(result.comments).toEqual({ recovered: 2 });
     expect(writes(mockFetch)).toHaveLength(1);
     expect(writes(mockRequestJira)).toHaveLength(1);

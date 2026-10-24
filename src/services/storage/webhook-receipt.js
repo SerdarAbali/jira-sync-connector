@@ -1,6 +1,6 @@
 import * as kvsStore from './kvs.js';
 
-export const WEBHOOK_RECEIPT_PREFIX = 'webhookReceipt:';
+export const WEBHOOK_RECEIPT_PREFIX = 'signedWebhookReceipt:';
 const MAX_EVENT_NAME_LENGTH = 80;
 
 export function webhookReceiptKey(orgId) {

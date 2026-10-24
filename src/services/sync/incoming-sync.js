@@ -64,7 +64,7 @@ import { syncRemoteAttachmentsToLocal, propagateAttachmentDeletion, getAttachmen
 import { isValidAttachmentId, isValidIssueKey } from '../../utils/attachment-url.js';
 import { transitionLocalIssue } from './transition-sync.js';
 import { mapUserToLocal } from '../../utils/mapping.js';
-import { secureCompare } from '../../utils/secure-compare.js';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { claimWebhookEvent, markWebhookCompleted, releaseWebhookEvent } from './webhook-replay.js';
 import { hashSynchronizedFields } from './field-normalization.js';
 import { resolveLocalDestinationHash } from './destination-state.js';
@@ -118,8 +118,7 @@ function hashRemoteFields(fields, context) {
   });
 }
 
-export const WEBHOOK_ORG_ID_PATTERN = /^org-\d{1,32}$/;
-export const WEBHOOK_CREDENTIAL_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+export const WEBHOOK_ORG_ID_PATTERN = /^org-\d{1,32}(?![\s\S])/;
 export const WEBHOOK_EVENT_NAME_PATTERN = /^[A-Za-z0-9:_-]{1,100}$/;
 const WEBHOOK_UNAUTHORIZED_BODY = { error: 'Unauthorized' };
 
@@ -127,53 +126,83 @@ function webhookUnauthorized() {
   return { status: 401, body: WEBHOOK_UNAUTHORIZED_BODY };
 }
 
-function isValidWebhookAuth(auth) {
-  return !!auth
-    && typeof auth.orgId === 'string'
-    && WEBHOOK_ORG_ID_PATTERN.test(auth.orgId)
-    && typeof auth.credential === 'string'
-    && WEBHOOK_CREDENTIAL_PATTERN.test(auth.credential);
+export const KNOWN_WEBHOOK_EVENTS = new Set([
+  'jira:issue_created',
+  'jira:issue_updated',
+  'jira:issue_deleted',
+  'comment_created',
+  'jira:issue_link_created',
+  'jira:issue_link_deleted',
+  'issuelink_created',
+  'issuelink_deleted',
+  'attachment_created',
+  'jira:attachment_created',
+  'attachment_deleted',
+  'jira:attachment_deleted'
+]);
+
+// External authentication always verifies the original Forge body string before parsing.
+export async function processIncomingWebhook(rawBody, auth) {
+  if (typeof rawBody !== 'string' || !auth || !WEBHOOK_ORG_ID_PATTERN.test(auth.orgId)
+      || typeof auth.signature !== 'string' || auth.signature.length !== 71 || !/^sha256=[a-fA-F0-9]{64}$/.test(auth.signature)) {
+    return webhookUnauthorized();
+  }
+  let org;
+  try {
+    const orgs = await kvsStore.get('organizations') || [];
+    org = orgs.find(candidate => candidate.id === auth.orgId);
+    if (!org) return webhookUnauthorized();
+    const secret = await kvsStore.getSecret(`secret:${auth.orgId}:webhookSigningSecret`);
+    if (typeof secret !== 'string' || !secret) return webhookUnauthorized();
+    const expected = createHmac('sha256', secret).update(rawBody, 'utf8').digest();
+    const supplied = Buffer.from(auth.signature.slice(7), 'hex');
+    if (!timingSafeEqual(expected, supplied)) return webhookUnauthorized();
+  } catch {
+    return webhookUnauthorized();
+  }
+  let payload;
+  try { payload = JSON.parse(rawBody); }
+  catch { return { status: 400, body: { error: 'Invalid JSON body' } }; }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || typeof payload.webhookEvent !== 'string' || !KNOWN_WEBHOOK_EVENTS.has(payload.webhookEvent)) {
+    return { status: 400, body: { error: 'Invalid webhook payload' } };
+  }
+  if (org.syncDirection !== 'bidirectional') {
+    return { status: 403, body: { error: 'Incoming sync is not enabled' } };
+  }
+  await recordAuthenticatedWebhookReceipt(org.id, payload.webhookEvent);
+  return processIncomingPayload(payload, org);
 }
 
-export async function processIncomingWebhook(payload, auth, recovery = {}) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { status: 400, body: { error: 'Invalid webhook payload' } };
+function isRecoveryCommentId(value) {
+  return (typeof value === 'string' || (Number.isSafeInteger(value) && value > 0))
+    && /^[A-Za-z0-9_-]{1,100}(?![\s\S])/.test(String(value));
+}
+
+// Server-only dispatch. The heartbeat supplies persisted identifiers, never URL credentials.
+export async function recoverIncomingComment(record) {
+  if (!record || record.direction !== 'remote-to-local'
+      || !WEBHOOK_ORG_ID_PATTERN.test(record.orgId)
+      || !isValidIssueKey(record.issueKey)
+      || !isRecoveryCommentId(record.commentId)
+      || (record.parentId != null && !isRecoveryCommentId(record.parentId))) {
+    return { status: 'CANCELLED' };
   }
-
-  const { webhookEvent } = payload;
-  if (typeof webhookEvent !== 'string' || !WEBHOOK_EVENT_NAME_PATTERN.test(webhookEvent)) {
-    return { status: 400, body: { error: 'Invalid webhook payload' } };
-  }
-
-  if (!isValidWebhookAuth(auth)) {
-    return webhookUnauthorized();
-  }
-
-  const { orgId, credential } = auth;
-  console.log(`📨 Received webhook event: ${webhookEvent}`);
-
-  // Select exactly one organization. Never scan and compare every stored secret.
   const orgs = await kvsStore.get('organizations') || [];
-  const org = orgs.find(candidate => candidate.id === orgId);
-  if (!org) {
-    console.warn('Incoming webhook authentication failed');
-    return webhookUnauthorized();
-  }
+  const org = orgs.find(candidate => candidate.id === record.orgId);
+  if (!org) return { status: 'CANCELLED' };
+  return processIncomingPayload({ webhookEvent: 'comment_created', issue: { key: record.issueKey },
+    comment: { id: record.commentId, ...(record.parentId ? { parentId: record.parentId } : {}) } },
+  org, { commentAncestry: record.ancestry });
+}
 
-  const storedSecret = await kvsStore.getSecret(`secret:${orgId}:incomingSecret`);
-  if (!storedSecret || !secureCompare(credential, storedSecret)) {
-    console.warn('Incoming webhook authentication failed');
-    return webhookUnauthorized();
-  }
-
+async function processIncomingPayload(payload, org, recovery = {}) {
+  const orgId = org.id;
+  const { webhookEvent } = payload;
   if (org.syncDirection !== 'bidirectional') {
     console.warn('Incoming webhook rejected: bidirectional sync not enabled');
     return { status: 403, body: { error: 'Incoming sync is not enabled' } };
   }
-
-  // Persist non-sensitive proof for the guided setup check. This is
-  // observability only and can never block webhook processing.
-  await recordAuthenticatedWebhookReceipt(orgId, webhookEvent);
 
   // Acknowledge and discard writes while paused. The event is not queued or
   // replayed later, so resume cannot trigger backfill or recreation.

@@ -333,8 +333,8 @@ describe('guided setup direction and webhook gating', () => {
     expect(missing.code).toBe('SETUP_VALIDATION_FAILED');
     expect(missing.errors.join(' ')).toContain('No authenticated webhook event');
 
-    mockStore.set('secret:org-1:incomingSecret', WEBHOOK_SECRET);
-    mockStore.set('webhookReceipt:org-1', {
+    mockStore.set('secret:org-1:webhookSigningSecret', WEBHOOK_SECRET);
+    mockStore.set('signedWebhookReceipt:org-1', {
       event: 'jira:issue_updated',
       receivedAt: new Date().toISOString()
     });
@@ -346,11 +346,11 @@ describe('guided setup direction and webhook gating', () => {
 
   test('an event older than the latest credential rotation does not verify', async () => {
     mockStore.set('organizations', [{ ...ORG, syncDirection: 'bidirectional' }]);
-    mockStore.set('secret:org-1:incomingSecret', WEBHOOK_SECRET);
-    mockStore.set('webhookSecretMeta:org-1', {
+    mockStore.set('secret:org-1:webhookSigningSecret', WEBHOOK_SECRET);
+    mockStore.set('webhookSigningSecretMeta:org-1', {
       rotatedAt: '2026-02-01T00:00:00.000Z'
     });
-    mockStore.set('webhookReceipt:org-1', {
+    mockStore.set('signedWebhookReceipt:org-1', {
       event: 'jira:issue_updated',
       receivedAt: '2026-01-01T00:00:00.000Z'
     });
@@ -601,15 +601,15 @@ describe('guided setup activation and existing organizations', () => {
 
   test('webhook changes block activation when the current webhook is no longer verified', async () => {
     mockStore.set('organizations', [{ ...ORG, syncDirection: 'bidirectional' }]);
-    mockStore.set('secret:org-1:incomingSecret', WEBHOOK_SECRET);
-    mockStore.set('webhookReceipt:org-1', {
+    mockStore.set('secret:org-1:webhookSigningSecret', WEBHOOK_SECRET);
+    mockStore.set('signedWebhookReceipt:org-1', {
       event: 'jira:issue_updated',
       receivedAt: new Date().toISOString()
     });
     await call('start');
     await runThrough('initial-sync');
     const before = JSON.stringify(mockStore.get(setupWizardProgressKey('org-1')));
-    mockStore.delete('secret:org-1:incomingSecret');
+    mockStore.delete('secret:org-1:webhookSigningSecret');
 
     const result = await call('complete', { approved: true });
     expect(result.success).toBe(false);
@@ -693,7 +693,7 @@ describe('guided setup source safety guarantees', () => {
   });
 
   test('the authenticated webhook path records a non-sensitive receipt', () => {
-    expect(incomingSync).toContain('recordAuthenticatedWebhookReceipt(orgId, webhookEvent)');
+    expect(incomingSync).toContain('recordAuthenticatedWebhookReceipt(org.id, payload.webhookEvent)');
     expect(incomingSync).toContain("from '../storage/webhook-receipt.js'");
   });
 

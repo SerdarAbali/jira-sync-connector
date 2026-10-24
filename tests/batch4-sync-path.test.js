@@ -16,7 +16,7 @@ jest.mock('../src/services/storage/kvs.js', () => ({
   get: jest.fn(async key => (mockStore.has(key) ? mockStore.get(key) : null)),
   set: jest.fn(async (key, value) => { mockStore.set(key, value); }),
   del: jest.fn(async key => { mockStore.delete(key); }),
-  getSecret: jest.fn(async key => (key.includes('incomingSecret') ? 'abcdefghijklmnop' : 'token')),
+  getSecret: jest.fn(async key => (key.includes('webhookSigningSecret') ? 'abcdefghijklmnop' : 'token')),
   setIfNotExists: jest.fn(async (key, value) => {
     if (mockStore.has(key)) {
       const error = new Error('already exists');
@@ -85,7 +85,7 @@ jest.mock('../src/services/storage/rejected-fields.js', () => ({ recordRejectedF
 
 import { updateIssueForOrg, createIssueForOrg } from '../src/services/sync/issue-sync.js';
 import api, { fetch } from '@forge/api';
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { acquireIssueLease } from '../src/services/sync/issue-lease.js';
 import { latestAcceptedKey, echoMarkerKey, getLatestAccepted, findAppCausedEcho } from '../src/services/sync/sync-state.js';
 import { hashSynchronizedFields } from '../src/services/sync/field-normalization.js';
@@ -324,7 +324,7 @@ describe('Batch 4 inbound and safety regressions', () => {
         key: 'REMOTE-1',
         fields: { updated: '2026-10-21T12:00:05.000Z' }
       }
-    }, { orgId: 'org-1', credential });
+    }, { orgId: 'org-1', signingSecret: credential });
 
     expect(response.status).toBe(200);
     expect(mockRequestJira).toHaveBeenCalledWith(
@@ -356,7 +356,7 @@ describe('Batch 4 inbound and safety regressions', () => {
     const start = Date.now(); clock.mockReturnValue(start);
     const worker = processIncomingWebhook({ webhookEvent: 'jira:issue_updated', timestamp: start,
       issue: { id: '20001', key: 'REMOTE-1', fields: { updated: '2026-10-21T12:00:00.000Z' } }
-    }, { orgId: 'org-1', credential });
+    }, { orgId: 'org-1', signingSecret: credential });
     try {
       await entered;
       clock.mockReturnValue(start + 121000);
@@ -382,7 +382,7 @@ describe('Batch 4 inbound and safety regressions', () => {
       webhookEvent: 'jira:issue_deleted',
       timestamp: 1780000006000,
       issue: { id: '20001', key: 'REMOTE-1' }
-    }, { orgId: 'org-1', credential });
+    }, { orgId: 'org-1', signingSecret: credential });
 
     expect(response.status).toBe(200);
     expect(mockRequestJira).not.toHaveBeenCalled();

@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 const mockStore = new Map();
 jest.mock('@forge/api', () => ({
   __esModule: true,
@@ -62,7 +63,8 @@ jest.mock('../src/services/jira/attachment-client.js', () => ({
   uploadAttachmentContent: jest.fn(async () => ({ id: '77' }))
 }));
 
-import { processIncomingWebhook, handleRemoteIssueCreated } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
+import { handleRemoteIssueCreated } from '../src/services/sync/incoming-sync.js';
 import { run as runWebhook } from '../src/webtriggers/incoming-webhook.js';
 import { getFullIssue, getFullComment } from '../src/services/jira/local-client.js';
 import { getRemoteIssue, getRemoteComment } from '../src/services/jira/remote-client.js';
@@ -79,7 +81,7 @@ import { syncComment } from '../src/services/sync/comment-sync.js';
 
 const org = { id: 'org-1', name: 'Remote', remoteUrl: 'https://remote.atlassian.net', remoteEmail: 'sync@example.invalid',
   remoteApiToken: 'test-token', syncDirection: 'bidirectional', allowedProjects: ['LOCAL'], jqlFilter: '' };
-const auth = { orgId: 'org-1', credential: 'abcdefghijklmnop' };
+const auth = { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' };
 const remote = { key: 'REMOTE-1', fields: { summary: 'Update', description: null, issuetype: { name: 'Task' }, status: { name: 'Open' }, labels: [] } };
 let projects, scopeUnavailable, spies;
 const writes = () => mockRequestJira.mock.calls.filter(([, o]) => ['POST','PUT','DELETE'].includes(o?.method));
@@ -140,8 +142,8 @@ test('current organization config is rechecked after comment verification', asyn
 
 test('dispatcher enforces current scope for pre-existing mappings', async () => {
   projects['LOCAL-1'] = 'OTHER';
-  const result = await runWebhook({ method: 'POST', headers: { 'Content-Type': ['application/json'] }, queryParameters: {},
-    userPath: '/org-1/abcdefghijklmnop', body: JSON.stringify(event('comment_created')) });
+  const result = await runWebhook({ method: 'POST', headers: { 'Content-Type': ['application/json'], 'X-Hub-Signature': [`sha256=${createHmac('sha256', auth.signingSecret).update(JSON.stringify(event('comment_created')), 'utf8').digest('hex')}`] }, queryParameters: {},
+    userPath: '/signed/org-1', body: JSON.stringify(event('comment_created')) });
   expect(result.statusCode).toBe(200); expect(JSON.parse(result.body).code).toBe('INBOUND_SCOPE_BLOCKED'); expect(writes()).toHaveLength(0);
 });
 

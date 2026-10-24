@@ -216,3 +216,5 @@ The authoritative package version is `package.json` (`2.1.0`). The admin header 
 ## License and support
 
 MIT License; see [LICENSE](LICENSE). Report defects at <https://github.com/SerdarAbali/jira-sync-connector/issues>.
+
+Signed Jira System Webhooks use a credential-free `/signed/<orgId>` callback and a separately configured HMAC-SHA256 secret. Existing installations require the [F04 coordinated switch runbook](docs/F04-SIGNED-WEBHOOKS.md); this build rejects legacy bearer callback URLs.

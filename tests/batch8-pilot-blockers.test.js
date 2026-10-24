@@ -112,7 +112,7 @@ jest.mock('../src/services/sync/transition-sync.js', () => ({
 import api, { fetch } from '@forge/api';
 import { defineDataResolvers } from '../src/resolvers/data.js';
 import { defineConfigResolvers } from '../src/resolvers/config.js';
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { syncAttachments, getAttachmentSyncPolicy } from '../src/services/sync/attachment-sync.js';
 import {
   beginIssueCreateOperation,
@@ -155,7 +155,7 @@ function seedOrg() {
   mockStore.set('organizations', [ORG]);
   mockStore.set('projectMappings:org-1', { LOCAL: 'REMOTE' });
   mockSecretStore.set('secret:org-1:token', 'remote-token');
-  mockSecretStore.set('secret:org-1:incomingSecret', 'abcdefghijklmnop');
+  mockSecretStore.set('secret:org-1:webhookSigningSecret', 'abcdefghijklmnop');
 }
 
 function sourceIssue() {
@@ -499,7 +499,7 @@ describe('Batch 8 backend attachment default-off policy', () => {
         size: 999999,
         content: 'https://evil.example/steal'
       }
-    }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
+    }, { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
 
     expect(result).toEqual({
       status: 200,
@@ -521,7 +521,7 @@ describe('Batch 8 backend attachment default-off policy', () => {
         filename: 'secret.txt',
         content: 'https://evil.example/steal'
       }
-    }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
+    }, { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
 
     expect(result).toEqual({
       status: 200,
@@ -565,7 +565,7 @@ describe('Batch 8 remote-to-local webhook create', () => {
       webhookEvent: 'jira:issue_created',
       timestamp: 1780000001000,
       issue: remoteIssue()
-    }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
+    }, { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
 
     expect(result).toEqual({ status: 200, body: { message: 'Processed' } });
     expect(mockRequestJira).toHaveBeenCalledTimes(1);
@@ -589,12 +589,12 @@ describe('Batch 8 remote-to-local webhook create', () => {
       webhookEvent: 'jira:issue_created',
       timestamp: 1780000002000,
       issue: remoteIssue()
-    }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
+    }, { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
     const second = await processIncomingWebhook({
       webhookEvent: 'jira:issue_created',
       timestamp: 1780000003000,
       issue: remoteIssue()
-    }, { orgId: 'org-1', credential: 'abcdefghijklmnop' });
+    }, { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' });
 
     expect(first.status).toBe(500);
     expect(second).toEqual({

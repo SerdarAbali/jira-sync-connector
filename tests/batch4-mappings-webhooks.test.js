@@ -224,10 +224,9 @@ describe('Batch 4 webhook duplicate fingerprints', () => {
     }, 'org-1')).toBeNull();
   });
 
-  test('42. existing native Jira path authentication still parses the opaque path', () => {
-    expect(parseWebhookUserPath('/org-1/abcdefghijklmnop')).toEqual({
-      orgId: 'org-1',
-      credential: 'abcdefghijklmnop'
+  test('42. signed callback path selects organization without credentials', () => {
+    expect(parseWebhookUserPath('/signed/org-1')).toEqual({
+      orgId: 'org-1'
     });
     expect(parseWebhookUserPath('/org-1/abcdefghijklmnop?secret=leak')).toBeNull();
   });

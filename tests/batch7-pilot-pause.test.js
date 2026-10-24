@@ -109,7 +109,7 @@ import { transitionRemoteIssue, transitionLocalIssue } from '../src/services/syn
 import { syncAllComments } from '../src/services/sync/comment-sync.js';
 import { createLinkOnRemote } from '../src/services/sync/link-sync.js';
 import { syncAttachments } from '../src/services/sync/attachment-sync.js';
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { definePilotResolvers } from '../src/resolvers/pilot.js';
 import { defineDiagnosticsResolvers } from '../src/resolvers/diagnostics.js';
 import { RESOLVER_POLICIES } from '../src/resolvers/authorization-policy.js';
@@ -159,11 +159,11 @@ function localIssue(overrides = {}) {
 function seedOrganization(syncDirection = 'push') {
   mockStore.set('organizations', [{ ...ORG, syncDirection }]);
   mockSecretStore.set('secret:org-1:token', 'remote-token');
-  mockSecretStore.set('secret:org-1:incomingSecret', 'abcdefghijklmnop');
+  mockSecretStore.set('secret:org-1:webhookSigningSecret', 'abcdefghijklmnop');
 }
 
 function webhookAuth() {
-  return { orgId: 'org-1', credential: 'abcdefghijklmnop' };
+  return { orgId: 'org-1', signingSecret: 'abcdefghijklmnop' };
 }
 
 beforeEach(() => {
@@ -222,14 +222,14 @@ describe('Batch 7 global emergency pause state', () => {
     mockStore.set('org-1:remote-to-local:REMOTE-1', 'LOCAL-1');
     mockStore.set('fieldMappings:org-1', { customfield_1: 'customfield_2' });
     mockSecretStore.set('secret:org-1:token', 'remote-token');
-    mockSecretStore.set('secret:org-1:incomingSecret', 'abcdefghijklmnop');
+    mockSecretStore.set('secret:org-1:webhookSigningSecret', 'abcdefghijklmnop');
 
     const originalOrganizations = JSON.parse(JSON.stringify(mockStore.get('organizations')));
     const originalLocalMapping = mockStore.get('org-1:local-to-remote:LOCAL-1');
     const originalRemoteMapping = mockStore.get('org-1:remote-to-local:REMOTE-1');
     const originalFields = JSON.parse(JSON.stringify(mockStore.get('fieldMappings:org-1')));
     const originalToken = mockSecretStore.get('secret:org-1:token');
-    const originalSecret = mockSecretStore.get('secret:org-1:incomingSecret');
+    const originalSecret = mockSecretStore.get('secret:org-1:webhookSigningSecret');
 
     await pausePilot('maintenance', 'admin-1');
     await resumePilot('admin-2');
@@ -239,7 +239,7 @@ describe('Batch 7 global emergency pause state', () => {
     expect(mockStore.get('org-1:remote-to-local:REMOTE-1')).toBe(originalRemoteMapping);
     expect(mockStore.get('fieldMappings:org-1')).toEqual(originalFields);
     expect(mockSecretStore.get('secret:org-1:token')).toBe(originalToken);
-    expect(mockSecretStore.get('secret:org-1:incomingSecret')).toBe(originalSecret);
+    expect(mockSecretStore.get('secret:org-1:webhookSigningSecret')).toBe(originalSecret);
     expect([...mockStore.keys()].some(key => key.startsWith('pending-links:'))).toBe(false);
   });
 
@@ -286,7 +286,7 @@ describe('Batch 7 direction behavior remains unchanged', () => {
     seedOrganization('bidirectional');
 
     const result = await processIncomingWebhook({
-      webhookEvent: 'jira:worklog_updated',
+      webhookEvent: 'jira:issue_deleted',
       issue: { key: 'REMOTE-1', fields: {} }
     }, webhookAuth());
 

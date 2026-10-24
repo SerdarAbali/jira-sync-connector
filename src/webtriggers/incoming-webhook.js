@@ -1,28 +1,15 @@
 import {
   processIncomingWebhook,
   WEBHOOK_ORG_ID_PATTERN,
-  WEBHOOK_CREDENTIAL_PATTERN,
-  WEBHOOK_EVENT_NAME_PATTERN
+  KNOWN_WEBHOOK_EVENTS
 } from '../services/sync/incoming-sync.js';
+
+export { KNOWN_WEBHOOK_EVENTS };
 
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const MAX_USER_PATH_LENGTH = 1024;
 const JSON_CONTENT_TYPE = /^application\/json(?:\s*;|$)/i;
 
-export const KNOWN_WEBHOOK_EVENTS = new Set([
-  'jira:issue_created',
-  'jira:issue_updated',
-  'jira:issue_deleted',
-  'comment_created',
-  'jira:issue_link_created',
-  'jira:issue_link_deleted',
-  'issuelink_created',
-  'issuelink_deleted',
-  'attachment_created',
-  'jira:attachment_created',
-  'attachment_deleted',
-  'jira:attachment_deleted'
-]);
 
 function jsonResponse(statusCode, body) {
   return {
@@ -72,20 +59,11 @@ function hasQuerySecret(request) {
   return Object.keys(query).some(key => key.toLowerCase() === 'secret');
 }
 
-/**
- * Native Jira Cloud System Webhooks cannot add custom outgoing headers, so the
- * opaque credential is carried in the Forge web-trigger userPath:
- *
- *   <webtrigger-url>/<orgId>/<webhookCredential>
- *
- * Exactly two non-empty literal segments are accepted. Percent-encoded,
- * slashed, empty, or oversized segments are rejected.
- */
 export function parseWebhookUserPath(userPath) {
   if (typeof userPath !== 'string' || !userPath || userPath.length > MAX_USER_PATH_LENGTH) {
     return null;
   }
-  if (/[?#%\\]/.test(userPath) || userPath.includes('//')) {
+  if (/[?#%\\\r\n]/.test(userPath) || userPath.includes('//')) {
     return null;
   }
 
@@ -99,24 +77,17 @@ export function parseWebhookUserPath(userPath) {
     return null;
   }
 
-  const [orgId, credential] = segments;
-  if (!WEBHOOK_ORG_ID_PATTERN.test(orgId) || !WEBHOOK_CREDENTIAL_PATTERN.test(credential)) {
+  const [mode, orgId] = segments;
+  if (mode !== 'signed' || !WEBHOOK_ORG_ID_PATTERN.test(orgId)) {
     return null;
   }
 
-  return { orgId, credential };
+  return { orgId };
 }
 
 function measureBodyBytes(body) {
   if (typeof body === 'string') {
     return Buffer.byteLength(body, 'utf8');
-  }
-  if (body && typeof body === 'object') {
-    try {
-      return Buffer.byteLength(JSON.stringify(body), 'utf8');
-    } catch {
-      return null;
-    }
   }
   return null;
 }
@@ -133,7 +104,7 @@ export async function run(request) {
       return unauthorizedResponse();
     }
 
-    // Authenticate from the opaque path credential. Missing, malformed, extra,
+    // Resolve the organization from the credential-free signed path. Missing, malformed, extra,
     // encoded, or oversized paths all produce the same response.
     const pathAuth = parseWebhookUserPath(request.userPath);
     if (!pathAuth) {
@@ -154,23 +125,13 @@ export async function run(request) {
       return jsonResponse(413, { error: 'Request too large' });
     }
 
-    let payload;
-    try {
-      payload = typeof request.body === 'string' ? JSON.parse(request.body) : request.body;
-    } catch {
-      return jsonResponse(400, { error: 'Invalid JSON body' });
+    const signatureHeaders = Object.entries(request.headers)
+      .filter(([name]) => name.toLowerCase() === 'x-hub-signature');
+    const values = signatureHeaders.length === 1 ? signatureHeaders[0][1] : null;
+    if (!Array.isArray(values) || values.length !== 1 || typeof values[0] !== 'string') {
+      return unauthorizedResponse();
     }
-
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      return jsonResponse(400, { error: 'Invalid webhook payload' });
-    }
-    if (typeof payload.webhookEvent !== 'string'
-      || !WEBHOOK_EVENT_NAME_PATTERN.test(payload.webhookEvent)
-      || !KNOWN_WEBHOOK_EVENTS.has(payload.webhookEvent)) {
-      return jsonResponse(400, { error: 'Unrecognized webhook event' });
-    }
-
-    const result = await processIncomingWebhook(payload, pathAuth);
+    const result = await processIncomingWebhook(request.body, { ...pathAuth, signature: values[0] });
     return jsonResponse(result.status, result.body);
   } catch {
     console.error('Error processing incoming webhook request');

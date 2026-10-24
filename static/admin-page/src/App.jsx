@@ -1655,12 +1655,12 @@ const ConfigurationPanel = ({
   onRefreshOrganizations, notify
 }) => {
   const [projectsExpanded, setProjectsExpanded] = useState(false);
-  const [rotatedWebhookCallbackUrl, setRotatedWebhookCallbackUrl] = useState(null);
+  const [rotatedWebhookSigningSecret, setRotatedWebhookSigningSecret] = useState(null);
   const [rotatingWebhookSecret, setRotatingWebhookSecret] = useState(false);
   const gridGap = token('space.300', '24px');
 
   useEffect(() => {
-    setRotatedWebhookCallbackUrl(null);
+    setRotatedWebhookSigningSecret(null);
   }, [selectedOrg?.id]);
 
   const handleRotateWebhookSecret = async () => {
@@ -1676,7 +1676,7 @@ const ConfigurationPanel = ({
       return;
     }
 
-    setRotatedWebhookCallbackUrl(null);
+    setRotatedWebhookSigningSecret(null);
     setRotatingWebhookSecret(true);
     try {
       const result = await invoke('rotateWebhookSecret', { orgId: selectedOrg.id });
@@ -1684,13 +1684,8 @@ const ConfigurationPanel = ({
         notify?.(`Error rotating webhook secret: ${result.error}`, 'error');
         return;
       }
-      if (!result.callbackUrl) {
-        notify?.('Webhook secret rotation succeeded, but the callback URL could not be generated. Please rotate again or contact support.', 'error');
-        onRefreshOrganizations?.();
-        return;
-      }
-      setRotatedWebhookCallbackUrl(result.callbackUrl);
-      notify?.('Webhook secret rotated. Copy the one-time callback URL into Jira now.', 'success');
+      setRotatedWebhookSigningSecret(result.secret);
+      notify?.('Signing secret rotated. Copy the one-time secret into Jira and update the callback URL together.', 'success');
       onRefreshOrganizations?.();
     } catch {
       notify?.('Error rotating webhook secret. Please try again.', 'error');
@@ -1802,7 +1797,7 @@ const ConfigurationPanel = ({
                     <span style={{ fontStyle: 'italic', color: '#DE350B' }}>Not generated (Save Org first)</span>
                   )}
                 </dd>
-                <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Webhook Secret</dt>
+                <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Signing Secret (HMAC-SHA256)</dt>
                 <dd style={{ margin: 0 }}>
                   <div style={{ marginBottom: '6px' }}>
                     {selectedOrg.webhookConfigured ? 'Configured' : 'Not configured'}
@@ -1820,10 +1815,10 @@ const ConfigurationPanel = ({
                   >
                     Rotate Webhook Secret
                   </Button>
-                  {rotatedWebhookCallbackUrl ? (
+                  {rotatedWebhookSigningSecret ? (
                     <SectionMessage appearance="warning">
                       <p style={{ margin: '0 0 6px 0' }}>
-                        One-time display: copy this complete callback URL into the Jira System Webhook now. It cannot be retrieved again.
+                        One-time signing secret: copy this into the Jira System Webhook Secret field. Set the Incoming URL shown above in the same change. This secret cannot be retrieved again.
                       </p>
                       <code style={{
                         display: 'block',
@@ -1834,9 +1829,9 @@ const ConfigurationPanel = ({
                         wordBreak: 'break-all',
                         border: '1px solid #FFAB00'
                       }}>
-                        {rotatedWebhookCallbackUrl}
+                        {rotatedWebhookSigningSecret}
                       </code>
-                      <Button appearance="subtle" type="button" onClick={() => setRotatedWebhookCallbackUrl(null)}>
+                      <Button appearance="subtle" type="button" onClick={() => setRotatedWebhookSigningSecret(null)}>
                         Dismiss
                       </Button>
                     </SectionMessage>

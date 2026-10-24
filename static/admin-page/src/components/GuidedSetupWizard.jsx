@@ -697,16 +697,20 @@ function WebhookStep({
   showMessage
 }) {
   const [callbackUrl, setCallbackUrl] = useState(null);
+  const [signingSecret, setSigningSecret] = useState(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState('');
   const required = org?.syncDirection === 'bidirectional';
 
   useEffect(() => {
     setCallbackUrl(null);
+    setSigningSecret(null);
     setError('');
   }, [org?.id]);
 
   const rotate = async () => {
+    if (org?.webhookConfigured && !window.confirm('Rotate the signing secret? Existing signed deliveries stop working immediately. Update Jira during a planned change.')) return;
+    setSigningSecret(null);
     setError('');
     setRotating(true);
     try {
@@ -716,8 +720,9 @@ function WebhookStep({
         return;
       }
       setCallbackUrl(result.callbackUrl || null);
+      setSigningSecret(result.secret || null);
       await onRefresh();
-      showMessage?.(result.message || 'Copy the full callback URL into Jira now. It cannot be retrieved again.', 'success');
+      showMessage?.(result.message || 'Copy the signing secret into Jira now. It cannot be retrieved again.', 'success');
     } catch (err) {
       setError(err?.message || 'The webhook credential could not be rotated.');
     } finally {
@@ -743,6 +748,7 @@ function WebhookStep({
       return;
     }
     setCallbackUrl(null);
+    setSigningSecret(null);
     showMessage?.('Authenticated webhook event verified.', 'success');
   };
 
@@ -751,7 +757,7 @@ function WebhookStep({
       <StepHeader
         title="6. Webhook"
         description={required
-          ? 'Bidirectional mode requires the existing webhook credential, one-time callback URL and an authenticated event received by this app.'
+          ? 'Bidirectional mode requires the HMAC-SHA256 signing secret, credential-free callback URL and an authenticated event received by this app.'
           : 'Push mode does not require an incoming Jira webhook. This step is recorded as not required.'}
       />
       {!required ? (
@@ -769,10 +775,15 @@ function WebhookStep({
             </Button>
           </div>
 
+          {signingSecret && <SectionMessage appearance="warning">
+            <p>One-time signing secret — paste into the Jira System Webhook Secret field. Rotation invalidates the previous key immediately.</p>
+            <code style={{ wordBreak: 'break-all' }}>{signingSecret}</code>
+            <Button appearance="subtle" onClick={() => setSigningSecret(null)}>Dismiss secret</Button>
+          </SectionMessage>}
           {callbackUrl && (
             <div style={{ marginTop: token('space.200', '16px'), padding: token('space.150', '12px'), background: '#FFFAE6', border: '1px solid #FFC400', borderRadius: '6px' }}>
-              <strong style={{ fontSize: '13px' }}>One-time callback URL</strong>
-              <p style={{ margin: '4px 0 8px 0', fontSize: '12px' }}>Copy this complete URL into Jira System Webhooks now. It cannot be retrieved again.</p>
+              <strong style={{ fontSize: '13px' }}>Callback URL</strong>
+              <p style={{ margin: '4px 0 8px 0', fontSize: '12px' }}>Set this URL and the one-time signing secret below together in Jira System Webhooks. Keep Exclude body unchecked.</p>
               <code style={{ display: 'block', fontSize: '12px', wordBreak: 'break-all', background: '#FFFFFF', padding: '8px', borderRadius: '4px' }}>{callbackUrl}</code>
               <Button appearance="subtle" onClick={copyCallback} style={{ marginTop: '8px' }}>Copy Callback URL</Button>
             </div>

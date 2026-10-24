@@ -1,5 +1,5 @@
 import { run as runIssueDeleted } from '../src/triggers/issue-deleted.js';
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { getOrganizationsWithTokens, getRemoteKey, getLocalKey } from '../src/services/storage/mappings.js';
 import { logAuditEntry } from '../src/services/storage/stats.js';
 import * as kvsStore from '../src/services/storage/kvs.js';
@@ -127,14 +127,14 @@ describe('Pilot safety: deletion propagation is disabled', () => {
       return null;
     });
     kvsStore.getSecret.mockImplementation(async (key) => {
-      if (key === 'secret:org-1:incomingSecret') return 'shared-secret-0123456789abcdef';
+      if (key === 'secret:org-1:webhookSigningSecret') return 'shared-secret-0123456789abcdef';
       if (key === 'secret:org-1:token') return 'remote-token';
       return null;
     });
 
     const result = await processIncomingWebhook(
       { webhookEvent: 'jira:issue_deleted', issue: { key: 'REMOTE-1' } },
-      { orgId: 'org-1', credential: 'shared-secret-0123456789abcdef' }
+      { orgId: 'org-1', signingSecret: 'shared-secret-0123456789abcdef' }
     );
 
     expect(result.status).toBe(200);

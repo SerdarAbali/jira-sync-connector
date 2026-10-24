@@ -96,7 +96,7 @@ jest.mock('../src/utils/mapping.js', () => ({
 
 
 import api from '@forge/api';
-import { processIncomingWebhook } from '../src/services/sync/incoming-sync.js';
+import { processIncomingWebhook } from './helpers/signed-webhook.js';
 import { storeCommentMapping } from '../src/services/storage/mappings.js';
 import { buildWebhookFingerprint, webhookMarkerKey } from '../src/services/sync/webhook-replay.js';
 
@@ -127,12 +127,12 @@ const payload = {
 
 function seedOrganization() {
   mockStore.set('organizations', [ORG]);
-  mockSecretStore.set('secret:org-1:incomingSecret', CREDENTIAL);
+  mockSecretStore.set('secret:org-1:webhookSigningSecret', CREDENTIAL);
   mockSecretStore.set('secret:org-1:token', 'remote-token');
 }
 
 function auth() {
-  return { orgId: 'org-1', credential: CREDENTIAL };
+  return { orgId: 'org-1', signingSecret: CREDENTIAL };
 }
 
 function okResponse(body = { id: 'LOCAL-COMMENT-1', properties: [] }) {

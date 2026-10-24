@@ -430,8 +430,8 @@ async function buildLoadResult(orgId, org) {
   const [rawProgress, rawMetadata, webhookMetadata, webhookSecret, receipt] = await Promise.all([
     kvsStore.get(setupWizardProgressKey(orgId)),
     kvsStore.get(setupWizardMetadataKey(orgId)),
-    kvsStore.get(`webhookSecretMeta:${orgId}`),
-    kvsStore.getSecret(`secret:${orgId}:incomingSecret`),
+    kvsStore.get(`webhookSigningSecretMeta:${orgId}`),
+    kvsStore.getSecret(`secret:${orgId}:webhookSigningSecret`),
     getAuthenticatedWebhookReceipt(orgId)
   ]);
   const progress = rawProgress ? sanitizeProgress(rawProgress, orgId) : null;
@@ -771,13 +771,13 @@ async function validateWebhook(orgId, org) {
   }
 
   const [secret, metadata, receipt] = await Promise.all([
-    kvsStore.getSecret(`secret:${orgId}:incomingSecret`),
-    kvsStore.get(`webhookSecretMeta:${orgId}`),
+    kvsStore.getSecret(`secret:${orgId}:webhookSigningSecret`),
+    kvsStore.get(`webhookSigningSecretMeta:${orgId}`),
     getAuthenticatedWebhookReceipt(orgId)
   ]);
   const errors = [];
   if (!secret) {
-    errors.push('A webhook credential must be created before bidirectional setup can continue.');
+    errors.push('A webhook signing secret must be created before bidirectional setup can continue.');
   }
   if (!receipt) {
     errors.push('No authenticated webhook event has been received.');
@@ -786,7 +786,7 @@ async function validateWebhook(orgId, org) {
     const rotatedAt = Date.parse(metadata.rotatedAt);
     const receivedAt = Date.parse(receipt.receivedAt);
     if (Number.isFinite(rotatedAt) && Number.isFinite(receivedAt) && receivedAt < rotatedAt) {
-      errors.push('The latest webhook credential has not received an authenticated event yet.');
+      errors.push('The latest webhook signing secret has not received an authenticated event yet.');
     }
   }
 

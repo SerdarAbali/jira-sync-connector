@@ -72,7 +72,7 @@ describe('guided setup admin UI', () => {
     expect(wizard).toContain('const [callbackUrl, setCallbackUrl] = useState(null);');
     expect(wizard).toContain('setCallbackUrl(result.callbackUrl || null);');
     expect(wizard).toContain('setCallbackUrl(null);');
-    expect(wizard).not.toMatch(/setCallbackSecret|webhookSecret/);
+    expect(wizard).toContain('setSigningSecret(result.secret || null);');
   });
 
   test('existing organizations are not forced through setup', () => {
