@@ -351,8 +351,7 @@ describe('Batch 7 pause blocks Jira write categories', () => {
     const result = await syncAllComments('LOCAL-1', 'REMOTE-1', localIssue(), ORG, null, 'org-1');
 
     expect(result.failed).toBe(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][1].method).toBe('GET');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test('outgoing links are blocked before the POST', async () => {

@@ -1,18 +1,18 @@
-import api, { route, fetch } from '../jira/guarded-api.js';
+import api, { route } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText, isConnectorGeneratedComment } from '../../utils/adf.js';
-import { getRemoteKey, getOrganizationsWithTokens, getRemoteCommentId, storeCommentMapping } from '../storage/mappings.js';
+import { getRemoteKey, getOrganizationsWithTokens, getRemoteCommentId } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
 import { trackWebhookSync } from '../storage/stats.js';
 import { isProjectAllowedToSync } from '../../utils/validation.js';
 import { SyncResult } from './sync-result.js';
 import { isSyncing } from '../storage/flags.js';
-import { formatHttpFailure } from '../../utils/http-error.js';
 import { safeErrorSummary, safeErrorForLog } from '../../utils/redaction.js';
 import { getPilotPause, assertPilotWritesAllowed } from './pilot-pause.js';
 import { verifyCommentThread, commentParentId, withParentHints, verifyFreshCommentThread } from './comment-confidentiality.js';
+import { submitOutboundComment, PRE_SUBMISSION_CODES } from './comment-submission.js';
 import { commentReadBudget } from '../jira/comment-read.js';
 import { getCommentProjectType } from '../jira/comment-project.js';
 import { deferCommentVerification, markDeferredCommentSubmission, assertCommentVerificationReady } from './comment-verification-recovery.js';
@@ -23,6 +23,7 @@ import { deferCommentVerification, markDeferredCommentSubmission, assertCommentV
  * Used during scheduled sync to catch missed comment webhooks
  */
 export async function syncAllComments(localKey, remoteKey, issue, org, syncResult = null, orgId = null) {
+  orgId = (orgId || org.id) === 'legacy' ? null : (orgId || org.id || null);
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
   const orgName = await getOrgName();
   
@@ -49,35 +50,6 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
     
     console.log(`${LOG_EMOJI.COMMENT} Found ${localComments.length} comments on ${localKey}`);
     
-    // Get existing comments on remote issue
-    const remoteCommentsResponse = await fetch(
-      `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?maxResults=100`,
-      {
-        method: 'GET',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    let existingRemoteComments = [];
-    if (remoteCommentsResponse.ok) {
-      const remoteData = await remoteCommentsResponse.json();
-      existingRemoteComments = remoteData.comments || [];
-    }
-    
-    // Build a set of existing comment signatures to avoid duplicates
-    // We use "[Comment from OrgName" prefix to identify synced comments
-    const existingSignatures = new Set();
-    for (const rc of existingRemoteComments) {
-      if (rc.body && typeof rc.body === 'object') {
-        const text = extractTextFromADF(rc.body);
-        // Extract first 100 chars as signature
-        existingSignatures.add(text.substring(0, 100));
-      }
-    }
-    
     let synced = 0;
     let skipped = 0;
     let failed = 0;
@@ -96,6 +68,7 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
           projectType: () => getCommentProjectType(localKey, null, budget)
         });
       } catch (error) {
+        if (error?.code === 'COMMENT_RECONCILIATION_REQUIRED') { skipped++; continue; }
         if (error?.code !== 'COMMENT_VERIFICATION_DEFERRED') throw error;
         await deferCommentVerification({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy',
           issueKey: localKey, commentId: comment.id }, error);
@@ -120,42 +93,6 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
         continue;
       }
 
-      const userName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
-      
-      let commentText = '';
-      if (comment.body && typeof comment.body === 'object') {
-        commentText = extractTextFromADF(comment.body);
-      } else {
-        commentText = comment.body || '';
-      }
-      commentText = sanitizeCommentText(stripSyncPrefix(commentText)) || '';
-      
-      const signature = `[Comment from ${orgName} - User: ${userName}]`;
-      
-      // Check if this comment likely already exists (by checking for similar content)
-      const checkText = `${signature}\n\n${commentText}`.substring(0, 100);
-      if (existingSignatures.has(checkText)) {
-        skipped++;
-        continue;
-      }
-      
-      // Also check if any remote comment contains this signature + partial text
-      let alreadyExists = false;
-      for (const rc of existingRemoteComments) {
-        if (rc.body && typeof rc.body === 'object') {
-          const rcText = extractTextFromADF(rc.body);
-          if (rcText.includes(signature) && rcText.includes(commentText.substring(0, 50))) {
-            alreadyExists = true;
-            break;
-          }
-        }
-      }
-      
-      if (alreadyExists) {
-        skipped++;
-        continue;
-      }
-      
       // Sync the comment
       try {
         await assertPilotWritesAllowed('comment_create_remote');
@@ -169,35 +106,18 @@ export async function syncAllComments(localKey, remoteKey, issue, org, syncResul
         if (final.comment.author?.accountType === 'app' || isConnectorGeneratedComment(final.comment.body)) { skipped++; continue; }
         const finalBody = verifiedCommentBody(final.comment, final.parent, orgName);
         await assertPilotWritesAllowed('comment_create_remote');
-        await markDeferredCommentSubmission({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy',
-          issueKey: localKey, commentId: comment.id });
-        const response = await executeWriteOnce(async () => {
-          return await fetch(
+        await submitOutboundComment({ orgId: orgId || org.id || 'legacy', issueKey: localKey,
+          commentId: comment.id, remoteKey }, async (send) => {
+          await markDeferredCommentSubmission({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy',
+            issueKey: localKey, commentId: comment.id });
+          return executeWriteOnce(() => send(
             `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ body: finalBody })
-            }
-          );
-        }, `Sync comment to ${remoteKey}`);
-        
-        if (response.ok) {
-          const remoteComment = await parseJsonSafely(response);
-          const remoteCommentId = remoteComment?.id;
-          if (remoteCommentId) {
-            await storeCommentMapping(comment.id, remoteCommentId, orgId);
-          }
-          existingSignatures.add(checkText);
-          synced++;
-          if (syncResult) syncResult.details.comments.success++;
-        } else {
-          failed++;
-          if (syncResult) syncResult.details.comments.failed++;
-        }
+            { method: 'POST', headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ body: finalBody }) }
+          ), `Sync comment to ${remoteKey}`);
+        });
+        synced++;
+        if (syncResult) syncResult.details.comments.success++;
       } catch (error) {
         if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
           await deferCommentVerification({ direction: 'local-to-remote', orgId: orgId || org.id || 'legacy', issueKey: localKey, commentId: comment.id }, error);
@@ -367,63 +287,47 @@ export async function syncComment(event, recoveryOrgId = null) {
       }
       const finalBody = verifiedCommentBody(final.comment, final.parent, orgName);
       await assertPilotWritesAllowed('comment_create_remote');
-      await markDeferredCommentSubmission({ direction: 'local-to-remote', orgId: org.id || 'legacy',
-        issueKey, commentId });
-      const response = await executeWriteOnce(async () => {
-        return await fetch(
+      const { destinationCommentId: remoteCommentId } = await submitOutboundComment({
+        orgId: org.id || 'legacy', issueKey, commentId, remoteKey
+      }, async (send) => {
+        await markDeferredCommentSubmission({ direction: 'local-to-remote', orgId: org.id || 'legacy', issueKey, commentId });
+        return executeWriteOnce(() => send(
           `${org.remoteUrl}/rest/api/3/issue/${remoteKey}/comment?notifyUsers=false`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Basic ${auth}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ body: finalBody })
-          }
-        );
-      }, `Sync comment to ${remoteKey}`);
-
-      if (response.ok) {
-        const remoteComment = await parseJsonSafely(response);
-        const remoteCommentId = remoteComment?.id;
-        if (remoteCommentId) {
-          await storeCommentMapping(commentId, remoteCommentId, orgId);
-          recoveryOutcome = { status: 'COMMENT_SYNCED' };
-        } else if (recoveryOrgId) {
-          return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
-        }
-
-        console.log(`${LOG_EMOJI.SUCCESS} Comment synced to ${org.id || 'organization'} (${remoteKey})${remoteCommentId ? ` → remote comment ${remoteCommentId}` : ''}`);
-        syncResult.details.comments.success++;
-        await trackWebhookSync('comment', true, null, org.id, issueKey, {
-          remoteKey,
-          projectKey,
-          commentId,
-          author: userName,
-          remoteCommentId,
-          parentLocalId,
-          parentRemoteId: null
-        });
-      } else {
-        if (recoveryOrgId) return { status: 'COMMENT_RECONCILIATION_REQUIRED' };
-        console.error(`${LOG_EMOJI.ERROR} Comment sync failed for ${org.id || 'organization'}`);
-        const safeFailure = formatHttpFailure(response.status);
-        syncResult.details.comments.failed++;
-        syncResult.addError(`Comment sync failed: ${safeFailure}`);
-        await trackWebhookSync('comment', false, safeFailure, org.id, issueKey, {
-          remoteKey,
-          projectKey,
-          commentId,
-          httpStatus: response.status
-        });
-      }
+          { method: 'POST', headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: finalBody }) }
+        ), `Sync comment to ${remoteKey}`);
+      });
+      recoveryOutcome = { status: 'COMMENT_SYNCED' };
+      syncResult.details.comments.success++;
+      await trackWebhookSync('comment', true, null, org.id, issueKey, {
+        remoteKey, projectKey, commentId, author: userName, remoteCommentId,
+        parentLocalId, parentRemoteId: null
+      });
     } catch (error) {
       if (error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
         await deferCommentVerification({ direction: 'local-to-remote', orgId: org.id || 'legacy', issueKey, commentId }, error);
         recoveryOutcome = { status: error.code };
         continue;
       }
-      if (error?.code === 'PILOT_PAUSED') return { status: 'COMMENT_RETRY', reason: 'paused' };
+      if (error?.code === 'COMMENT_RECONCILIATION_REQUIRED') {
+        recoveryOutcome = { status: error.code, reason: error.reason };
+        await trackWebhookSync('comment', false, 'Comment submission requires reconciliation', org.id, issueKey, {
+          remoteKey, projectKey, commentId, reason: error.reason
+        });
+        continue;
+      }
+      // A global Pause, or an unverifiable Pause state, blocks every
+      // organization: stop the pass and keep the work retryable. The F06 phase
+      // was re-armed for these codes, so nothing reached Jira.
+      if (error?.code === 'PILOT_PAUSED' || error?.code === 'PAUSE_STATE_UNAVAILABLE') {
+        return { status: 'COMMENT_RETRY', reason: error.code === 'PILOT_PAUSED' ? 'paused' : error.code };
+      }
+      // F07 guard failures are scoped to this organization's lease, so other
+      // organizations keep processing. Recovery must still keep the comment
+      // pending instead of escalating it to manual attention.
+      if (recoveryOrgId && PRE_SUBMISSION_CODES.has(error?.code)) {
+        return { status: 'COMMENT_RETRY', reason: error.code };
+      }
       console.error('Error syncing comment:', safeErrorForLog(error));
       const safeFailure = safeErrorSummary(error.message);
       syncResult.details.comments.failed++;
@@ -482,16 +386,6 @@ function summarizeText(text, maxLength = 140) {
   return `${normalized.substring(0, maxLength - 3)}...`;
 }
 
-async function parseJsonSafely(response) {
-  if (!response) {
-    return null;
-  }
-  try {
-    return await response.json();
-  } catch (error) {
-    return null;
-  }
-}
 
 function verifiedCommentBody(comment, parent, orgName) {
   const context = verifiedParentContext(parent);

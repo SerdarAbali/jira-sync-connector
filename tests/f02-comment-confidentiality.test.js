@@ -12,6 +12,10 @@ jest.mock('../src/services/storage/kvs.js', () => ({
   set: jest.fn(async (key, value) => { mockStore.set(key, value); }),
   del: jest.fn(async key => { mockStore.delete(key); }),
   getSecret: jest.fn(async () => 'abcdefghijklmnop'),
+  createIfNotExists: jest.fn(async (key, value) => {
+    if (mockStore.has(key)) throw Object.assign(new Error('conflict'), { code: 'KEY_ALREADY_EXISTS' });
+    mockStore.set(key, value);
+  }),
   setIfNotExists: jest.fn(async (key, value) => {
     if (mockStore.has(key)) throw Object.assign(new Error('conflict'), { code: 'KEY_ALREADY_EXISTS' });
     mockStore.set(key, value);

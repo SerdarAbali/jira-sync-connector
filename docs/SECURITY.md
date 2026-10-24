@@ -262,6 +262,38 @@ removing pending state; archive failure keeps pending state.
 Recovery worker leases and pre-submission guards use separate storage prefixes.
 Before a recovered destination write, an atomic submission guard and durable
 `write_started` state prevent an ambiguous write or crash from causing blind replay.
+A recovery delivery that loses the fence to another invocation still in flight
+records `SUBMISSION_IN_PROGRESS` and stays pending instead of archiving an
+attention record, because no write of its own started; an older fence that cannot
+belong to a live delivery still escalates.
+
+`write_started` is released only by the outbound submission protocol itself. When
+a Pause, a Pause-state read failure, or an F07 ownership/migration failure blocks
+a comment after its durable submission claim was fenced but before the guarded
+transport was reached, the phase returns to `pre_submission` in the *same*
+transaction that rewrites the verification record and deletes its
+`comment-verification-submission:` marker, and that transaction carries the
+token-and-state predicate returning the phase to `pre_submission`. Because Forge
+commits custom-entity and Key-Value Store operations of one transaction
+atomically, no delivery can observe a consumable `pre_submission` phase while
+another epoch's `write_started` marker is still set — an interleaving that would
+let a concurrent delivery pass the claim, fail the verification guard, and fence
+the comment permanently without any Jira write. A stale invocation whose
+predicate no longer matches publishes nothing at all; it reports
+`SUBMISSION_IN_PROGRESS` and recovery keeps the record pending. Verification
+identity, ancestry, parent reference, throttle deadline, and attempt count are
+preserved, so the next authorized delivery repeats the full confidentiality,
+Pause, lease, and claim checks. Nothing is released once the transport hook has
+run, nor after an ambiguous outcome, a missing destination identity, a
+mapping-storage failure, or an existing attention record. A failed transaction —
+which leaves both halves untouched — stays fail-closed: recovery escalates for
+manual reconciliation and no destination write occurs. Pre-transport guard
+failures are reported as `COMMENT_RETRY` rather than as terminal outcomes.
+
+The phase record lives in the `comment-submission` custom entity declared in
+`manifest.yml` with the ten bounded attributes it stores and no custom index;
+tests refuse an entity or attribute that the manifest does not declare.
+
 Exhausted verification and interrupted submissions move to
 `comment-verification-attention:` for manual inspection. These records have no
 automatic deletion or replay. A pre-write crash can conservatively require manual

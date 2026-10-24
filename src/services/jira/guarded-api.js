@@ -5,7 +5,7 @@ import { assertIssueLeaseMigrationReady } from '../sync/lease-migration.js';
 import { assertCurrentIssueLeases } from '../sync/issue-lease-context.js';
 export { route } from '@forge/api';
 
-async function beforeSubmission(path, options) {
+export async function assertJiraSubmissionAllowed(path, options) {
   const method = String(options?.method || 'GET').toUpperCase();
   if (method === 'GET' || method === 'HEAD') return;
   // Jira enhanced search uses POST for a read. Keep previews/search usable
@@ -24,8 +24,12 @@ async function beforeSubmission(path, options) {
   await assertCurrentIssueLeases();
 }
 
-export async function fetch(url, options) {
-  await beforeSubmission(url, options);
+export async function fetch(url, options, beforeSend) {
+  await assertJiraSubmissionAllowed(url, options);
+  // Runs after every submission guard has passed and immediately before the SDK
+  // transport receives the request. A throw here aborts the request unsent, so
+  // callers may treat it as proof that no submission attempt was made.
+  if (typeof beforeSend === 'function') await beforeSend();
   return forgeFetch(url, options);
 }
 
@@ -33,7 +37,7 @@ function guardedClient(client) {
   return {
     ...client,
     requestJira: async (...args) => {
-      await beforeSubmission(args[0], args[1]);
+      await assertJiraSubmissionAllowed(args[0], args[1]);
       return client.requestJira(...args);
     }
   };

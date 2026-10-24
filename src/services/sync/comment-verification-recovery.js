@@ -113,6 +113,64 @@ export async function markDeferredCommentSubmission(identifiers) {
   await storage.set(key, { ...record, state: 'write_started' });
 }
 
+/**
+ * Plan the release of F02's submission boundary of a deferred comment after the
+ * outbound submission protocol proved that no request reached Jira.
+ *
+ * `write_started` and `comment-verification-submission:` exist so that recovery
+ * never becomes a blind destination-write retry after a crash or an ambiguous
+ * transport outcome. They may only be dropped for the invocation that owns the
+ * permanent comment-submission claim and proved that the Jira transport was
+ * never reached, and that proof has to become durable *together with* F06's
+ * `pre_submission` phase: an ARMED phase is consumable by any delivery, so a
+ * delivery that consumes it while `write_started` is still set can only fence the
+ * comment permanently (`PRE_SUBMISSION_GUARD_BLOCKED`) without ever submitting.
+ *
+ * The returned `stage(transaction)` therefore appends the verification-record
+ * rewrite and the marker deletion to the caller's transaction, which already
+ * carries the token-and-state predicate that returns the phase to
+ * `pre_submission`. Phase and boundary commit or roll back together — Forge
+ * commits custom-entity and Key-Value Store operations of one transaction
+ * atomically — so no interleaving can observe one without the other, and a stale
+ * invocation whose predicate no longer matches publishes nothing.
+ *
+ * Identity (ancestry, parent, scope), the throttle deadline, and the attempt
+ * budget are preserved; a later delivery still has to pass the same freshness,
+ * confidentiality, Pause, lease, and claim checks.
+ *
+ * `confirmed: false` means the boundary must not be released — a manual attention
+ * record exists, or the direction is not an outbound copy — and the caller must
+ * leave the phase fenced instead of publishing an ARMED phase. Callers must
+ * treat a rejection as "keep the marker": recovery stays conservative and
+ * requires reconciliation rather than replaying blindly.
+ */
+export async function prepareDeferredSubmissionRelease(identifiers) {
+  // Only outbound copies are fenced by comment-submission.js.
+  if (identifiers?.direction !== 'local-to-remote') {
+    return { status: 'NOT_APPLICABLE', confirmed: false, stage() {} };
+  }
+  const key = keyFor(identifiers);
+  if (await storage.get(key.replace(PREFIX, 'comment-verification-attention:'))) {
+    return { status: 'ATTENTION_RETAINED', confirmed: false, stage() {} };
+  }
+  const record = await storage.get(key);
+  const releasing = record?.state === 'write_started';
+  return {
+    status: releasing ? 'RELEASED' : 'MARKER_RELEASED',
+    confirmed: true,
+    // Staged into the caller's transaction: never a separate commit.
+    stage(transaction) {
+      if (releasing) {
+        const { state, ...pending } = record;
+        transaction.set(key, { ...pending, submissionReleasedAt: Date.now() });
+      }
+      // Deleting succeeds whether the marker exists or not, and the marker can
+      // only belong to this scope's identity.
+      transaction.delete(key.replace(PREFIX, 'comment-verification-submission:'));
+    }
+  };
+}
+
 const TERMINAL = new Set(['COMMENT_SYNCED', 'COMMENT_ALREADY_MAPPED', 'COMMENT_REJECTED', 'COMMENT_IGNORED_CONNECTOR', 'CANCELLED']);
 
 // Only explicit terminal outcomes permit deletion, after durable recording.
@@ -147,7 +205,13 @@ export async function recoverCommentVerifications(retry, now = Date.now()) {
       await storage.set(key, attempt);
       const result = await retry(record);
       const outcome = result?.body?.code || result?.status;
-      if (outcome === 'COMMENT_RECONCILIATION_REQUIRED') {
+      // A delivery that lost a young fence only observed another invocation's
+      // operation in flight; it is not evidence that a destination write started.
+      // Keep the attempt pending so the fence owner can finish and the next pass
+      // records the real outcome. An older fence still escalates to attention.
+      const inProgress = outcome === 'COMMENT_RECONCILIATION_REQUIRED'
+        && result?.reason === 'SUBMISSION_IN_PROGRESS';
+      if (outcome === 'COMMENT_RECONCILIATION_REQUIRED' && !inProgress) {
         await storage.set(key.replace(PREFIX, 'comment-verification-attention:'), { ...attempt, state: 'write_started' });
         await storage.del(key);
       } else if (TERMINAL.has(outcome)) {
@@ -156,8 +220,9 @@ export async function recoverCommentVerifications(retry, now = Date.now()) {
         recovered++;
       } else {
         const latest = await storage.get(key);
-        if (latest) await storage.set(key, { ...latest, lastOutcome: outcome === 'COMMENT_RETRY'
-          ? 'COMMENT_RETRY' : outcome === 'COMMENT_VERIFICATION_DEFERRED' ? outcome : 'NO_TERMINAL_OUTCOME' });
+        if (latest) await storage.set(key, { ...latest, lastOutcome: outcome === 'COMMENT_RETRY' ? 'COMMENT_RETRY'
+          : inProgress ? 'SUBMISSION_IN_PROGRESS'
+          : outcome === 'COMMENT_VERIFICATION_DEFERRED' ? outcome : 'NO_TERMINAL_OUTCOME' });
       }
       // Undefined, HTTP success alone, pauses, duplicate-in-flight, and errors
       // are not evidence of successful copying. Retain their durable attempt.
