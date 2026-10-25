@@ -45,10 +45,12 @@ Resolution:
 
 1. Pause synchronization if another create could duplicate the issue.
 2. Search the target project for the expected summary, source reference, and creation time.
-3. Inspect the issue-create operation record and the Sync Activity decision.
-4. If the issue exists, use **Reconcile issue create** with the verified target key.
-5. If it does not exist and the ledger confirms no definite success, correct the cause and use the controlled retry path.
-6. Resume after the ledger and mapping agree.
+3. Open **Recovery > Ambiguous Issue Create Recovery**, choose the direction, and look up the source issue key. The lookup is read-only: it reports the ledger state, recorded target key, source mapping and whether reconciliation is applicable.
+4. Verify the issue directly in Jira, then enter or confirm its exact key, tick the verification checkbox, and reconcile. Reconciliation repairs the mapping only; it never creates, deletes, updates or retries an issue.
+5. A `pending` ledger is still owned by the create path, and a definitively rejected create is retried instead of reconciled; the panel explains both.
+6. If the lookup reports `CREATE_OPERATION_NOT_FOUND`, the pair predates the create ledger. Do not reconcile it and do not edit KVS.
+7. If the issue does not exist and the ledger confirms no definite success, correct the cause and use the controlled retry path.
+8. Resume after the ledger and mapping agree.
 
 Never resolve an unknown outcome by deleting the operation record or blindly re-running manual sync.
 

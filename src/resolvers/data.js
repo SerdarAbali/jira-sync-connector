@@ -589,6 +589,114 @@ export function defineDataResolvers(resolver) {
     }
   });
 
+  // Read-only administrator lookup for the issue create ledger. It reports the
+  // persisted create outcome and the current mapping for an explicitly supplied
+  // organization, direction and source issue key. It performs no Jira request
+  // and no storage write, and it never returns attempt tokens or raw payloads.
+  resolver.define('getIssueCreateOperationStatus', async ({ payload }) => {
+    try {
+      const orgId = payload?.orgId;
+      const direction = payload?.direction;
+      const sourceKey = payload?.sourceKey;
+
+      if (typeof orgId !== 'string' || orgId.length === 0
+          || (direction !== ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE
+            && direction !== ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL)
+          || !isValidCreateSourceKey(sourceKey)) {
+        return {
+          success: false,
+          code: 'INVALID_CREATE_LOOKUP_REQUEST',
+          error: 'orgId, direction and a valid sourceKey are required'
+        };
+      }
+
+      const orgs = await kvsStore.get('organizations') || [];
+      const org = orgs.find(candidate => candidate.id === orgId);
+      if (!org) {
+        return { success: false, code: 'ORGANIZATION_NOT_FOUND', error: 'Organization not found' };
+      }
+
+      const storageOrgId = org.id === 'legacy' ? null : org.id;
+      const operation = await getIssueCreateOperation({ orgId: storageOrgId, direction, sourceKey });
+      const sourceMappedKey = direction === ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE
+        ? await getRemoteKey(sourceKey, storageOrgId)
+        : await getLocalKey(sourceKey, storageOrgId);
+      const mapping = { sourceMappedKey: sourceMappedKey || null };
+
+      if (!operation) {
+        return {
+          success: true,
+          exists: false,
+          orgId: org.id,
+          direction,
+          sourceKey,
+          operation: null,
+          mapping,
+          reconciliation: {
+            applicable: false,
+            reason: ISSUE_CREATE_CODES.NOT_FOUND,
+            requiresExplicitTarget: true,
+            recordedTargetKey: null
+          }
+        };
+      }
+
+      const recordedTargetKey = typeof operation.targetKey === 'string'
+        && isValidCreateSourceKey(operation.targetKey)
+        ? operation.targetKey
+        : null;
+      let applicable = false;
+      let reason = ISSUE_CREATE_CODES.INVALID_STATE;
+      if (operation.state === ISSUE_CREATE_STATES.UNKNOWN) {
+        applicable = true;
+        reason = ISSUE_CREATE_CODES.RECONCILIATION_REQUIRED;
+      } else if (operation.state === ISSUE_CREATE_STATES.SUCCEEDED) {
+        if (recordedTargetKey && mapping.sourceMappedKey === recordedTargetKey) {
+          reason = 'CREATE_ALREADY_RECONCILED';
+        } else {
+          applicable = true;
+          reason = 'CREATE_SUCCEEDED_MAPPING_MISSING';
+        }
+      } else if (operation.state === ISSUE_CREATE_STATES.PENDING) {
+        reason = ISSUE_CREATE_CODES.IN_PROGRESS;
+      } else if (operation.state === ISSUE_CREATE_STATES.FAILED_DEFINITIVE) {
+        reason = ISSUE_CREATE_CODES.RETRY_ALLOWED;
+      }
+
+      return {
+        success: true,
+        exists: true,
+        orgId: org.id,
+        direction,
+        sourceKey,
+        operation: {
+          state: operation.state,
+          attempt: Number.isInteger(operation.attempt) ? operation.attempt : null,
+          createdAt: operation.createdAt || null,
+          updatedAt: operation.updatedAt || null,
+          startedAt: operation.startedAt || null,
+          submissionStarted: typeof operation.submissionStartedAt === 'string'
+            && operation.submissionStartedAt.length > 0,
+          unknownAt: operation.unknownAt || null,
+          failedAt: operation.failedAt || null,
+          failureReason: typeof operation.failureReason === 'string' ? operation.failureReason : null,
+          completedAt: operation.completedAt || null,
+          targetKey: recordedTargetKey
+        },
+        mapping,
+        reconciliation: {
+          applicable,
+          reason,
+          requiresExplicitTarget: true,
+          recordedTargetKey
+        }
+      };
+    } catch (error) {
+      console.error('Error reading issue create operation:', error);
+      return { success: false, code: 'CREATE_LOOKUP_FAILED', error: safeErrorSummary(error.message) };
+    }
+  });
+
   // Administrator-only recovery for an ambiguous issue create. The caller
   // must supply an explicit Jira issue key; summary matching is never used.
   // This resolver performs no Jira create or delete operation.

@@ -18,6 +18,7 @@ import Diagnostics from './components/Diagnostics';
 import InitialSyncPanel from './components/InitialSyncPanel';
 import GuidedSetupWizard from './components/GuidedSetupWizard';
 import DeletedCounterpartRecovery from './components/DeletedCounterpartRecovery';
+import IssueCreateRecovery from './components/IssueCreateRecovery';
 import RecurringReconciliation from './components/RecurringReconciliation';
 import {
   readStoredOrganizationId,
@@ -1444,6 +1445,10 @@ export const App = () => {
               {/* Recovery Tab */}
               <TabPanel>
                 <div style={tabPanelContainerStyle}>
+                  <IssueCreateRecovery
+                    selectedOrg={selectedOrg}
+                    showMessage={showMessage}
+                  />
                   <DeletedCounterpartRecovery
                     selectedOrg={selectedOrg}
                     showMessage={showMessage}
