@@ -84,6 +84,35 @@ function describeDeferredWrite(error, label) {
 }
 
 /**
+ * Resolve the local `updated` timestamp that should be persisted as the
+ * last-synchronized marker for an issue.
+ *
+ * The marker is how the next pass decides whether the local issue changed
+ * since the last write; it must describe the state the connector actually
+ * left behind. When the connector writes the cross-reference back into the
+ * local description, that write bumps the local `updated` value after the
+ * issue snapshot was read, so replaying the snapshot timestamp would leave the
+ * marker permanently behind the issue and make every later run rewrite the
+ * counterpart. In that case the authoritative timestamp is re-read.
+ *
+ * A failed refresh keeps the previous value: the marker stays stale (and the
+ * pair converges on a later run) rather than claiming a freshness that could
+ * not be established.
+ */
+async function resolveLastSyncedLocalUpdated(issueKey, previousUpdated, localWritePerformed) {
+  if (!localWritePerformed) return previousUpdated;
+  try {
+    const refreshed = await getFullIssue(issueKey);
+    const updated = refreshed?.fields?.updated;
+    if (typeof updated === 'string' && updated.length > 0) return updated;
+    console.log(`${LOG_EMOJI.WARNING} Could not refresh last-synced marker for ${issueKey}: no updated timestamp returned`);
+  } catch (error) {
+    console.log(`${LOG_EMOJI.WARNING} Could not refresh last-synced marker for ${issueKey}: ${safeErrorSummary(error?.message || String(error))}`);
+  }
+  return previousUpdated;
+}
+
+/**
  * A link notification is a non-field content change even though Forge
  * issue-link events carry no changelog. Only the explicit marker the link
  * trigger adds for a verified, user-initiated link event is accepted, so
@@ -983,6 +1012,10 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
 
       // Check if cross-reference is enabled (default true for backward compatibility)
       const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
+      // A local cross-reference write changes the local issue after this
+      // snapshot was read, so the marker must be re-derived (see
+      // resolveLastSyncedLocalUpdated).
+      let localDescriptionWritten = false;
 
       if (crossReferenceEnabled) {
         // Add cross-reference to both issues' descriptions
@@ -1068,6 +1101,7 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           await assertPilotWritesAllowed('issue_description_update_local');
           const localUpdateSuccess = await updateLocalIssueDescription(issue.key, localDescriptionWithRef);
           if (localUpdateSuccess) {
+            localDescriptionWritten = true;
             console.log(`${LOG_EMOJI.SUCCESS} Updated local issue ${issue.key} with cross-reference`);
           } else {
             const warningMsg = 'Could not update local description with cross-reference';
@@ -1151,7 +1185,12 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       });
 
       await clearSyncFlag(issue.key);
-      await setLastSyncedLocalUpdated(issue.key, issue.fields.updated, orgId);
+      const lastSyncedLocalUpdated = await resolveLastSyncedLocalUpdated(
+        issue.key,
+        issue.fields.updated,
+        localDescriptionWritten
+      );
+      await setLastSyncedLocalUpdated(issue.key, lastSyncedLocalUpdated, orgId);
       return { key: result.key, details: syncDetails };
     } else {
       const responseStatus = Number(response.status);
@@ -1354,6 +1393,9 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
 
     // Check if cross-reference is enabled (default true for backward compatibility)
     const crossReferenceEnabled = syncOptions?.syncCrossReference !== false;
+    // Set when the local description is repaired below: that write bumps the
+    // local `updated` value, so the marker is re-derived afterwards.
+    let localDescriptionWritten = false;
 
     let description;
     if (issue.fields.description === null || issue.fields.description === undefined) {
@@ -1635,6 +1677,7 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
             await assertPilotWritesAllowed('issue_description_update_local');
             const localUpdated = await updateLocalIssueDescription(localKey, localDescriptionWithRef);
             if (localUpdated) {
+              localDescriptionWritten = true;
               await recordDestinationWrite({
                 orgId,
                 localKey,
@@ -1680,7 +1723,12 @@ async function updateRemoteIssueForOrgUnlocked(localKey, remoteKey, issue, org, 
         }
 
         await resolveCounterpartStatus({ orgId, localKey, remoteKey });
-        await setLastSyncedLocalUpdated(localKey, issue.fields.updated, orgId);
+        const lastSyncedLocalUpdated = await resolveLastSyncedLocalUpdated(
+          localKey,
+          issue.fields.updated,
+          localDescriptionWritten
+        );
+        await setLastSyncedLocalUpdated(localKey, lastSyncedLocalUpdated, orgId);
         await recordLatestAccepted({
           orgId,
           direction: 'local-to-remote',
