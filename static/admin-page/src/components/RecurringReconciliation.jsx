@@ -7,6 +7,7 @@ import SectionMessage from '@atlaskit/section-message';
 import Spinner from '@atlaskit/spinner';
 import Lozenge from '@atlaskit/lozenge';
 import { token } from '@atlaskit/tokens';
+import { toReconciliationSavePayload } from '../reconciliation-save-payload';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -118,7 +119,9 @@ const RecurringReconciliation = ({ selectedOrg, showMessage, onSettingsSaved }) 
     try {
       const result = await invoke('saveRecurringReconciliationSettings', {
         orgId,
-        settings: draft
+        // Only editable fields are accepted by the resolver; draft also carries
+        // server-owned metadata (version) copied from the status response.
+        settings: toReconciliationSavePayload(draft)
       });
       if (result?.success) {
         setDraft(result.settings);

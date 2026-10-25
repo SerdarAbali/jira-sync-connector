@@ -107,6 +107,7 @@ import {
   isConnectorGeneratedComment
 } from '../src/utils/adf.js';
 import { __queuePush as queuePush } from '@forge/events';
+import { toReconciliationSavePayload } from '../static/admin-page/src/reconciliation-save-payload.js';
 
 const mockStore = kvsStore.__store;
 
@@ -191,6 +192,32 @@ describe('recurring reconciliation settings', () => {
       reconciliationFailureThreshold: 3,
       remoteScan: true
     })).toThrow(/not a supported/);
+  });
+
+  test('accepts a save payload built from the status settings, rejects the raw echo', async () => {
+    const status = await getRecurringReconciliationStatus({ orgId: ORG.id });
+    // The status response carries the server-owned `version` metadata.
+    expect(status.settings.version).toBe(1);
+
+    // Echoing the status object verbatim is what the admin panel used to send.
+    const echoed = await saveRecurringReconciliationSettings({
+      orgId: ORG.id,
+      settings: { ...status.settings, recurringReconciliationEnabled: true }
+    });
+    expect(echoed.success).toBe(false);
+    expect(echoed.code).toBe('RECONCILIATION_INVALID_SETTINGS');
+
+    // Sending only the editable fields is accepted.
+    const result = await saveRecurringReconciliationSettings({
+      orgId: ORG.id,
+      settings: toReconciliationSavePayload({
+        ...status.settings,
+        recurringReconciliationEnabled: true
+      })
+    });
+    expect(result.success).toBe(true);
+    expect(result.settings.recurringReconciliationEnabled).toBe(true);
+    expect(result.settings.version).toBe(1);
   });
 
   test('disabling cancels an active run without reversing completed writes', async () => {
