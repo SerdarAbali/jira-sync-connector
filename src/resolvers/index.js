@@ -8,6 +8,8 @@ import { defineDiagnosticsResolvers } from './diagnostics.js';
 import { defineSetupResolvers } from './setup.js';
 import { defineRecoveryResolvers } from './recovery.js';
 import { defineReconciliationResolvers } from './reconciliation.js';
+import { defineReadinessResolvers } from './readiness.js';
+import { defineLeaseMigrationResolvers } from './lease-migration.js';
 import { createAuthorizedResolver } from './authorization.js';
 
 const resolver = createAuthorizedResolver();
@@ -24,6 +26,8 @@ defineDiagnosticsResolvers(resolver);
 defineSetupResolvers(resolver);
 defineRecoveryResolvers(resolver);
 defineReconciliationResolvers(resolver);
+defineReadinessResolvers(resolver);
+defineLeaseMigrationResolvers(resolver);
 
 export const registeredResolverNames = resolver.getRegisteredNames();
 

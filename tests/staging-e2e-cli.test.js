@@ -17,6 +17,10 @@ const path = require('path');
 const { USAGE, runCli } = require('../scripts/staging/lib/e2e-cli');
 const { E2E_WRITE_CONFIRMATION } = require('../scripts/staging/lib/e2e-config');
 const { EXPECTED_APP_ID } = require('../scripts/staging/lib/e2e-evidence');
+const {
+  bindReadinessResponse,
+  readForgeAdminReadiness,
+} = require('../scripts/staging/lib/forge-admin-readiness');
 const { E2E_EXIT_CODES } = require('../scripts/staging/lib/e2e-runner');
 const {
   E2E_LATEST_REPORT_NAME,
@@ -31,6 +35,9 @@ const LOCAL_HOST = 'localstaging.atlassian.net';
 const REMOTE_HOST = 'remotestaging.atlassian.net';
 const FIXED_NOW = Date.parse('2026-10-24T12:00:00.000Z');
 const RECENT_MS = 30 * 1000;
+const APP_UUID = EXPECTED_APP_ID.slice('ari:cloud:ecosystem::app/'.length);
+const INSTALLATION_ID = '974910c5-2861-4d40-a7eb-37802842d0a0';
+const ENVIRONMENT_ID = 'c2d7a8e4-2f1b-4a6e-9d3d-0f7e7a0b1234';
 
 function siteConfig(role, projects) {
   const host = role === 'local' ? LOCAL_HOST : REMOTE_HOST;
@@ -63,6 +70,8 @@ function stagingConfig(workspace, e2eOverrides = {}) {
       writeMode: '',
       evidenceFile: 'artifacts/staging-e2e/readiness.json',
       environment: 'staging',
+      forgeInstallationId: INSTALLATION_ID,
+      forgeEnvironmentId: ENVIRONMENT_ID,
       localProject: null,
       remoteProject: null,
       issueType: 'Task',
@@ -121,15 +130,83 @@ function readinessDocument(mutate) {
 }
 
 /**
- * Test-only authenticated connector verification. Production code never builds
- * one: the CLI exposes no flag, environment variable or file for it.
+ * The production readiness gate is fail-closed: no CLI flag, environment
+ * variable, file or option can supply verified connector readiness, and
+ * `readForgeAdminReadiness()` always rejects. These tests still need to exercise
+ * the pass/blocked reporting paths, so they simulate the *future* authenticated
+ * adapter at the module boundary only:
+ *
+ *  - the adapter resolver returns a payload the test bound to the expected app,
+ *    installation, environment and site (`bindReadinessResponse`);
+ *  - the readiness evaluator records that simulated adapter as verification.
+ *
+ * The CLI and runner call sites are unchanged. Tests that do not call
+ * `adapterVerifies()` exercise the real fail-closed behavior.
  */
-function connectorVerification(mutate) {
+const mockReadinessAdapter = { mode: 'unavailable', facts: null };
+
+jest.mock('../scripts/staging/lib/forge-admin-readiness', () => {
+  const actual = jest.requireActual('../scripts/staging/lib/forge-admin-readiness');
+  return {
+    ...actual,
+    readForgeAdminReadiness: jest.fn(async () => {
+      if (mockReadinessAdapter.mode === 'verified') {
+        return mockReadinessAdapter.facts;
+      }
+      const error = new Error('Simulated authenticated readiness adapter state.');
+      error.code = actual.AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE;
+      throw error;
+    }),
+  };
+});
+
+jest.mock('../scripts/staging/lib/e2e-evidence', () => {
+  const actual = jest.requireActual('../scripts/staging/lib/e2e-evidence');
+  return {
+    ...actual,
+    validateReadiness: (options = {}) => {
+      const evaluated = actual.validateReadiness(options);
+      if (mockReadinessAdapter.mode !== 'verified') {
+        return evaluated;
+      }
+      return {
+        ...evaluated,
+        status: 'verified',
+        reasons: evaluated.reasons.filter((entry) => entry.severity !== 'block'),
+        summary: {
+          ...evaluated.summary,
+          readinessBasis: actual.READINESS_BASIS.VERIFIED,
+          verification: { adapter: 'simulated-authenticated-browser' },
+          attestation: {
+            ...evaluated.summary.attestation,
+            verified: true,
+            note: 'Simulated adapter verification: CLI tests only.',
+          },
+        },
+      };
+    },
+  };
+});
+
+beforeEach(() => {
+  mockReadinessAdapter.mode = 'unavailable';
+  mockReadinessAdapter.facts = null;
+  readForgeAdminReadiness.mockClear();
+});
+
+/** Payload a real authenticated adapter would return, before binding. */
+function readinessFacts(mutate) {
   const facts = {
+    success: true,
+    version: 1,
     source: 'authenticated-connector',
     capturedAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
-    appId: EXPECTED_APP_ID,
+    appAri: EXPECTED_APP_ID,
+    appId: APP_UUID,
+    appVersion: '3.0.0',
     environment: 'staging',
+    environmentId: ENVIRONMENT_ID,
+    installationId: INSTALLATION_ID,
     installedSites: [LOCAL_HOST],
     paused: false,
     f07: {
@@ -151,12 +228,27 @@ function connectorVerification(mutate) {
     webhook: {
       configured: true,
       lastReceiptAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
+      lastRotatedAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
+      receiptsAfterLatestRotation: true,
     },
   };
   if (typeof mutate === 'function') {
     mutate(facts);
   }
   return facts;
+}
+
+/** Simulates the future authenticated adapter resolving verified readiness. */
+function adapterVerifies(mutate) {
+  mockReadinessAdapter.mode = 'verified';
+  mockReadinessAdapter.facts = bindReadinessResponse(readinessFacts(mutate), {
+    appAri: EXPECTED_APP_ID,
+    appId: APP_UUID,
+    installationId: INSTALLATION_ID,
+    environmentId: ENVIRONMENT_ID,
+    environmentType: 'staging',
+    siteHost: LOCAL_HOST,
+  });
 }
 
 function writeEvidence(workspace, document) {
@@ -387,13 +479,13 @@ describe('staging E2E CLI plan mode', () => {
       throw new Error('runE2E must not be called in plan mode');
     });
 
+    adapterVerifies();
     const result = await runCli({
       argv: ['--plan'],
       cwd: workspace.dir,
       env: {},
       loadConfig: loadedConfig(stagingConfig(workspace)),
       runE2E,
-      connectorVerification: connectorVerification(),
       now: () => FIXED_NOW,
       runId: 'e2e-jest-planrun',
       ...ui,
@@ -526,6 +618,8 @@ describe('staging E2E CLI plan mode', () => {
     expect(result.exitCode).toBe(E2E_EXIT_CODES.BLOCKED);
     expect(result.report.readiness.status).toBe('unknown');
     expect(codes).toContain('readiness-unverified');
+    // The gate never pretends the authenticated adapter ran.
+    expect(codes).toContain('authenticated-connector-adapter-unavailable');
   });
 
   it('blocks a plan when the local site has no connector installation', async () => {
@@ -586,13 +680,13 @@ describe('staging E2E CLI plan mode', () => {
     writeEvidence(workspace, readinessDocument());
     const ui = capture();
 
+    adapterVerifies();
     const result = await runCli({
       argv: ['--plan', '--json'],
       cwd: workspace.dir,
       env: {},
       loadConfig: loadedConfig(stagingConfig(workspace)),
       runE2E: jest.fn(),
-      connectorVerification: connectorVerification(),
       now: () => FIXED_NOW,
       runId: 'e2e-jest-planjson',
       ...ui,
@@ -609,13 +703,13 @@ describe('staging E2E CLI plan mode', () => {
     writeEvidence(workspace, readinessDocument());
     const ui = capture();
 
+    adapterVerifies();
     const result = await runCli({
       argv: ['--plan', '--no-report'],
       cwd: workspace.dir,
       env: {},
       loadConfig: loadedConfig(stagingConfig(workspace)),
       runE2E: jest.fn(),
-      connectorVerification: connectorVerification(),
       now: () => FIXED_NOW,
       ...ui,
     });
@@ -1068,6 +1162,52 @@ describe('staging E2E CLI readiness trust, interruption and redaction', () => {
     expect(ui.outText()).not.toContain('Staging E2E PASS');
   });
 
+  it('keeps --write blocked when a caller supplies a page, callback or facts', async () => {
+    const workspace = makeWorkspace();
+    writeEvidence(workspace, readinessDocument());
+    const jira = createReadOnlyJira();
+    const evaluate = jest.fn(async () => readinessFacts());
+    const ui = capture();
+
+    const result = await runCli({
+      argv: ['--write'],
+      cwd: workspace.dir,
+      env: {},
+      loadConfig: loadedConfig(
+        stagingConfig(workspace, { writeMode: E2E_WRITE_CONFIRMATION })
+      ),
+      // None of these may authorize a write: the CLI has no readiness input and
+      // the runner has no argument that supplies one.
+      readinessPage: {
+        url: () => `https://${LOCAL_HOST}/jira/apps/${APP_UUID}/admin`,
+        evaluate,
+      },
+      readiness: readinessFacts(),
+      connectorVerification: readinessFacts(),
+      request: jira.request,
+      now: () => FIXED_NOW,
+      sleep: async () => {},
+      ...ui,
+    });
+
+    expect(result.exitCode).toBe(E2E_EXIT_CODES.BLOCKED);
+    expect(result.status).toBe('blocked');
+    expect(evaluate).not.toHaveBeenCalled();
+    // The only readiness acquisition is the server-side resolver, called with
+    // no caller object.
+    expect(readForgeAdminReadiness).toHaveBeenCalledWith();
+    expect(readForgeAdminReadiness).toHaveBeenCalledTimes(1);
+    expect(jira.calls).toHaveLength(0);
+    expect(result.report.mutations.attempted).toBe(0);
+    expect(result.report.readiness.status).toBe('unknown');
+    expect(result.report.readiness.summary.readinessBasis).toBe('unverified-claims');
+    expect(result.report.summary.e2eVerified).toBe(false);
+    const codes = result.report.readiness.reasons.map((entry) => entry.code);
+    expect(codes).toContain('authenticated-connector-adapter-unavailable');
+    expect(codes).toContain('readiness-unverified');
+    expect(ui.outText()).not.toContain('Staging E2E PASS');
+  });
+
   it('forwards an interruption predicate into the runner', async () => {
     const workspace = makeWorkspace();
     writeEvidence(workspace, readinessDocument());
@@ -1277,12 +1417,12 @@ describe('staging E2E CLI cancellation at the transport', () => {
         maxRetries: 1,
       };
 
+      adapterVerifies();
       const result = await runCli({
         argv: ['--write'],
         cwd: workspace.dir,
         env: {},
         loadConfig: loadedConfig(config),
-        connectorVerification: connectorVerification(),
         onReady: (ready) => {
           controller = ready;
         },

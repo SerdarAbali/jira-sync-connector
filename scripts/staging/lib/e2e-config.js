@@ -319,6 +319,8 @@ function buildE2EPlan(options = {}) {
       evidencePath: evidence.path,
       evidenceLabel: evidence.label,
       environment: e2e.environment,
+      forgeInstallationId: e2e.forgeInstallationId,
+      forgeEnvironmentId: e2e.forgeEnvironmentId,
       issueType: e2e.issueType,
       selectors: explicitPair,
       evidenceMaxAgeMs: e2e.evidenceMaxAgeMs,

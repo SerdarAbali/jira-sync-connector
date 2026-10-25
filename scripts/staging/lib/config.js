@@ -52,6 +52,8 @@ const OPTIONAL_KEYS = [
   'STAGING_E2E_WRITE_MODE',
   'STAGING_E2E_EVIDENCE_FILE',
   'STAGING_E2E_ENVIRONMENT',
+  'STAGING_E2E_FORGE_INSTALLATION_ID',
+  'STAGING_E2E_FORGE_ENVIRONMENT_ID',
   'STAGING_E2E_LOCAL_PROJECT',
   'STAGING_E2E_REMOTE_PROJECT',
   'STAGING_E2E_ISSUE_TYPE',
@@ -1039,6 +1041,12 @@ function buildConfig(env, options = {}) {
       ['development', 'staging'],
       issues
     ),
+    forgeInstallationId: typeof values.STAGING_E2E_FORGE_INSTALLATION_ID === 'string'
+      ? values.STAGING_E2E_FORGE_INSTALLATION_ID.trim()
+      : '',
+    forgeEnvironmentId: typeof values.STAGING_E2E_FORGE_ENVIRONMENT_ID === 'string'
+      ? values.STAGING_E2E_FORGE_ENVIRONMENT_ID.trim()
+      : '',
     localProject: readProjectSelector(values, 'STAGING_E2E_LOCAL_PROJECT', issues),
     remoteProject: readProjectSelector(values, 'STAGING_E2E_REMOTE_PROJECT', issues),
     issueType: e2eIssueType,

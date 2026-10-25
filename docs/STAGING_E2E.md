@@ -19,10 +19,12 @@ both, the run is recorded as `blocked`, no Jira client is created, and no
 request is sent.
 
 **Write mode is currently unreachable by design.** The confirmation authorizes
-a disposable-test execution, but it is not technical evidence. The connector
-facts a write run depends on cannot be verified from outside the connector yet,
-so `runE2E` blocks every write run with `readiness-unverified` even when the
-readiness bundle is complete and well formed (see
+a disposable-test execution, but it is not technical evidence. Connector facts
+cannot be verified from outside the connector yet: the authenticated readiness
+adapter is not implemented, so `readForgeAdminReadiness()` always rejects with
+`AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE` and `runE2E` blocks every write run
+with `readiness-unverified` even when the readiness bundle is complete and well
+formed (see
 [Readiness: claims versus verification](#readiness-claims-versus-verification)).
 
 ## Safety boundary
@@ -88,15 +90,27 @@ identity, accessible projects and permissions, but it cannot observe:
 - the connector's project mappings and comment feature flag;
 - whether a signed webhook was delivered and when.
 
-No supported authenticated interface exposes those facts to this runner: the
-connector ships an admin UI resolver and one inbound webhook trigger, and Forge
-storage (KVS / Custom Entity Store) has no external inspection endpoint. The
-runner therefore does not invent one.
+Jira REST cannot observe those facts, Forge storage has no external inspection
+endpoint, and this runner does not read connector storage. The connector exposes
+them only through the authenticated Forge admin resolver `getConnectorReadiness`
+(`ADMIN_READ`, Jira administrator required), which only a signed-in admin browser
+session can invoke.
+
+**That acquisition path is disabled and fails closed.** The staging runner calls
+`readForgeAdminReadiness()` from
+`scripts/staging/lib/forge-admin-readiness.js`. The function takes no arguments —
+no browser page, no `evaluate`/`invoke` callback, no facts object — and always
+rejects with `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE`, because no
+authenticated Forge admin browser adapter is implemented. A caller-supplied
+object could fabricate every fact the runner needs, so the path is not accepted at
+all instead of being validated more strictly. See
+[F07 administration and readiness](F07-ADMIN-READINESS.md).
 
 Consequently:
 
-- `validateReadiness` returns `unknown` for every claim-derived fact and adds
-  `readiness-unverified` plus one `<fact>-unverified` reason per fact.
+- Without an authenticated response, `validateReadiness` returns `unknown` for
+  every claim-derived fact and adds `readiness-unverified` plus one
+  `<fact>-unverified` reason per fact.
 - A dry run still performs its read-only Jira checks and reports the unverified
   connector facts separately; it never certifies synchronization.
 - A write run is blocked before any Jira client is created.
@@ -108,18 +122,38 @@ Consequently:
   execution only. It never substitutes for technical readiness evidence, and no
   flag, environment variable or file can promote a claim to verified.
 
-`validateReadiness` accepts a `verification` object whose `source` is
-`authenticated-connector`; its facts are validated with the same rules and it
-must be freshly captured. This is the integration seam, not a supported input:
-the CLI never builds one, and nothing on the command line or in the environment
-can supply it. Tests use it to exercise the verified branch offline.
+Every readiness input the runner receives — a `readiness` object, a readiness
+document, or a legacy `connectorVerification` — is treated as an operator claim.
+`validateReadiness` reports `READINESS_BASIS.CLAIMS`, adds
+`readiness-verification-unsupported` and `readiness-unverified`, downgrades each
+claim-derived check to `unknown`, and blocks write mode before a Jira client is
+created. The adapter failure itself is recorded as
+`authenticated-connector-adapter-unavailable`. No CLI flag, environment variable,
+file or run option supplies readiness facts, and the CLI never constructs a
+browser page, so production readiness is unavailable and write mode is blocked.
 
-The next feasible integration is an authenticated readiness endpoint inside the
-connector — for example a dedicated webtrigger or remote endpoint, protected by
-its own secret, that returns installation, pause, F07, mapping and webhook
-receipt state. Wiring it into `runE2E({ connectorVerification })` would make
-write mode reachable; until then, write-enabled synchronization testing stays
-blocked.
+`normalizeReadinessResponse()` and `bindReadinessResponse()` remain exported as
+pure validation building blocks for the future adapter. They validate the
+response shape and confidentiality (no credential material) and bind the expected
+app ARI/UUID, installation id, environment id, environment type and site host.
+Binding is validation, not authentication: calling it with your own object
+authenticates nothing, and a bound payload on its own still yields `unknown`,
+`unverified-claims` and no verification object.
+
+Future adapter contract (documented, not implemented):
+`createForgeAdminBrowserAdapter({ browser, siteHost, adminUrl })` returning
+`{ readConnectorReadiness() }`, whose raw payload must be passed through
+`bindReadinessResponse()`. The adapter owns the signed-in browser session and
+invokes `window.__syncConnectorReadinessInvoke()` exactly once. Until it exists,
+every write run stays `BLOCKED`.
+
+Any facts that do arrive are still validated by the same readiness rules: a
+paused connector, an inactive or invalid F07 state, a missing or ambiguous
+mapping, a malformed comment-sync preference, or a missing/stale signed-webhook
+receipt (including a receipt older than the latest signing-key rotation) keeps
+write mode blocked. Readiness is `ADMIN_READ` only; no E2E path can call the F07
+activation resolver.
+
 
 ## Connector topology
 
@@ -146,7 +180,9 @@ are:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `STAGING_E2E_EVIDENCE_FILE` | none | Relative path inside `artifacts/` to the readiness bundle. Required. |
-| `STAGING_E2E_ENVIRONMENT` | `staging` | Forge environment under test; must match the bundle. |
+| `STAGING_E2E_ENVIRONMENT` | `staging` | Forge environment under test; must match the readiness claim and would be bound by the future authenticated adapter. |
+| `STAGING_E2E_FORGE_INSTALLATION_ID` | none | Expected Forge installation id, bound by the future authenticated adapter. Without that adapter readiness stays a claim. |
+| `STAGING_E2E_FORGE_ENVIRONMENT_ID` | none | Expected Forge environment id, bound by the future authenticated adapter. Without that adapter readiness stays a claim. |
 | `STAGING_E2E_LOCAL_PROJECT` | none | Selects the local side of the project pair when the bundle maps several. |
 | `STAGING_E2E_REMOTE_PROJECT` | none | Selects the remote side; must be set together with the local selector. |
 | `STAGING_E2E_ISSUE_TYPE` | `Task` | Issue type created in both projects; must be creatable there. |
@@ -232,8 +268,9 @@ argument, and the runner additionally demands the confirmation value from the
 environment file or process environment. Setting `STAGING_E2E_WRITE_MODE`
 without `--write` still produces a dry run; setting `--write` without the exact
 value produces a `blocked` report with no Jira request. `--plan` and `--write`
-cannot be combined. Even with the exact value, write mode stays blocked until
-connector readiness can be verified by an authenticated interface.
+cannot be combined. Even with the exact value, write mode stays blocked: the
+authenticated readiness adapter is not implemented, so readiness is reported as
+`unverified-claims` and the run is blocked before a Jira client is created.
 
 Run the offline regression suite for the runner and the CLI:
 
@@ -322,9 +359,9 @@ local output.
 - `retained-unowned-children` lists the child keys that prevented deletion, so
   an operator can resolve them deliberately instead of the suite deleting
   another user's work.
-- The run report records the readiness basis (`unverified-claims` or
-  `authenticated-connector`), the reason codes behind a blocked or unknown
-  verdict, and the mutation log.
+- The run report records the readiness basis (only `unverified-claims` is
+  reachable today; `authenticated-connector` requires the future adapter), the
+  reason codes behind a blocked or unknown verdict, and the mutation log.
 
 ## Scope limits
 

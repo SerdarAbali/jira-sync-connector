@@ -191,6 +191,17 @@ export const App = () => {
     }
   }, [selectedOrgId]);
 
+  // Read-only automation handle for the authenticated readiness channel. Browser
+  // automation driving this signed-in admin page can read the ADMIN_READ
+  // readiness response; the F07 activation resolver is deliberately not exposed.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    window.__syncConnectorReadinessInvoke = () => invoke('getConnectorReadiness', {});
+    return () => {
+      delete window.__syncConnectorReadinessInvoke;
+    };
+  }, []);
+
   const loadOrganizations = async () => {
     setOrganizationsLoadState({ status: 'loading', message: '' });
     try {

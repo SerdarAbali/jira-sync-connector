@@ -32,6 +32,7 @@ const {
 const { loadEvidence, validateReadiness } = require('./e2e-evidence');
 const {
   E2E_EXIT_CODES,
+  acquireConnectorReadiness,
   buildScenarioDefinitions,
   createRunId,
   runE2E,
@@ -150,7 +151,8 @@ function buildPlanDocument(options) {
     config,
     settings,
     now: () => nowMs,
-    verification: options.connectorVerification,
+    readiness: options.readiness,
+    readinessFailure: options.readinessFailure,
   });
   if (evidenceLoad.length > 0) {
     readiness.reasons.unshift(...evidenceLoad);
@@ -251,6 +253,7 @@ async function runPlanMode(context) {
   const { config, settings, loaded, plan, stdout, stderr, now, random, state } = context;
   const runId = context.runId || createRunId(now(), random);
   const secrets = context.secrets || [];
+  const acquisition = await acquireConnectorReadiness();
   const built = buildPlanDocument({
     config,
     settings,
@@ -259,7 +262,8 @@ async function runPlanMode(context) {
     runId,
     nowMs: now(),
     evidence: context.evidence,
-    connectorVerification: context.connectorVerification,
+    readiness: acquisition.readiness,
+    readinessFailure: acquisition.failure,
     interrupted: Boolean(state.interrupted),
     signal: state.interrupted,
   });
@@ -350,7 +354,6 @@ async function runRunMode(context) {
       config,
       plan,
       evidence: context.evidence,
-      connectorVerification: context.connectorVerification,
       interrupted: () => state.interrupted !== null,
       interruptionSignal: () => state.interrupted,
       configIssues: Array.isArray(loaded.issues) ? loaded.issues : [],
@@ -553,7 +556,6 @@ async function runCli(options = {}) {
     state,
     runId: options.runId,
     evidence: options.evidence,
-    connectorVerification: options.connectorVerification,
     request: options.request,
     sleep: options.sleep,
     runE2E: options.runE2E || runE2E,

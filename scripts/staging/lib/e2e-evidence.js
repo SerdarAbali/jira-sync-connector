@@ -6,19 +6,19 @@
  * Trust model:
  * - A readiness bundle written by an operator is a *claim*. Jira REST cannot
  *   prove that the connector is installed, paused, migrated to F07, mapped or
- *   receiving signed webhooks, and this repository exposes no supported
- *   authenticated connector interface for those facts. Claims therefore never
- *   produce a verified readiness status.
- * - `verification` is the seam for such an interface. Only an object whose
- *   `source` is `authenticated-connector` is accepted, and its facts are
- *   validated with the same rules as claims. The CLI exposes no flag,
- *   environment variable or file that can supply verification.
- * - Without verification every connector fact is UNKNOWN, which blocks
- *   write-enabled synchronization testing while still allowing a read-only dry
- *   run and a plan preview.
+ *   receiving signed webhooks, so claims never produce a verified status.
+ * - The only accepted verification would be a fact set produced by an
+ *   authenticated Forge admin browser adapter. No such adapter is implemented,
+ *   so no caller-supplied value is accepted: raw facts, JSON files, a `source`
+ *   field, an object with `url()`/`evaluate()` members, a bare `evaluate`
+ *   callback and copied or serialized objects are all reported as unsupported.
+ * - Because verification is impossible, every connector fact is UNKNOWN. That
+ *   blocks write-enabled synchronization testing while still allowing a
+ *   read-only dry run and a plan preview.
  */
 
 const fs = require('fs');
+const { AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE } = require('./forge-admin-readiness');
 
 const EVIDENCE_KIND = 'jira-sync-connector-readiness';
 const EVIDENCE_SCHEMA_VERSION = '1.0';
@@ -218,152 +218,53 @@ function finalizeReadiness(checks, reasons, summary) {
     },
   };
 }
-
 /**
- * Accepts only an authenticated connector interface as a trustworthy source of
- * connector facts. Anything else is reported and ignored, so the run falls
- * back to unverified claims.
+ * Expected connector identity for this run. The app ARI is fixed by the
+ * manifest; the installation and Forge environment ids are deployment facts
+ * that must be configured for the staging site.
  */
-function readVerification(verification, options = {}) {
-  const now = options.now;
-  const settings = options.settings || {};
-  if (verification === undefined || verification === null) {
-    return { facts: null, issues: [] };
-  }
-  const unsupported = (message) =>
-    reason(
-      'unknown',
-      'readiness-verification-unsupported',
-      message,
-      'Supply connector facts only through a supported authenticated connector interface.'
-    );
-
-  if (!isPlainObject(verification) || verification.source !== VERIFICATION_SOURCE) {
-    return {
-      facts: null,
-      issues: [
-        unsupported(
-          'Connector readiness verification did not come from an authenticated connector interface.'
-        ),
-      ],
-    };
-  }
-
-  const capturedAtMs = parseTimestamp(verification.capturedAt);
-  const maxAgeMs = Number.isSafeInteger(settings.evidenceMaxAgeMs)
-    ? settings.evidenceMaxAgeMs
-    : 15 * 60 * 1000;
-  if (capturedAtMs === null) {
-    return {
-      facts: null,
-      issues: [
-        reason(
-          'unknown',
-          'readiness-verification-invalid',
-          'The connector verification has no valid capturedAt timestamp.',
-          'Re-read readiness from the authenticated connector interface.'
-        ),
-      ],
-    };
-  }
-  if (capturedAtMs > now + MAX_CLOCK_SKEW_MS) {
-    return {
-      facts: null,
-      issues: [
-        reason(
-          'unknown',
-          'readiness-verification-invalid',
-          'The connector verification is dated in the future.',
-          'Correct host clock skew and re-read readiness from the connector.'
-        ),
-      ],
-    };
-  }
-  if (now - capturedAtMs > maxAgeMs) {
-    return {
-      facts: null,
-      issues: [
-        reason(
-          'unknown',
-          'readiness-verification-stale',
-          'The connector verification is older than the configured freshness window.',
-          'Re-read readiness from the authenticated connector interface immediately before the run.'
-        ),
-      ],
-    };
-  }
-  if (!Array.isArray(verification.installedSites) || !Array.isArray(verification.mappings)) {
-    return {
-      facts: null,
-      issues: [
-        reason(
-          'unknown',
-          'readiness-verification-invalid',
-          'The connector verification does not describe installations and mappings.',
-          'Return installedSites and mappings from the authenticated connector interface.'
-        ),
-      ],
-    };
-  }
-
+function expectedConnectorIdentity(settings = {}) {
   return {
-    facts: {
-      capturedAt: verification.capturedAt,
-      appId: typeof verification.appId === 'string' ? verification.appId : null,
-      environment: typeof verification.environment === 'string' ? verification.environment : null,
-      installedSites: verification.installedSites.filter((entry) => typeof entry === 'string'),
-      paused: typeof verification.paused === 'boolean' ? verification.paused : null,
-      f07: isPlainObject(verification.f07) ? verification.f07 : null,
-      mappings: normalizeMappings(verification.mappings),
-      webhook: {
-        configured:
-          typeof verification.webhook?.configured === 'boolean'
-            ? verification.webhook.configured
-            : null,
-        lastReceiptAt:
-          typeof verification.webhook?.lastReceiptAt === 'string'
-            ? verification.webhook.lastReceiptAt
-            : null,
-      },
-    },
-    issues: [],
+    appAri: EXPECTED_APP_ID,
+    appId: EXPECTED_APP_ID.slice('ari:cloud:ecosystem::app/'.length),
+    installationId: typeof settings.forgeInstallationId === 'string'
+      ? settings.forgeInstallationId.trim()
+      : '',
+    environmentId: typeof settings.forgeEnvironmentId === 'string'
+      ? settings.forgeEnvironmentId.trim()
+      : '',
+    environmentType: typeof settings.environment === 'string' ? settings.environment : '',
   };
 }
 
 /**
- * Presents authenticated facts in the same shape the claim validation already
- * consumes, so both sources are validated by one set of rules.
+ * Connector readiness verification is unavailable.
+ *
+ * No authenticated Forge admin browser adapter is implemented, so no value that
+ * reaches the runner can be authenticated: an object with `url()`/`evaluate()`
+ * members, a bare callback, a rendered report and a facts document are all
+ * writable by the same caller that asks for writes. Accepting any of them as
+ * verification would let that caller issue its own authorization, so all of
+ * them are reported as unsupported instead of being inspected for a plausible
+ * shape.
  */
-function documentFromVerification(facts) {
+function readReadiness(readiness) {
+  if (readiness === undefined || readiness === null) {
+    return { facts: null, issues: [] };
+  }
   return {
-    kind: EVIDENCE_KIND,
-    schemaVersion: EVIDENCE_SCHEMA_VERSION,
-    generatedAt: facts.capturedAt,
-    source: VERIFICATION_SOURCE,
-    capturedBy: null,
-    connector: {
-      appId: facts.appId,
-      installationStatus: facts.installedSites.length > 0 ? 'installed' : null,
-      installedSites: facts.installedSites,
-      environment: facts.environment,
-    },
-    pause: { paused: facts.paused },
-    f07: facts.f07,
-    organizations: facts.mappings.map((mapping) => ({
-      orgId: mapping.orgId,
-      syncDirection: mapping.syncDirection,
-      features: { syncComments: mapping.syncComments },
-      projectMappings: [
-        {
-          localProjectKey: mapping.localProjectKey,
-          remoteProjectKey: mapping.remoteProjectKey,
-        },
-      ],
-    })),
-    webhook: {
-      configured: facts.webhook.configured,
-      lastReceipt: { receivedAt: facts.webhook.lastReceiptAt },
-    },
+    facts: null,
+    issues: [
+      reason(
+        'unknown',
+        'readiness-verification-unsupported',
+        'Connector readiness verification is unavailable '
+          + `(${AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE}): no authenticated Forge admin `
+          + 'browser adapter is implemented, so supplied readiness facts cannot be verified.',
+        'Keep the run read-only until an authenticated Forge admin browser adapter is '
+          + 'implemented; see docs/F07-ADMIN-READINESS.md.'
+      ),
+    ],
   };
 }
 
@@ -416,15 +317,45 @@ function validateReadiness(options = {}) {
   const config = options.config || {};
   const settings = options.settings || {};
   const now = typeof options.now === 'function' ? options.now() : Date.now();
-  const verification = readVerification(options.verification, { now, settings });
-  const basis = verification.facts ? READINESS_BASIS.VERIFIED : READINESS_BASIS.CLAIMS;
-  // An authenticated verification is authoritative; the claim document is then
-  // only a carrier and its claims are not used.
-  const document = verification.facts
-    ? documentFromVerification(verification.facts)
-    : options.document;
+  const verification = readReadiness(options.readiness);
+  // Verification is impossible without the authenticated browser adapter, so a
+  // readiness document is always treated as a set of operator claims.
+  const basis = READINESS_BASIS.CLAIMS;
+  const document = options.document;
   const checks = [];
   const reasons = [...verification.issues];
+  if (options.readinessFailure) {
+    const failureCode = typeof options.readinessFailure.code === 'string'
+      ? options.readinessFailure.code
+      : 'READINESS_VERIFICATION_FAILED';
+    if (failureCode === AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE) {
+      reasons.unshift(
+        reason(
+          'unknown',
+          'authenticated-connector-adapter-unavailable',
+          `Authenticated connector readiness is unavailable (${AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE}): `
+            + 'no authenticated Forge admin browser adapter is implemented.',
+          'Writes stay blocked until an authenticated Forge admin browser adapter is implemented; '
+            + 'see docs/F07-ADMIN-READINESS.md.'
+        )
+      );
+    } else {
+      const identityFailure = new Set([
+        'READINESS_APP_MISMATCH',
+        'READINESS_INSTALLATION_MISMATCH',
+        'READINESS_ENVIRONMENT_ID_MISMATCH',
+        'READINESS_ENVIRONMENT_MISMATCH',
+      ]).has(failureCode);
+      reasons.unshift(
+        reason(
+          identityFailure ? 'block' : 'unknown',
+          'readiness-verification-failed',
+          `Authenticated connector readiness could not be obtained (${failureCode}).`,
+          'Keep the run read-only until the authenticated connector adapter reports readiness.'
+        )
+      );
+    }
+  }
   const summary = {
     environment: settings.environment || null,
     generatedAt: null,
@@ -437,9 +368,7 @@ function validateReadiness(options = {}) {
     selected: null,
     syncComments: null,
     readinessBasis: basis,
-    verification: verification.facts
-      ? { source: VERIFICATION_SOURCE, capturedAt: verification.facts.capturedAt }
-      : null,
+    verification: null,
     attestation: {
       source: null,
       capturedBy: null,
@@ -800,12 +729,14 @@ function validateReadiness(options = {}) {
 
   const webhook = isPlainObject(document.webhook) ? document.webhook : null;
   const receiptMs = parseTimestamp(webhook?.lastReceipt?.receivedAt);
+  const rotatedMs = parseTimestamp(webhook?.lastRotatedAt);
   summary.webhook = {
     required: selected ? selected.syncDirection === 'bidirectional' : null,
     configured: typeof webhook?.configured === 'boolean' ? webhook.configured : null,
     lastReceiptAt: typeof webhook?.lastReceipt?.receivedAt === 'string'
       ? webhook.lastReceipt.receivedAt
       : null,
+    lastRotatedAt: typeof webhook?.lastRotatedAt === 'string' ? webhook.lastRotatedAt : null,
     lastReceiptAgeMs: receiptMs === null ? null : now - receiptMs,
   };
 
@@ -823,6 +754,16 @@ function validateReadiness(options = {}) {
         'Configure the webhook in the connector admin page and re-export readiness evidence.'
       )
     );
+  } else if (webhook?.rotationMetadataValid === false) {
+    checks.push(check('webhook', 'block', 'Signing-key rotation metadata is malformed.'));
+    reasons.push(
+      reason(
+        'block',
+        'webhook-rotation-invalid',
+        'The stored signing-key rotation metadata is malformed, so webhook delivery cannot be certified.',
+        'Repair the signing-key rotation metadata before relying on the webhook receipt.'
+      )
+    );
   } else if (receiptMs === null) {
     checks.push(check('webhook', 'unknown', 'No authenticated webhook receipt is attested.'));
     reasons.push(
@@ -831,6 +772,16 @@ function validateReadiness(options = {}) {
         'webhook-receipt-missing',
         'The readiness bundle has no authenticated webhook receipt.',
         'Trigger a harmless remote update and export the recorded webhook receipt.'
+      )
+    );
+  } else if (rotatedMs !== null && receiptMs < rotatedMs) {
+    checks.push(check('webhook', 'block', 'The webhook receipt predates the signing-key rotation.'));
+    reasons.push(
+      reason(
+        'block',
+        'webhook-receipt-predates-rotation',
+        'The authenticated webhook receipt predates the latest signing-key rotation and does not prove the current secret works.',
+        'Trigger a harmless remote update with the current signing secret and capture a new receipt.'
       )
     );
   } else {
@@ -862,19 +813,12 @@ function validateReadiness(options = {}) {
     }
   }
 
-  if (basis === READINESS_BASIS.CLAIMS) {
-    downgradeClaims(checks, reasons);
-    summary.attestation = {
-      ...summary.attestation,
-      note: 'Readiness is operator-claimed. No authenticated connector interface is available to verify installation, pause, F07 migration, mapping or signed-webhook delivery.',
-    };
-  } else {
-    summary.attestation = {
-      ...summary.attestation,
-      source: VERIFICATION_SOURCE,
-      note: 'Readiness was read from an authenticated connector interface and cross-checked against read-only Jira APIs.',
-    };
-  }
+  // Verification is unavailable, so every claim-derived pass is downgraded.
+  downgradeClaims(checks, reasons);
+  summary.attestation = {
+    ...summary.attestation,
+    note: 'Readiness is operator-claimed. No authenticated Forge admin browser adapter is available to verify installation, pause, F07 migration, mapping or signed-webhook delivery.',
+  };
 
   return finalizeReadiness(checks, reasons, summary);
 }
@@ -887,6 +831,7 @@ module.exports = {
   MAX_CLOCK_SKEW_MS,
   READINESS_BASIS,
   VERIFICATION_SOURCE,
+  expectedConnectorIdentity,
   loadEvidence,
   normalizeMappings,
   selectProjectPair,

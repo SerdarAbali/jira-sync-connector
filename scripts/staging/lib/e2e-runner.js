@@ -22,6 +22,10 @@ const {
   textToAdf,
 } = require('./e2e-api');
 const { EXPECTED_APP_ID, loadEvidence, validateReadiness } = require('./e2e-evidence');
+const {
+  AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE,
+  readForgeAdminReadiness,
+} = require('./forge-admin-readiness');
 const { collectCredentialSecrets, redactText } = require('./redact');
 
 const REPORT_KIND = 'jira-sync-staging-e2e';
@@ -1305,6 +1309,32 @@ function blockAllScenarios(ctx, reason) {
   });
 }
 
+/**
+ * Acquires connector readiness for a run.
+ *
+ * There is no argument that can supply it. A caller-provided object with
+ * `url()`/`evaluate()` members (or a bare callback) is indistinguishable from a
+ * fabricated one, so it is not accepted at all; the acquisition call below
+ * always fails with `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE` until a real
+ * authenticated browser adapter exists. The failure is recorded and the run
+ * stays blocked instead of silently continuing as verified.
+ */
+async function acquireConnectorReadiness() {
+  try {
+    return { readiness: await readForgeAdminReadiness(), failure: null };
+  } catch (error) {
+    return {
+      readiness: null,
+      failure: {
+        code: typeof error?.code === 'string'
+          ? error.code
+          : AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE,
+      },
+    };
+  }
+}
+
+
 function evaluateReadiness(ctx, options) {
   let document = null;
   const loadIssues = [];
@@ -1324,7 +1354,8 @@ function evaluateReadiness(ctx, options) {
     config: ctx.config,
     settings: ctx.settings,
     now: ctx.now,
-    verification: options.connectorVerification,
+    readiness: options.readiness,
+    readinessFailure: options.readinessFailure,
   });
 
   if (loadIssues.length > 0) {
@@ -1382,7 +1413,12 @@ async function runE2E(options = {}) {
     summary: { selected: { syncDirection: 'bidirectional' }, syncComments: true },
   }).map(scenarioResult);
 
-  ctx.readiness = evaluateReadiness(ctx, options);
+  const readinessAcquisition = await acquireConnectorReadiness();
+  ctx.readiness = evaluateReadiness(ctx, {
+    evidence: options.evidence,
+    readiness: readinessAcquisition.readiness,
+    readinessFailure: readinessAcquisition.failure,
+  });
 
   const finish = (status, reason) => {
     const report = buildReport(ctx, {
@@ -1953,6 +1989,7 @@ module.exports = {
   E2E_EXIT_CODES,
   REPORT_KIND,
   REPORT_SCHEMA_VERSION,
+  acquireConnectorReadiness,
   buildScenarioDefinitions,
   cleanupFixtures,
   createMarker,

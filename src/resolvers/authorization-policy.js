@@ -103,7 +103,13 @@ export const RESOLVER_POLICIES = Object.freeze({
   saveRecurringReconciliationSettings: 'ADMIN_WRITE',
   getRecurringReconciliationAttention: 'ADMIN_READ',
   acknowledgeRecurringReconciliationAttention: 'ADMIN_WRITE',
-  resolveRecurringReconciliationAttention: 'ADMIN_WRITE'
+  resolveRecurringReconciliationAttention: 'ADMIN_WRITE',
+
+  // Installation readiness and the separately gated F07 migration control.
+  // Readiness never returns credentials; activation is refused by automated
+  // E2E tooling and never exposed as a read or a default action.
+  getConnectorReadiness: 'ADMIN_READ',
+  activateIssueLeaseMigration: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {

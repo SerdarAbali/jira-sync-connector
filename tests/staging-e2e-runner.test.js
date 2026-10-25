@@ -25,6 +25,10 @@ const {
   textToAdf,
 } = require('../scripts/staging/lib/e2e-api');
 const { EXPECTED_APP_ID, validateReadiness } = require('../scripts/staging/lib/e2e-evidence');
+const {
+  AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE,
+  bindReadinessResponse,
+} = require('../scripts/staging/lib/forge-admin-readiness');
 const { runE2E, cleanupFixtures } = require('../scripts/staging/lib/e2e-runner');
 const {
   E2E_LATEST_REPORT_NAME,
@@ -38,6 +42,9 @@ const LOCAL_HOST = 'localstaging.atlassian.net';
 const REMOTE_HOST = 'remotestaging.atlassian.net';
 const FIXED_NOW = Date.parse('2026-10-24T12:00:00.000Z');
 const RECENT_MS = 30 * 1000;
+const APP_UUID = EXPECTED_APP_ID.slice('ari:cloud:ecosystem::app/'.length);
+const INSTALLATION_ID = '974910c5-2861-4d40-a7eb-37802842d0a0';
+const ENVIRONMENT_ID = 'c2d7a8e4-2f1b-4a6e-9d3d-0f7e7a0b1234';
 
 function siteConfig(role, projects) {
   const host = role === 'local' ? LOCAL_HOST : REMOTE_HOST;
@@ -67,6 +74,8 @@ function runnerSettings(overrides = {}) {
   return {
     mode: 'dry-run',
     environment: 'staging',
+    forgeInstallationId: INSTALLATION_ID,
+    forgeEnvironmentId: ENVIRONMENT_ID,
     issueType: 'Task',
     selectors: null,
     evidenceMaxAgeMs: 15 * 60 * 1000,
@@ -130,16 +139,90 @@ function readinessDocument(mutate) {
 }
 
 /**
- * A connector verification object represents the *authenticated* interface the
- * runner is allowed to trust. Today no such interface exists, so production
- * code never supplies one; tests use it to exercise the verified branch.
+ * The production readiness gate is fail-closed: `readForgeAdminReadiness()`
+ * always rejects and `validateReadiness()` always downgrades to operator claims,
+ * so a write-enabled run cannot execute at all today. The write-execution tests
+ * below still have to exercise the executor, so they simulate the *future*
+ * authenticated browser adapter at the module boundary:
+ *
+ *  - the adapter resolver returns a payload the test bound to the expected app,
+ *    installation, environment and site (`bindReadinessResponse`);
+ *  - the readiness evaluator records that simulated adapter as verification.
+ *
+ * The runner and CLI call sites are unchanged, and no run option re-opens access
+ * to caller-supplied readiness. Every test that does not opt in exercises the
+ * real fail-closed behavior.
  */
-function connectorVerification(mutate) {
+const mockReadinessAdapter = { mode: 'unavailable', code: null, facts: null };
+
+jest.mock('../scripts/staging/lib/forge-admin-readiness', () => {
+  const actual = jest.requireActual('../scripts/staging/lib/forge-admin-readiness');
+  return {
+    ...actual,
+    readForgeAdminReadiness: jest.fn(async () => {
+      if (mockReadinessAdapter.mode === 'verified') {
+        return mockReadinessAdapter.facts;
+      }
+      const error = new Error('Simulated authenticated readiness adapter state.');
+      error.code = mockReadinessAdapter.mode === 'failure'
+        ? mockReadinessAdapter.code
+        : actual.AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE;
+      throw error;
+    }),
+  };
+});
+
+jest.mock('../scripts/staging/lib/e2e-evidence', () => {
+  const actual = jest.requireActual('../scripts/staging/lib/e2e-evidence');
+  return {
+    ...actual,
+    validateReadiness: (options = {}) => {
+      const evaluated = actual.validateReadiness(options);
+      if (mockReadinessAdapter.mode !== 'verified') {
+        return evaluated;
+      }
+      return {
+        ...evaluated,
+        status: 'verified',
+        reasons: evaluated.reasons.filter((entry) => entry.severity !== 'block'),
+        summary: {
+          ...evaluated.summary,
+          readinessBasis: actual.READINESS_BASIS.VERIFIED,
+          verification: { adapter: 'simulated-authenticated-browser' },
+          attestation: {
+            ...evaluated.summary.attestation,
+            verified: true,
+            note: 'Simulated adapter verification: write-path tests only.',
+          },
+        },
+      };
+    },
+  };
+});
+
+beforeEach(() => {
+  mockReadinessAdapter.mode = 'unavailable';
+  mockReadinessAdapter.code = null;
+  mockReadinessAdapter.facts = null;
+});
+
+/**
+ * Raw payload a real authenticated adapter would return. Tests mutate a copy and
+ * bind it to the expected identity, so the simulated adapter cannot skip the
+ * binding contract the future implementation has to satisfy.
+ */
+function readinessFacts(mutate) {
   const facts = {
+    success: true,
+    version: 1,
     source: 'authenticated-connector',
     capturedAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
-    appId: EXPECTED_APP_ID,
+    appAri: EXPECTED_APP_ID,
+    appId: APP_UUID,
+    appVersion: '3.0.0',
     environment: 'staging',
+    environmentId: ENVIRONMENT_ID,
+    installationId: INSTALLATION_ID,
     installedSites: [LOCAL_HOST],
     paused: false,
     f07: {
@@ -161,12 +244,44 @@ function connectorVerification(mutate) {
     webhook: {
       configured: true,
       lastReceiptAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
+      lastRotatedAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
+      receiptsAfterLatestRotation: true,
     },
   };
   if (typeof mutate === 'function') {
     mutate(facts);
   }
   return facts;
+}
+
+function readinessExpectation(overrides = {}) {
+  return {
+    appAri: EXPECTED_APP_ID,
+    appId: APP_UUID,
+    installationId: INSTALLATION_ID,
+    environmentId: ENVIRONMENT_ID,
+    environmentType: 'staging',
+    siteHost: LOCAL_HOST,
+    ...overrides,
+  };
+}
+
+function boundReadinessFacts(mutate) {
+  return bindReadinessResponse(readinessFacts(mutate), readinessExpectation());
+}
+
+/** Simulates the future authenticated adapter resolving verified readiness. */
+function adapterVerifies(mutate) {
+  mockReadinessAdapter.mode = 'verified';
+  mockReadinessAdapter.code = null;
+  mockReadinessAdapter.facts = boundReadinessFacts(mutate);
+}
+
+/** Simulates the adapter binding a payload and rejecting it. */
+function adapterRejects(code) {
+  mockReadinessAdapter.mode = 'failure';
+  mockReadinessAdapter.code = code;
+  mockReadinessAdapter.facts = null;
 }
 
 function virtualClock() {
@@ -652,15 +767,29 @@ function buildPlan(mode, overrides = {}) {
   };
 }
 
+/**
+ * Runs the E2E runner against the real fail-closed readiness gate.
+ *
+ * `options.adapter` simulates the future authenticated readiness adapter at the
+ * module boundary (see the mock comment above), never through run options:
+ *   - `{ facts: (facts) => {} }` binds that payload and treats it as verified;
+ *   - `{ code: 'READINESS_...' }` simulates the adapter rejecting a payload.
+ * Every other call gets `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE`, which is
+ * the only behavior production code can reach today.
+ */
 async function executeRun(options = {}) {
   const plan = options.plan || buildPlan(options.mode || 'dry-run', options.settings);
   const clock = virtualClock();
   const jira = options.jira || createFakeJira(options.fakeOptions);
+  if (options.adapter && options.adapter.code) {
+    adapterRejects(options.adapter.code);
+  } else if (options.adapter) {
+    adapterVerifies(options.adapter.facts);
+  }
   const result = await runE2E({
     config: options.config || runnerConfig(),
     plan,
     evidence: options.evidence,
-    connectorVerification: options.connectorVerification,
     interrupted: options.interrupted,
     signal: options.signal,
     configIssues: options.configIssues,
@@ -756,13 +885,14 @@ describe('staging E2E opt-in configuration', () => {
 describe('staging E2E readiness evidence', () => {
   const settings = runnerSettings();
 
-  function evaluate(document, extra = {}) {
+  async function evaluate(document, extra = {}) {
     return validateReadiness({
       document,
       config: runnerConfig(),
       settings: { ...settings, ...(extra.settings || {}) },
       now: () => FIXED_NOW,
-      verification: extra.verification,
+      readiness: extra.readiness,
+      readinessFailure: extra.readinessFailure,
     });
   }
 
@@ -771,20 +901,26 @@ describe('staging E2E readiness evidence', () => {
     expect(manifest).toContain(EXPECTED_APP_ID);
   });
 
-  it('verifies a fresh, unpaused, bidirectional staging bundle when the connector is authenticated', () => {
-    const readiness = evaluate(readinessDocument(), { verification: connectorVerification() });
-    expect(readiness.status).toBe('verified');
+  it('selects the staging pair from operator claims without claiming verification', async () => {
+    const readiness = await evaluate(readinessDocument(), { readiness: boundReadinessFacts() });
+    // A payload the caller bound and passed in is still only a claim: the gate
+    // never accepts readiness from run options, bound or not.
+    expect(readiness.status).toBe('unknown');
+    expect(readiness.summary.readinessBasis).toBe('unverified-claims');
+    expect(readiness.summary.verification).toBeNull();
+    expect(readiness.reasons.map((entry) => entry.code)).toContain(
+      'readiness-verification-unsupported'
+    );
     expect(readiness.summary.selected).toMatchObject({
       localProjectKey: 'STG',
       remoteProjectKey: 'RSTG',
       syncDirection: 'bidirectional',
     });
     expect(readiness.summary.syncComments).toBe(true);
-    expect(readiness.summary.readinessBasis).toBe('authenticated-connector');
   });
 
-  it('blocks when the connector is paused', () => {
-    const readiness = evaluate(
+  it('blocks when the connector is paused', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.pause.paused = true;
       })
@@ -793,8 +929,8 @@ describe('staging E2E readiness evidence', () => {
     expect(readiness.reasons.map((entry) => entry.code)).toContain('pause-active');
   });
 
-  it('degrades to unknown when the bundle is stale', () => {
-    const readiness = evaluate(
+  it('degrades to unknown when the bundle is stale', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.generatedAt = new Date(FIXED_NOW - 3 * 60 * 60 * 1000).toISOString();
       })
@@ -803,8 +939,8 @@ describe('staging E2E readiness evidence', () => {
     expect(readiness.reasons.map((entry) => entry.code)).toContain('evidence-stale');
   });
 
-  it('blocks when the bundle belongs to a different Forge app', () => {
-    const readiness = evaluate(
+  it('blocks when the bundle belongs to a different Forge app', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.connector.appId = 'ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000';
       })
@@ -813,8 +949,8 @@ describe('staging E2E readiness evidence', () => {
     expect(readiness.reasons.map((entry) => entry.code)).toContain('connector-app-mismatch');
   });
 
-  it('blocks when the bundle carries credential-shaped material', () => {
-    const readiness = evaluate(
+  it('blocks when the bundle carries credential-shaped material', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.apiToken = 'not-a-real-token';
       })
@@ -825,24 +961,19 @@ describe('staging E2E readiness evidence', () => {
     );
   });
 
-  it('verifies a push-only bundle without a webhook receipt', () => {
-    const readiness = evaluate(
+  it('selects a push-only bundle from claims without a webhook receipt', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.organizations[0].syncDirection = 'push';
         document.organizations[0].features.syncComments = false;
         document.webhook = { configured: true, lastReceipt: null };
-      }),
-      {
-        verification: connectorVerification((facts) => {
-          facts.mappings[0].syncDirection = 'push';
-          facts.mappings[0].syncComments = false;
-          facts.webhook = { configured: true, lastReceiptAt: null };
-        }),
-      }
+      })
     );
-    expect(readiness.status).toBe('verified');
+    expect(readiness.status).not.toBe('verified');
     expect(readiness.summary.selected.syncDirection).toBe('push');
     expect(readiness.summary.syncComments).toBe(false);
+    expect(readiness.summary.webhook).toMatchObject({ configured: true, required: false });
+    expect(readiness.reasons.map((entry) => entry.code)).toContain('webhook-unverified');
   });
 });
 
@@ -1049,7 +1180,7 @@ describe('staging E2E write execution', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
     });
 
     expect(result.status).toBe('pass');
@@ -1087,11 +1218,13 @@ describe('staging E2E write execution', () => {
     const result = await executeRun({
       mode: 'write',
       evidence,
-      connectorVerification: connectorVerification((facts) => {
-        facts.mappings[0].syncDirection = 'push';
-        facts.mappings[0].syncComments = false;
-        facts.webhook = { configured: true, lastReceiptAt: null };
-      }),
+      adapter: {
+        facts: (facts) => {
+          facts.mappings[0].syncDirection = 'push';
+          facts.mappings[0].syncComments = false;
+          facts.webhook = { configured: true, lastReceiptAt: null };
+        },
+      },
     });
 
     expect(result.status).toBe('pass');
@@ -1109,7 +1242,7 @@ describe('staging E2E write execution', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       jira,
     });
 
@@ -1192,18 +1325,19 @@ describe('staging E2E polling timeout budget', () => {
  * an authenticated connector interface may mark connector facts VERIFIED.
  */
 describe('staging E2E readiness trust boundary', () => {
-  function evaluate(document, extra = {}) {
+  async function evaluate(document, extra = {}) {
     return validateReadiness({
       document,
       config: runnerConfig(),
       settings: runnerSettings(),
       now: () => FIXED_NOW,
-      ...extra,
+      readiness: extra.readiness,
+      readinessFailure: extra.readinessFailure,
     });
   }
 
-  it('never verifies an operator-written all-green readiness file', () => {
-    const readiness = evaluate(readinessDocument());
+  it('never verifies an operator-written all-green readiness file', async () => {
+    const readiness = await evaluate(readinessDocument());
 
     expect(readiness.status).toBe('unknown');
     expect(readiness.summary.readinessBasis).toBe('unverified-claims');
@@ -1231,11 +1365,13 @@ describe('staging E2E readiness trust boundary', () => {
     expect(result.jira.mutations).toHaveLength(0);
   });
 
-  it('accepts an authenticated connector verification as readiness evidence', async () => {
+  it('accepts readiness only from the authenticated adapter, never from run options', async () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      // Stands in for the future adapter at the module boundary; the runner call
+      // site is unchanged and no run option can produce this state.
+      adapter: {},
     });
 
     expect(result.status).toBe('pass');
@@ -1244,9 +1380,49 @@ describe('staging E2E readiness trust boundary', () => {
     expect(result.report.summary.e2eVerified).toBe(true);
   });
 
-  it('refuses a verification object from an unsupported source', () => {
-    const readiness = evaluate(readinessDocument(), {
-      verification: { ...connectorVerification(), source: 'operator-pasted-json' },
+  it('blocks a write run whose readiness comes from caller-supplied options', async () => {
+    const forgedFacts = readinessFacts();
+    const result = await executeRun({
+      mode: 'write',
+      evidence: readinessDocument(),
+      // Everything a caller could try: a page handle, bare callbacks, raw facts,
+      // a payload bound by the caller, and a legacy verification object.
+      readinessPage: {
+        url: () => `https://${LOCAL_HOST}/jira/apps/${APP_UUID}/admin`,
+        evaluate: async () => forgedFacts,
+      },
+      page: { evaluate: async () => forgedFacts },
+      evaluate: async () => forgedFacts,
+      facts: forgedFacts,
+      readiness: boundReadinessFacts(),
+      connectorVerification: {
+        source: 'authenticated-connector',
+        facts: forgedFacts,
+        invocation: { resolver: 'getConnectorReadiness', pageHost: LOCAL_HOST },
+      },
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.exitCode).toBe(3);
+    expect(result.report.readiness.status).toBe('unknown');
+    expect(result.report.readiness.summary.readinessBasis).toBe('unverified-claims');
+    expect(result.report.readiness.reasons.map((entry) => entry.code)).toContain(
+      'authenticated-connector-adapter-unavailable'
+    );
+    expect(result.report.summary.e2eVerified).toBe(false);
+    expect(result.jira.requests).toHaveLength(0);
+    expect(result.jira.mutations).toHaveLength(0);
+  });
+
+  it('refuses a forged readiness object, even with an authenticated source claim', async () => {
+    const readiness = await evaluate(readinessDocument(), {
+      readiness: {
+        source: 'authenticated-connector',
+        capturedAt: new Date(FIXED_NOW - RECENT_MS).toISOString(),
+        appAri: EXPECTED_APP_ID,
+        installationId: INSTALLATION_ID,
+        environmentId: ENVIRONMENT_ID,
+      },
     });
 
     expect(readiness.status).toBe('unknown');
@@ -1255,57 +1431,125 @@ describe('staging E2E readiness trust boundary', () => {
     );
   });
 
-  it('treats a stale connector verification as unknown', () => {
-    const readiness = evaluate(readinessDocument(), {
-      verification: connectorVerification((facts) => {
+  it('treats a ready-looking adapter payload as unknown while no adapter exists', async () => {
+    const readiness = await evaluate(readinessDocument(), {
+      readiness: boundReadinessFacts((facts) => {
         facts.capturedAt = new Date(FIXED_NOW - 3 * 60 * 60 * 1000).toISOString();
       }),
     });
 
     expect(readiness.status).toBe('unknown');
-    expect(readiness.reasons.map((entry) => entry.code)).toContain('readiness-verification-stale');
+    expect(readiness.summary.readinessBasis).toBe('unverified-claims');
+    expect(readiness.reasons.map((entry) => entry.code)).toContain(
+      'readiness-verification-unsupported'
+    );
+  });
+
+  it('ignores a legacy verification object and never authorizes a write', async () => {
+    const result = await executeRun({
+      mode: 'write',
+      evidence: readinessDocument(),
+      // The removed test-only constructor is no longer a runner option. A
+      // caller that still passes one gets unverified claims, not a write.
+      connectorVerification: {
+        source: 'authenticated-connector',
+        facts: { appAri: EXPECTED_APP_ID, installationId: INSTALLATION_ID },
+        invocation: { resolver: 'getConnectorReadiness', pageHost: LOCAL_HOST },
+      },
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.exitCode).toBe(3);
+    expect(result.report.readiness.status).toBe('unknown');
+    expect(result.report.readiness.summary.readinessBasis).toBe('unverified-claims');
+    expect(result.jira.requests).toHaveLength(0);
+    expect(result.jira.mutations).toHaveLength(0);
+  });
+
+  it('blocks evidence the adapter binds to a previous installation', async () => {
+    const result = await executeRun({
+      mode: 'write',
+      evidence: readinessDocument(),
+      adapter: { code: 'READINESS_INSTALLATION_MISMATCH' },
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.exitCode).toBe(3);
+    expect(result.report.readiness.status).toBe('blocked');
+    expect(result.report.readiness.reasons.map((entry) => entry.code)).toContain(
+      'readiness-verification-failed'
+    );
+    expect(result.jira.requests).toHaveLength(0);
+    expect(result.jira.mutations).toHaveLength(0);
+  });
+
+  it('blocks evidence the adapter binds to a different Forge environment', async () => {
+    const result = await executeRun({
+      mode: 'write',
+      evidence: readinessDocument(),
+      adapter: { code: 'READINESS_ENVIRONMENT_ID_MISMATCH' },
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.report.readiness.status).toBe('blocked');
+    expect(result.report.readiness.reasons.map((entry) => entry.code)).toContain(
+      'readiness-verification-failed'
+    );
+    expect(result.jira.mutations).toHaveLength(0);
+  });
+
+  it('does not dispatch a caller-supplied evaluate callback', async () => {
+    const evaluateSpy = jest.fn(async () => readinessFacts());
+    const result = await executeRun({
+      mode: 'write',
+      evidence: readinessDocument(),
+      readinessPage: { evaluate: evaluateSpy },
+      page: { evaluate: evaluateSpy },
+    });
+
+    expect(evaluateSpy).not.toHaveBeenCalled();
+    expect(result.status).toBe('blocked');
+    expect(result.report.readiness.status).toBe('unknown');
+    expect(result.jira.requests).toHaveLength(0);
+    expect(result.jira.mutations).toHaveLength(0);
   });
 });
+
 
 /**
  * Defect 2: the connector runs on the local Jira site. Remote readiness is a
  * Jira REST connection plus webhook delivery, never a second installation.
  */
 describe('staging E2E connector topology', () => {
-  function evaluate(document, verification) {
+  async function evaluate(document) {
     return validateReadiness({
       document,
       config: runnerConfig(),
       settings: runnerSettings(),
       now: () => FIXED_NOW,
-      verification,
     });
   }
 
-  it('does not require a second Forge installation on the remote site', () => {
-    const readiness = evaluate(
+  it('does not require a second Forge installation on the remote site', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.connector.installedSites = [LOCAL_HOST];
-      }),
-      connectorVerification((facts) => {
-        facts.installedSites = [LOCAL_HOST];
       })
     );
 
-    expect(readiness.status).toBe('verified');
+    // Claims-only: topology is read from the bundle, so the run stays unverified
+    // while the remote site is still never treated as a second installation.
+    expect(readiness.status).not.toBe('verified');
     expect(readiness.summary.remoteInstallationRequired).toBe(false);
     expect(readiness.reasons.map((entry) => entry.code)).not.toContain(
       'connector-site-not-installed'
     );
   });
 
-  it('blocks when the local site has no connector installation', () => {
-    const readiness = evaluate(
+  it('blocks when the local site has no connector installation', async () => {
+    const readiness = await evaluate(
       readinessDocument((document) => {
         document.connector.installedSites = [REMOTE_HOST];
-      }),
-      connectorVerification((facts) => {
-        facts.installedSites = [REMOTE_HOST];
       })
     );
 
@@ -1313,16 +1557,12 @@ describe('staging E2E connector topology', () => {
     expect(readiness.reasons.map((entry) => entry.code)).toContain('connector-site-not-installed');
   });
 
-  it('keeps remote webhook readiness a separate requirement', () => {
-    const readiness = evaluate(
-      readinessDocument(),
-      connectorVerification((facts) => {
-        facts.webhook = { configured: true, lastReceiptAt: null };
-      })
-    );
+  it('keeps remote webhook readiness a separate, unverified requirement', async () => {
+    const readiness = await evaluate(readinessDocument());
 
     expect(readiness.status).toBe('unknown');
-    expect(readiness.reasons.map((entry) => entry.code)).toContain('webhook-receipt-missing');
+    expect(readiness.summary.webhook).toMatchObject({ configured: true, required: true });
+    expect(readiness.reasons.map((entry) => entry.code)).toContain('webhook-unverified');
   });
 });
 
@@ -1343,7 +1583,7 @@ describe('staging E2E interruption', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       interrupted: () => interrupted,
       jira,
     });
@@ -1397,7 +1637,7 @@ describe('staging E2E interruption', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       signal: controller.signal,
       jira,
     });
@@ -1423,7 +1663,7 @@ describe('staging E2E interruption', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       interrupted: () => interrupted,
       jira,
     });
@@ -1448,7 +1688,7 @@ describe('staging E2E interruption', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       interrupted: () => true,
     });
 
@@ -1501,7 +1741,7 @@ describe('staging E2E cancellation at the transport', () => {
         mode: 'write',
         config: runnerConfig({ maxRetries: 1 }),
         evidence: readinessDocument(),
-        connectorVerification: connectorVerification(),
+        adapter: {},
         interrupted: controller.interrupted,
         jira,
       });
@@ -1547,7 +1787,7 @@ describe('staging E2E cancellation at the transport', () => {
       mode: 'write',
       config: runnerConfig({ maxRetries: 1 }),
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       interrupted: controller.interrupted,
       jira,
     });
@@ -1612,7 +1852,7 @@ describe('staging E2E cancellation at the transport', () => {
       mode: 'write',
       config: runnerConfig({ maxRetries: 1 }),
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       jira,
     });
 
@@ -1849,7 +2089,7 @@ describe('staging E2E pagination completeness', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       jira,
     });
 
@@ -1886,7 +2126,7 @@ describe('staging E2E cleanup ownership', () => {
     const result = await executeRun({
       mode: 'write',
       evidence: readinessDocument(),
-      connectorVerification: connectorVerification(),
+      adapter: {},
       jira,
     });
 
