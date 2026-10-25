@@ -616,7 +616,7 @@ export async function buildRecoverySnapshot(options = {}) {
   const countsLine = stableStringify(counts);
   // The digest covers the counts as well as every exported record, so a file
   // whose counts were edited no longer verifies. Every covered line is
-  // newline-terminated so `head -n -1 <file> | shasum -a 256` reproduces it.
+  // newline-terminated so `sed '$d' <file> | shasum -a 256` reproduces it.
   const checksum = `sha256:${sha256Hex(`${[headerLine, ...recordLines, countsLine].join('\n')}\n`)}`;
 
   const footerLine = stableStringify({

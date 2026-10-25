@@ -54,7 +54,8 @@ the checksum.
 
 ```bash
 # Compare with the footer "checksum" value (ignore the "sha256:" prefix).
-head -n -1 pilot-org-org-1-recovery-snapshot-2026-02-03.ndjson | shasum -a 256
+# Removing only the last line works with both BSD/macOS and GNU sed.
+sed '$d' pilot-org-org-1-recovery-snapshot-2026-02-03.ndjson | shasum -a 256
 ```
 
 The checksum detects accidental corruption and edit-after-download tampering. It

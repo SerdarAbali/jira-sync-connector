@@ -513,7 +513,7 @@ describe('recovery snapshot contents', () => {
     );
 
     // Manual verification contract: every line except the final footer line,
-    // newline-terminated, is what `head -n -1 <file> | shasum -a 256` hashes.
+    // newline-terminated, is what `sed '$d' <file> | shasum -a 256` hashes.
     const allLines = result.content.split('\n');
     allLines.pop();
     const footerLine = allLines.pop();
