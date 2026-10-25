@@ -138,6 +138,22 @@ describe('recovery snapshot UI behaviour', () => {
     document.body.innerHTML = '';
   });
 
+  test('does not show the pause warning while the pause state is still loading', () => {
+    // An unresolved getPilotStatus call is the panel's initial state: the pause
+    // state is unknown, so no warning may be rendered yet.
+    invoke.mockImplementation(() => new Promise(() => {}));
+
+    const { container } = render(<RecoverySnapshot selectedOrg={ORG} showMessage={jest.fn()} />);
+
+    expect(container.textContent).not.toContain('Pause required');
+    expect(container.textContent).not.toContain('Writes active');
+    expect(container.textContent).not.toContain('Writes paused');
+    expect(container.textContent).not.toContain('Pause state could not be read');
+    expect(container.querySelector('button').disabled).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('getPilotStatus');
+    expect(invoke).not.toHaveBeenCalledWith('exportRecoverySnapshot', expect.anything());
+  });
+
   test('keeps the export disabled until writes are paused', async () => {
     invoke.mockResolvedValue({ success: true, paused: false });
 
@@ -147,8 +163,20 @@ describe('recovery snapshot UI behaviour', () => {
     const button = container.querySelector('button');
     expect(button.disabled).toBe(true);
     expect(container.textContent).toContain('Pause required');
+    expect(container.textContent).toContain('Writes active');
     expect(invoke).toHaveBeenCalledWith('getPilotStatus');
     expect(invoke).not.toHaveBeenCalledWith('exportRecoverySnapshot', expect.anything());
+  });
+
+  test('enables the export and drops the warning once the pause is confirmed', async () => {
+    invoke.mockResolvedValue({ success: true, paused: true });
+
+    const { container } = render(<RecoverySnapshot selectedOrg={ORG} showMessage={jest.fn()} />);
+    await act(async () => {});
+
+    expect(container.textContent).toContain('Writes paused');
+    expect(container.textContent).not.toContain('Pause required');
+    expect(container.querySelector('button').disabled).toBe(false);
   });
 
   test('downloads the server bytes and shows counts and identity', async () => {

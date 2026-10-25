@@ -160,7 +160,7 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
         </SectionMessage>
       )}
 
-      {orgId && pause.readable && !paused && (
+      {orgId && pause.readable && pause.paused === false && (
         <SectionMessage appearance="warning" title="Pause required">
           <p style={{ margin: 0 }}>{SNAPSHOT_PAUSE_REQUIRED_TEXT}</p>
         </SectionMessage>
