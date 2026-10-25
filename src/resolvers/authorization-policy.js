@@ -111,7 +111,12 @@ export const RESOLVER_POLICIES = Object.freeze({
   // E2E tooling and never exposed as a read or a default action.
   getConnectorReadiness: 'ADMIN_READ',
   activateIssueLeaseMigration: 'ADMIN_WRITE',
-  initializeFreshIssueLeases: 'ADMIN_WRITE'
+  initializeFreshIssueLeases: 'ADMIN_WRITE',
+
+  // Read-only, downloadable recovery snapshot of one organization's mappings
+  // and issue-create ledger (recovery-snapshot.js). It writes nothing, in Jira
+  // or in Forge storage, and requires the emergency pause to be in force.
+  exportRecoverySnapshot: 'ADMIN_READ'
 });
 
 export function getResolverPolicy(resolverName) {

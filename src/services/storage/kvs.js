@@ -153,6 +153,49 @@ export async function queryByPrefix(prefix, limit = 100) {
 }
 
 /**
+ * Read exactly one page for a key prefix.
+ *
+ * Unlike queryByPrefix() this never hides pagination state from the caller and
+ * never returns a silently shortened result. A caller that walks the cursor to
+ * null has proven the scan reached the end; anything else is an incomplete
+ * read. The page is rejected instead of returned when the SDK response cannot
+ * be interpreted, so a backup or audit consumer can fail closed.
+ *
+ * @param {string} prefix - Key prefix to search for
+ * @param {{cursor?: string|null, limit?: number}} [options]
+ * @returns {Promise<{records: Array<{key: string, value: any}>, nextCursor: string|null}>}
+ */
+export async function queryPageByPrefix(prefix, options = {}) {
+  const requested = Number(options.limit);
+  const limit = Number.isFinite(requested)
+    ? Math.max(1, Math.min(Math.floor(requested), 100))
+    : 100;
+
+  const query = kvs.query()
+    .where('key', WhereConditions.beginsWith(prefix))
+    .limit(limit);
+
+  if (options.cursor) {
+    query.cursor(options.cursor);
+  }
+
+  const response = await query.getMany();
+
+  if (!response || !Array.isArray(response.results)) {
+    const error = new Error('Storage prefix query returned an unreadable page');
+    error.code = 'STORAGE_PAGE_UNREADABLE';
+    throw error;
+  }
+
+  return {
+    records: response.results,
+    nextCursor: typeof response.nextCursor === 'string' && response.nextCursor
+      ? response.nextCursor
+      : null
+  };
+}
+
+/**
  * Create a transaction builder for atomic operations
  * Max 25 operations per transaction
  * 

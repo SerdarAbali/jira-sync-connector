@@ -118,4 +118,57 @@ describe('KVS wrapper', () => {
     expect(kvs.query).toHaveBeenCalled();
     expect(WhereConditions.beginsWith('pre')).toEqual({ op: 'beginsWith', value: 'pre' });
   });
+
+  test('queryPageByPrefix returns one page and the continuation cursor', async () => {
+    const builder = {
+      where: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      cursor: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue({
+        results: [{ key: 'a', value: 1 }],
+        nextCursor: 'next-page',
+      }),
+    };
+    kvs.query.mockReturnValue(builder);
+
+    const page = await kvsStore.queryPageByPrefix('pre', { limit: 250 });
+
+    // A page never exceeds the documented KVS page size.
+    expect(builder.limit).toHaveBeenCalledWith(100);
+    expect(builder.cursor).not.toHaveBeenCalled();
+    expect(page).toEqual({
+      records: [{ key: 'a', value: 1 }],
+      nextCursor: 'next-page',
+    });
+  });
+
+  test('queryPageByPrefix passes the cursor and normalizes an absent cursor', async () => {
+    const builder = {
+      where: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      cursor: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue({ results: [], nextCursor: undefined }),
+    };
+    kvs.query.mockReturnValue(builder);
+
+    const page = await kvsStore.queryPageByPrefix('pre', { cursor: 'abc', limit: 10 });
+
+    expect(builder.limit).toHaveBeenCalledWith(10);
+    expect(builder.cursor).toHaveBeenCalledWith('abc');
+    expect(page).toEqual({ records: [], nextCursor: null });
+  });
+
+  test('queryPageByPrefix fails closed on an unreadable page', async () => {
+    const builder = {
+      where: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      cursor: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue({ results: null }),
+    };
+    kvs.query.mockReturnValue(builder);
+
+    await expect(kvsStore.queryPageByPrefix('pre')).rejects.toMatchObject({
+      code: 'STORAGE_PAGE_UNREADABLE',
+    });
+  });
 });

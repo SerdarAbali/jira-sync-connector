@@ -360,23 +360,11 @@ function statusFromChecks(checks) {
 }
 
 /**
- * Reads and evaluates connector readiness. Dependencies are injectable so the
- * authorization/identity boundary and every fail-closed path can be verified
- * without Forge.
+ * Extracts the installation-scoped identity facts from the Forge application
+ * context. Shared by readiness and by the recovery snapshot export so both
+ * report exactly the same identity for the same invocation.
  */
-export async function buildConnectorReadiness(options = {}) {
-  const deps = { ...defaultDeps, ...(options.deps || {}) };
-  const nowMs = deps.now();
-  const nowIso = new Date(nowMs).toISOString();
-
-  let context;
-  try {
-    context = deps.getAppContext();
-  } catch (error) {
-    console.warn('Connector readiness identity unavailable', safeErrorForLog(error));
-    return unavailable('READINESS_IDENTITY_UNAVAILABLE', 'Forge application context is unavailable.');
-  }
-
+function identityFromContext(context) {
   const appIdentity = normalizeAppIdentity(context);
   const environmentId = typeof context?.environmentAri?.environmentId === 'string'
     && IDENTITY_ID_PATTERN.test(context.environmentAri.environmentId)
@@ -403,6 +391,98 @@ export async function buildConnectorReadiness(options = {}) {
     cloudIds,
     bound: !!(appIdentity.appId && appIdentity.appAri && environmentId && installationId && environmentType)
   };
+
+  return { appIdentity, identity };
+}
+
+/**
+ * Installation identity for artifacts that must be attributable to one
+ * installation outside Forge storage, such as a downloadable recovery
+ * snapshot. Returns the same normalized values as buildConnectorReadiness and
+ * reports unreadable facts explicitly instead of substituting placeholders.
+ * Dependencies are injectable so the identity boundary is testable without
+ * Forge.
+ */
+export async function readForgeInstallationIdentity(options = {}) {
+  const deps = { ...defaultDeps, ...(options.deps || {}) };
+
+  let context;
+  try {
+    context = deps.getAppContext();
+  } catch (error) {
+    console.warn('Forge installation identity unavailable', safeErrorForLog(error));
+    return {
+      readable: false,
+      code: 'IDENTITY_CONTEXT_UNAVAILABLE',
+      appId: null,
+      appAri: null,
+      appVersion: null,
+      environmentId: null,
+      environmentType: null,
+      installationId: null,
+      cloudIds: [],
+      siteHost: null,
+      bound: false
+    };
+  }
+
+  const { identity } = identityFromContext(context);
+
+  let site;
+  try {
+    site = await readSiteHost(deps);
+  } catch (error) {
+    console.warn('Forge installation site lookup failed', safeErrorForLog(error));
+    site = { host: null, reason: 'site-info-unavailable' };
+  }
+
+  const readable = !!(identity.appId
+    && identity.appAri
+    && identity.environmentId
+    && identity.installationId
+    && identity.environmentType
+    && site.host);
+
+  return {
+    readable,
+    code: readable ? null : 'IDENTITY_INCOMPLETE',
+    appId: identity.appId,
+    appAri: identity.appAri,
+    appVersion: identity.appVersion,
+    environmentId: identity.environmentId,
+    environmentType: identity.environmentType,
+    installationId: identity.installationId,
+    cloudIds: identity.cloudIds,
+    siteHost: site.host,
+    siteReason: site.reason,
+    bound: identity.bound
+  };
+}
+
+/**
+ * Reads and evaluates connector readiness. Dependencies are injectable so the
+ * authorization/identity boundary and every fail-closed path can be verified
+ * without Forge.
+ */
+export async function buildConnectorReadiness(options = {}) {
+  const deps = { ...defaultDeps, ...(options.deps || {}) };
+  const nowMs = deps.now();
+  const nowIso = new Date(nowMs).toISOString();
+
+  let context;
+  try {
+    context = deps.getAppContext();
+  } catch (error) {
+    console.warn('Connector readiness identity unavailable', safeErrorForLog(error));
+    return unavailable('READINESS_IDENTITY_UNAVAILABLE', 'Forge application context is unavailable.');
+  }
+
+  const { appIdentity, identity } = identityFromContext(context);
+  const appVersion = identity.appVersion;
+  const environmentId = identity.environmentId;
+  const installationId = identity.installationId;
+  const environmentType = identity.environmentType;
+  const cloudIds = identity.cloudIds;
 
   let site;
   try {
