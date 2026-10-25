@@ -163,7 +163,7 @@ const operations = [
   ['newly mapped pending links', pendingNew],
   ['manual pending links', () => { seedPending(); fetch.mockResolvedValue(ok({ fields: { issuelinks: [] } })); return resolvers.retryPendingLinks(); }],
   ['scheduled pending links', () => { seedPending(); fetch.mockImplementation(async (_, options) => ok(options?.method === 'POST' ? {} : { fields: { issuelinks: [] } })); return performScheduledSync(); }],
-  ['link deletion webhook', () => linkDeleted({ issueLink: { id: '7', sourceIssueId: '10001', destinationIssueId: '10002', issueLinkType: { name: 'Blocks' } } })],
+  ['link deletion webhook', () => linkDeleted({ eventType: 'avi:jira:deleted:issuelink', selfGenerated: false, id: '7', sourceIssueId: '10001', destinationIssueId: '10002', issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' } })],
   ['counterpart notice', () => setCounterpartNotice({ side: 'remote', key: 'REMOTE-1', org, localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', status: 'confirmed_deleted' })],
   ['counterpart notice removal', () => { fetch.mockResolvedValue(ok({ fields: { description: prependCounterpartNoticeToADF(doc, { localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', status: 'deleted' }) } })); return clearCounterpartNotice({ side: 'remote', key: 'REMOTE-1', org, scope: { orgId: org.id, localKey: 'LOCAL-1' } }); }],
   ['status transition', () => transitionRemoteIssue('REMOTE-1', 'In Progress', org, {}, null, { orgId: org.id, localKey: 'LOCAL-1' })],
@@ -204,7 +204,7 @@ test.each(['LOCAL-1', 'LOCAL-2'])('links cannot expose excluded endpoint %s', as
 test('link-created webhook cannot reuse a rejected target mapping', async () => {
   eligible.delete('LOCAL-2'); mockStore.set('syncOptions:org-1', { ...opts, syncLinks: true });
   getFullIssue.mockImplementation(async key => key === 'LOCAL-1' ? linkedIssue() : issue(key));
-  await linkCreated({ issueLink: { sourceIssueId: '10001', destinationIssueId: '10002' } });
+  await linkCreated({ eventType: 'avi:jira:created:issuelink', selfGenerated: false, id: '7', sourceIssueId: '10001', destinationIssueId: '10002', issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' } });
   expect(fetch.mock.calls.filter(([url, o]) => o?.method === 'POST' && url.endsWith('/issueLink'))).toHaveLength(0);
 });
 
@@ -278,7 +278,7 @@ test('eligible concurrent deliveries still submit a comment at most once', async
 
 test.each(['LOCAL-1', 'LOCAL-2'])('link deletion requires selected endpoint %s despite both historical mappings', async key => {
   eligible.delete(key);
-  await linkDeleted({ issueLink: { id: '7', sourceIssueId: '10001', destinationIssueId: '10002', issueLinkType: { name: 'Blocks' } } });
+  await linkDeleted({ eventType: 'avi:jira:deleted:issuelink', selfGenerated: false, id: '7', sourceIssueId: '10001', destinationIssueId: '10002', issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' } });
   expect(mutationCount()).toBe(0);
   expect(mappings.removeLinkMapping).not.toHaveBeenCalled();
 });

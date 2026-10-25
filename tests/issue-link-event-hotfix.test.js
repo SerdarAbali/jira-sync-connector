@@ -45,12 +45,14 @@ import api, { fetch as mockFetch } from '@forge/api';
 import { run as runLinkCreated } from '../src/triggers/link.js';
 import { run as runLinkDeleted } from '../src/triggers/link-deleted.js';
 import { syncIssueLinks } from '../src/services/sync/link-sync.js';
+import * as outboundScope from '../src/services/sync/outbound-scope.js';
 import { syncIssue } from '../src/services/sync/issue-sync.js';
 import {
   getRemoteKey,
   getLinkMapping,
   storeLinkMapping,
-  getOrganizationsWithTokens
+  getOrganizationsWithTokens,
+  removeLinkMapping
 } from '../src/services/storage/mappings.js';
 
 const mockRequestJira = api.asApp().requestJira;
@@ -193,20 +195,47 @@ describe('issue-link event hotfix', () => {
     });
 
     await handler({
-      issueLink: {
-        sourceIssueId: '1',
-        destinationIssueId: '2'
-      }
+      eventType: 'avi:jira:created:issuelink',
+      selfGenerated: false,
+      id: '10001',
+      sourceIssueId: '1',
+      destinationIssueId: '2',
+      sourceProjectId: '10',
+      destinationProjectId: '10',
+      issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }
     });
 
     expect(syncIssue).toHaveBeenNthCalledWith(1, expect.objectContaining({
       eventType: 'avi:jira:updated:issue',
-      issue: { key: 'LOCAL-2' }
+      issue: { key: 'LOCAL-2' },
+      linkChange: { eventType: 'avi:jira:created:issuelink', userInitiated: true }
     }));
     expect(syncIssue).toHaveBeenNthCalledWith(2, expect.objectContaining({
       eventType: 'avi:jira:updated:issue',
-      issue: { key: 'LOCAL-1' }
+      issue: { key: 'LOCAL-1' },
+      linkChange: { eventType: 'avi:jira:created:issuelink', userInitiated: true }
     }));
+  });
+
+  test('an app-generated link event is not tagged as a user link change', async () => {
+    mockRequestJira.mockImplementation(async url => {
+      const issueId = url.split('/').pop();
+      return {
+        ok: true,
+        json: async () => ({ key: issueId === '1' ? 'LOCAL-1' : 'LOCAL-2' })
+      };
+    });
+
+    await runLinkCreated({
+      eventType: 'avi:jira:created:issuelink',
+      selfGenerated: true,
+      id: '10002',
+      sourceIssueId: '1',
+      issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }
+    });
+
+    expect(syncIssue).toHaveBeenCalledTimes(1);
+    expect(syncIssue.mock.calls[0][0]).not.toHaveProperty('linkChange');
   });
 
   test('deleted event reaches the link-deleted handler', async () => {
@@ -228,12 +257,14 @@ describe('issue-link event hotfix', () => {
     });
 
     await handler({
-      issueLink: {
-        id: '10001',
-        sourceIssueId: '1',
-        destinationIssueId: '2',
-        issueLinkType: { name: 'Blocks' }
-      }
+      eventType: 'avi:jira:deleted:issuelink',
+      selfGenerated: false,
+      id: '10001',
+      sourceIssueId: '1',
+      destinationIssueId: '2',
+      sourceProjectId: '10',
+      destinationProjectId: '10',
+      issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }
     });
 
     expect(mockRequestJira).toHaveBeenCalledTimes(2);
@@ -267,5 +298,171 @@ describe('issue-link event hotfix', () => {
     expect(calls.some(([, options]) => /summary/i.test(options.body))).toBe(false);
     expect(getRemoteKey).toHaveBeenCalledTimes(3);
     expect(getRemoteKey).toHaveBeenCalledWith('LOCAL-2', 'org-1');
+  });
+});
+
+describe('documented issue-link event payload', () => {
+  const createdEvent = (overrides = {}) => ({
+    eventType: 'avi:jira:created:issuelink',
+    selfGenerated: false,
+    id: '10001',
+    sourceIssueId: '1',
+    destinationIssueId: '2',
+    sourceProjectId: '10',
+    destinationProjectId: '10',
+    issueLinkType: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
+    timestamp: '2026-10-25T09:51:45.959Z',
+    ...overrides
+  });
+
+  const deletedEvent = (overrides = {}) => createdEvent({ eventType: 'avi:jira:deleted:issuelink', ...overrides });
+
+  function resolveKeys() {
+    mockRequestJira.mockImplementation(async url => {
+      const issueId = url.split('/').pop();
+      return {
+        ok: true,
+        json: async () => ({ key: issueId === '1' ? 'LOCAL-1' : 'LOCAL-2' })
+      };
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRequestJira.mockReset();
+    mockFetch.mockReset();
+    getOrganizationsWithTokens.mockResolvedValue([]);
+  });
+
+  test('created: root-level IDs sync the destination before the source', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-created')(createdEvent());
+
+    expect(mockRequestJira.mock.calls.map(([url]) => url))
+      .toEqual(['/rest/api/3/issue/1', '/rest/api/3/issue/2']);
+    expect(syncIssue).toHaveBeenNthCalledWith(1, expect.objectContaining({ issue: { key: 'LOCAL-2' } }));
+    expect(syncIssue).toHaveBeenNthCalledWith(2, expect.objectContaining({ issue: { key: 'LOCAL-1' } }));
+  });
+
+  test('created: nested legacy payloads still resolve both endpoints', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-created')({
+      issueLink: { sourceIssueId: '1', destinationIssueId: '2', issueLinkType: { name: 'Blocks' } }
+    });
+
+    expect(mockRequestJira).toHaveBeenCalledTimes(2);
+    expect(syncIssue).toHaveBeenCalledTimes(2);
+  });
+
+  test('created: a payload without endpoint IDs performs no reads or syncs', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-created')({ eventType: 'avi:jira:created:issuelink', selfGenerated: false });
+
+    expect(mockRequestJira).not.toHaveBeenCalled();
+    expect(syncIssue).not.toHaveBeenCalled();
+  });
+
+  test('created: a single endpoint syncs only that issue', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-created')(createdEvent({ destinationIssueId: undefined }));
+
+    expect(mockRequestJira).toHaveBeenCalledTimes(1);
+    expect(syncIssue).toHaveBeenCalledTimes(1);
+    expect(syncIssue).toHaveBeenCalledWith(expect.objectContaining({ issue: { key: 'LOCAL-1' } }));
+  });
+
+  test('deleted: root-level fields resolve both endpoints and the link type', async () => {
+    resolveKeys();
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await linkedHandlerFor('issue-link-deleted')(deletedEvent());
+
+    const output = logSpy.mock.calls.map(([message]) => String(message)).join('\n');
+    logSpy.mockRestore();
+
+    expect(mockRequestJira.mock.calls.map(([url]) => url))
+      .toEqual(['/rest/api/3/issue/1', '/rest/api/3/issue/2']);
+    expect(output).toContain('Link deleted: LOCAL-1 → LOCAL-2 (Blocks)');
+    expect(getOrganizationsWithTokens).toHaveBeenCalledTimes(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('deleted: nested legacy payloads still resolve both endpoints', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-deleted')({
+      issueLink: { id: '10001', sourceIssueId: '1', destinationIssueId: '2', issueLinkType: { name: 'Blocks' } }
+    });
+
+    expect(mockRequestJira).toHaveBeenCalledTimes(2);
+    expect(getOrganizationsWithTokens).toHaveBeenCalledTimes(1);
+  });
+
+  test('deleted: a payload without a link ID stops before any read', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-deleted')(deletedEvent({ id: undefined }));
+
+    expect(mockRequestJira).not.toHaveBeenCalled();
+    expect(getOrganizationsWithTokens).not.toHaveBeenCalled();
+  });
+
+  test('deleted: a payload without both endpoints stops before organization lookup', async () => {
+    resolveKeys();
+
+    await linkedHandlerFor('issue-link-deleted')(deletedEvent({ destinationIssueId: undefined }));
+
+    expect(mockRequestJira).toHaveBeenCalledTimes(1);
+    expect(getOrganizationsWithTokens).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('deleted: an unreadable endpoint stops before organization lookup', async () => {
+    mockRequestJira.mockImplementation(async url => {
+      const issueId = url.split('/').pop();
+      if (issueId === '2') return { ok: false, status: 404 };
+      return { ok: true, json: async () => ({ key: 'LOCAL-1' }) };
+    });
+
+    await linkedHandlerFor('issue-link-deleted')(deletedEvent());
+
+    expect(getOrganizationsWithTokens).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('deleted: the root-level link ID is the mapping key removed after a remote delete', async () => {
+    resolveKeys();
+    const scopeSpy = jest.spyOn(outboundScope, 'assertOutboundRemoteScope').mockResolvedValue(undefined);
+    getOrganizationsWithTokens.mockResolvedValue([{
+      id: 'org-1',
+      remoteUrl: 'https://remote.example.invalid',
+      remoteEmail: 'sync@example.invalid',
+      remoteApiToken: 'test-token'
+    }]);
+    getRemoteKey.mockImplementation(async key => key.replace('LOCAL-', 'REMOTE-'));
+    mockFetch.mockImplementation(async (url, options = {}) => {
+      if (options.method === 'DELETE') return { ok: true, status: 204 };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          fields: {
+            issuelinks: [{ id: '55', type: { name: 'Blocks' }, outwardIssue: { key: 'REMOTE-2' } }]
+          }
+        })
+      };
+    });
+
+    await linkedHandlerFor('issue-link-deleted')(deletedEvent());
+
+    expect(scopeSpy).toHaveBeenCalledWith({ orgId: 'org-1', remoteKeys: ['REMOTE-1', 'REMOTE-2'] });
+    scopeSpy.mockRestore();
+    const [deleteUrl] = mockFetch.mock.calls.find(([, options]) => options?.method === 'DELETE');
+    expect(deleteUrl).toBe('https://remote.example.invalid/rest/api/3/issueLink/55');
+    expect(removeLinkMapping).toHaveBeenCalledWith('10001', 'org-1');
   });
 });

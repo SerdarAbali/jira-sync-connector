@@ -2,27 +2,28 @@ import api, { route, fetch } from '../services/jira/guarded-api.js';
 import { getRemoteKey, getOrganizationsWithTokens, removeLinkMapping } from '../services/storage/mappings.js';
 import { assertPilotWritesAllowed } from '../services/sync/pilot-pause.js';
 import { assertOutboundRemoteScope } from '../services/sync/outbound-scope.js';
+import { extractLinkEventFields, describeLinkEventFields } from './link-event-fields.js';
 
 export async function run(event, context) {
   console.log(`🔗🗑️ Link deleted trigger fired`);
 
   try {
-    const linkId = event.issueLink?.id;
-    
+    // Forge issue-link events carry the link ID and both endpoint issue IDs at the payload root
+    const { linkId, sourceIssueId, destinationIssueId, linkTypeName } = extractLinkEventFields(event);
+
     if (!linkId) {
-      console.log(`⚠️ Could not determine link ID from delete event`);
+      console.log(`⚠️ Could not determine link ID from delete event (fields: ${describeLinkEventFields(event)})`);
       return;
     }
 
     // Get source and destination issue info
     let sourceIssueKey = null;
     let destinationIssueKey = null;
-    let linkTypeName = event.issueLink?.issueLinkType?.name;
 
-    if (event.issueLink?.sourceIssueId) {
+    if (sourceIssueId) {
       try {
         const response = await api.asApp().requestJira(
-          route`/rest/api/3/issue/${event.issueLink.sourceIssueId}`
+          route`/rest/api/3/issue/${sourceIssueId}`
         );
         if (response.ok) {
           const issue = await response.json();
@@ -33,10 +34,10 @@ export async function run(event, context) {
       }
     }
 
-    if (event.issueLink?.destinationIssueId) {
+    if (destinationIssueId) {
       try {
         const response = await api.asApp().requestJira(
-          route`/rest/api/3/issue/${event.issueLink.destinationIssueId}`
+          route`/rest/api/3/issue/${destinationIssueId}`
         );
         if (response.ok) {
           const issue = await response.json();
@@ -48,7 +49,7 @@ export async function run(event, context) {
     }
 
     if (!sourceIssueKey || !destinationIssueKey) {
-      console.log(`⚠️ Could not determine both issue keys for link deletion`);
+      console.log(`⚠️ Could not determine both issue keys for link deletion (fields: ${describeLinkEventFields(event)})`);
       return;
     }
 

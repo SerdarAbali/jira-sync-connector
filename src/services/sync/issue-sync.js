@@ -1,7 +1,7 @@
 import { runWithIssueLease } from './issue-lease-context.js';
 import api, { route, fetch } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
-import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH } from '../../constants.js';
+import { LOG_EMOJI, HTTP_STATUS, MAX_PARENT_SYNC_DEPTH, LINK_CREATED_EVENT } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
 import { executeWriteWithRetry } from './write-retry.js';
 import { extractTextFromADF, textToADF, replaceMediaIdsInADF, prependCrossReferenceToADF, adfPreservesOriginalContent, isValidADFDocument, stripCounterpartNoticeFromADF } from '../../utils/adf.js';
@@ -83,10 +83,25 @@ function describeDeferredWrite(error, label) {
   }
 }
 
+/**
+ * A link notification is a non-field content change even though Forge
+ * issue-link events carry no changelog. Only the explicit marker the link
+ * trigger adds for a verified, user-initiated link event is accepted, so
+ * app-generated link events and ordinary issue updates still obey the echo gate.
+ */
+function isUserInitiatedLinkChange(event) {
+  const linkChange = event?.linkChange;
+  return Boolean(linkChange)
+    && linkChange.userInitiated === true
+    && linkChange.eventType === LINK_CREATED_EVENT;
+}
+
 function hasNonFieldContentChange(event) {
   const items = event?.changelog?.items;
-  if (!Array.isArray(items)) return false;
-  return items.some(item => ['link', 'attachment', 'comment'].includes(String(item?.field || '').toLowerCase()));
+  if (Array.isArray(items) && items.some(item => ['link', 'attachment', 'comment'].includes(String(item?.field || '').toLowerCase()))) {
+    return true;
+  }
+  return isUserInitiatedLinkChange(event);
 }
 
 function localMappedFieldIds(fieldMappings) {

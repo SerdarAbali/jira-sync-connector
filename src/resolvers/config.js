@@ -303,19 +303,28 @@ export function defineConfigResolvers(resolver) {
 
       // Handle sync direction change
       const syncDirection = payload.syncDirection || orgs[index].syncDirection || 'push';
-      
-      orgs[index] = {
+
+      // Only scope properties that were explicitly submitted are overwritten.
+      // Omitted properties keep their stored value, so saving the project filter
+      // cannot clear the organization's JQL and vice versa. The intended JQL
+      // editor still clears the filter by submitting an empty string.
+      const updatedOrg = {
         ...orgs[index],
         name: validated.name,
         remoteUrl: validated.remoteUrl,
         remoteEmail: validated.remoteEmail,
         // Never store token in regular storage
         remoteProjectKey: validated.remoteProjectKey,
-        allowedProjects: validated.allowedProjects || [],
-        jqlFilter: validated.jqlFilter || '',
         syncDirection: syncDirection,
         updatedAt: new Date().toISOString()
       };
+      if (validated.allowedProjects !== undefined) {
+        updatedOrg.allowedProjects = validated.allowedProjects;
+      }
+      if (validated.jqlFilter !== undefined) {
+        updatedOrg.jqlFilter = validated.jqlFilter;
+      }
+      orgs[index] = updatedOrg;
       
       // Remove legacy plaintext token if present.
       delete orgs[index].remoteApiToken;

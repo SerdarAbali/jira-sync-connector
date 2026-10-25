@@ -4,6 +4,7 @@ import { act } from 'react-dom/test-utils';
 import { invoke } from '@forge/bridge';
 import { App, ADMIN_UI_VERSION } from '../static/admin-page/src/App.jsx';
 import InitialSyncPanel from '../static/admin-page/src/components/InitialSyncPanel.jsx';
+import { SELECTED_ORGANIZATION_STORAGE_KEY } from '../static/admin-page/src/org-selection.js';
 
 jest.mock('@forge/bridge', () => ({
   invoke: jest.fn()
@@ -302,6 +303,10 @@ beforeEach(() => {
   invoke.mockReset();
   invoke.mockImplementation(async (name) => defaultInvoke(name));
 
+  // Existing scenarios operate on an explicitly selected organization, which
+  // the page restores from storage instead of defaulting to the first one.
+  window.localStorage.setItem(SELECTED_ORGANIZATION_STORAGE_KEY, ORG.id);
+
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -312,6 +317,7 @@ afterEach(async () => {
     root.unmount();
   });
   container.remove();
+  window.localStorage.clear();
   delete global.IS_REACT_ACT_ENVIRONMENT;
 });
 
@@ -550,5 +556,73 @@ describe('v2.1.0-rc3 admin runtime', () => {
     expect(text).not.toContain('I approve this exact previewed scope');
     expect(text).toContain('Preview Scope');
     expect(text).toContain('Refresh Status');
+  });
+
+  test('requires an explicit organization selection instead of targeting the first organization', async () => {
+    window.localStorage.clear();
+
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Select an organization to view or edit its configuration.');
+    expect(text).not.toContain('Selected organization');
+    expect(text).not.toContain('Synchronization Write Control');
+    expect(window.localStorage.getItem(SELECTED_ORGANIZATION_STORAGE_KEY)).toBeNull();
+  });
+
+  test('does not reuse a stored organization that no longer exists', async () => {
+    window.localStorage.setItem(SELECTED_ORGANIZATION_STORAGE_KEY, 'org-removed');
+
+    await render(React.createElement(App));
+
+    const text = container.textContent;
+    expect(text).toContain('Select an organization to view or edit its configuration.');
+    expect(text).not.toContain('Selected organization');
+    expect(window.localStorage.getItem(SELECTED_ORGANIZATION_STORAGE_KEY)).toBeNull();
+  });
+
+  test('keeps the stored selection while that organization still exists', async () => {
+    await render(React.createElement(App));
+
+    expect(container.textContent).toContain('Selected organization');
+    expect(window.localStorage.getItem(SELECTED_ORGANIZATION_STORAGE_KEY)).toBe(ORG.id);
+  });
+
+  test('saving the project filter never submits or clears the JQL filter', async () => {
+    invoke.mockImplementation(async (name) => {
+      if (name === 'fetchLocalProjects') {
+        return {
+          projects: [
+            { key: 'LOCAL', name: 'Local Project' },
+            { key: 'OTHER', name: 'Other Project' }
+          ]
+        };
+      }
+      return defaultInvoke(name);
+    });
+
+    await render(React.createElement(App));
+
+    const projectFilterHeader = Array.from(container.querySelectorAll('h4'))
+      .find(heading => heading.textContent === 'Project Filter');
+    expect(projectFilterHeader).toBeTruthy();
+
+    await act(async () => {
+      projectFilterHeader.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const saveButton = findButton('Save Project Filter');
+    expect(saveButton).toBeTruthy();
+
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const call = invoke.mock.calls.find(([name]) => name === 'updateOrganization');
+    expect(call).toBeTruthy();
+    expect(call[1]).toMatchObject({ id: ORG.id, allowedProjects: ['LOCAL'] });
+    expect(Object.prototype.hasOwnProperty.call(call[1], 'jqlFilter')).toBe(false);
   });
 });

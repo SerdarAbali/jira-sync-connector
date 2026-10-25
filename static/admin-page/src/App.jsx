@@ -19,6 +19,11 @@ import InitialSyncPanel from './components/InitialSyncPanel';
 import GuidedSetupWizard from './components/GuidedSetupWizard';
 import DeletedCounterpartRecovery from './components/DeletedCounterpartRecovery';
 import RecurringReconciliation from './components/RecurringReconciliation';
+import {
+  readStoredOrganizationId,
+  resolveSelectedOrganizationId,
+  storeSelectedOrganizationId
+} from './org-selection';
 
 const surfaceCard = (overrides = {}) => ({
   background: token('color.background.neutral', '#FFFFFF'),
@@ -90,7 +95,13 @@ const isLegacyScheduledActive = (config) => Boolean(
 
 export const App = () => {
   const [organizations, setOrganizations] = useState([]);
-  const [selectedOrgId, setSelectedOrgId] = useState(null);
+  // Read once before effects run. The stored value is only applied after it is
+  // validated against the loaded organizations; the page never defaults to the
+  // first organization in the list.
+  const [selectedOrgId, setSelectedOrgId] = useState(() => readStoredOrganizationId());
+  const [selectionReady, setSelectionReady] = useState(false);
+  // Mirrors the applied selection for async loaders without reading stale state.
+  const selectedOrgIdRef = useRef(selectedOrgId);
   const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(true);
   const [organizationsLoadState, setOrganizationsLoadState] = useState({
@@ -186,10 +197,10 @@ export const App = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedOrgId) {
+    if (selectionReady && selectedOrgId) {
       loadOrgData(selectedOrgId);
     }
-  }, [selectedOrgId]);
+  }, [selectedOrgId, selectionReady]);
 
   // Existing authenticated bridge: reads are passive; fresh initialization
   // requires an explicit confirmation argument and server-side ADMIN_WRITE.
@@ -213,9 +224,14 @@ export const App = () => {
       if (Array.isArray(orgs)) {
         setOrganizations(orgs);
         setOrganizationsLoadState({ status: 'loaded', message: '' });
-        if (orgs.length > 0 && !selectedOrgId) {
-          setSelectedOrgId(orgs[0].id);
-        }
+        // Apply the current (or restored) selection only while that
+        // organization still exists. Never fall back to the first
+        // organization, which could address the wrong vendor.
+        const nextSelection = resolveSelectedOrganizationId(orgs, selectedOrgIdRef.current);
+        selectedOrgIdRef.current = nextSelection;
+        setSelectedOrgId(nextSelection);
+        storeSelectedOrganizationId(nextSelection);
+        setSelectionReady(true);
         return;
       }
 
@@ -236,6 +252,14 @@ export const App = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Every organization-specific view and write uses this explicit selection.
+  const selectOrganization = (orgId) => {
+    const nextSelection = orgId || null;
+    selectedOrgIdRef.current = nextSelection;
+    setSelectedOrgId(nextSelection);
+    storeSelectedOrganizationId(nextSelection);
   };
 
   const loadOrgData = async (orgId) => {
@@ -478,7 +502,7 @@ export const App = () => {
         setShowOrgModal(false);
         setEditingOrg(null);
         if (!editingOrg) {
-          setSelectedOrgId(result.organization.id);
+          selectOrganization(result.organization.id);
           setActiveTab(2);
         }
       } else {
@@ -505,9 +529,11 @@ export const App = () => {
       const result = await invoke('deleteOrganization', { id: orgToDelete.id });
       if (result.success) {
         showMessage('Organization deleted successfully', 'success');
+        const deletedId = orgToDelete.id;
         await loadOrganizations();
-        if (selectedOrgId === orgToDelete.id) {
-          setSelectedOrgId(organizations[0]?.id || null);
+        if (selectedOrgId === deletedId) {
+          // Require an explicit choice instead of silently editing another vendor.
+          selectOrganization(null);
         }
       } else {
         showMessage(`Error: ${result.error}`, 'error');
@@ -595,6 +621,9 @@ export const App = () => {
 
     setSaving(true);
     try {
+      // The project filter is saved on its own. The stored JQL filter is not
+      // submitted here, so this action cannot clear or replace it; the JQL
+      // editor submits the value explicitly, including an intentional clear.
       const result = await invoke('updateOrganization', {
         id: selectedOrg.id,
         name: selectedOrg.name,
@@ -1132,7 +1161,22 @@ export const App = () => {
             <Lozenge appearance="new" isBold>{ADMIN_UI_VERSION}</Lozenge>
           </div>
           <div style={{ width: '250px' }}>
+            <label
+              htmlFor="admin-organization-select"
+              style={{
+                display: 'block',
+                marginBottom: '2px',
+                fontSize: '11px',
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                color: '#6B778C'
+              }}
+            >
+              Organization scope
+            </label>
             <Select
+              inputId="admin-organization-select"
               options={organizations.map(org => ({
                 label: `${org.name}${org.remoteUrl ? ' - ' + org.remoteUrl : ''}`,
                 value: org.id
@@ -1141,7 +1185,7 @@ export const App = () => {
                 label: selectedOrg ? `${selectedOrg.name}${selectedOrg.remoteUrl ? ' - ' + selectedOrg.remoteUrl : ''}` : '',
                 value: selectedOrgId
               } : null}
-              onChange={(option) => setSelectedOrgId(option?.value || null)}
+              onChange={(option) => selectOrganization(option?.value || null)}
               placeholder="Select organization"
               isClearable={false}
             />
@@ -1151,7 +1195,7 @@ export const App = () => {
           <Button
             appearance="subtle"
             onClick={() => setActiveTab(2)}
-            isDisabled={!selectedOrgId}
+            isDisabled={!selectedOrg}
             style={lozengeButtonStyle}
           >
             Guided Setup
@@ -1191,22 +1235,34 @@ export const App = () => {
           </div>
         )}
 
-        {!selectedOrgId ? (
+        {!selectedOrg ? (
           organizationsLoadState.status === 'loaded' ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
             <div style={{ textAlign: 'center', maxWidth: '500px' }}>
-              <h2>Welcome to Jira Sync Connector</h2>
-              <p style={{ color: '#6B778C', marginBottom: '24px' }}>
-                Configure multiple target Jira organizations to sync from this instance.
-                Get started by adding your first organization.
-              </p>
-              <Button
-                appearance="subtle"
-                onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
-                style={lozengeButtonStyle}
-              >
-                Add Your First Organization
-              </Button>
+              {organizations.length === 0 ? (
+                <>
+                  <h2>Welcome to Jira Sync Connector</h2>
+                  <p style={{ color: '#6B778C', marginBottom: '24px' }}>
+                    Configure multiple target Jira organizations to sync from this instance.
+                    Get started by adding your first organization.
+                  </p>
+                  <Button
+                    appearance="subtle"
+                    onClick={() => { setShowOrgModal(true); setEditingOrg(null); }}
+                    style={lozengeButtonStyle}
+                  >
+                    Add Your First Organization
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <h2>Select an organization</h2>
+                  <p style={{ color: '#6B778C', marginBottom: '24px' }}>
+                    Select an organization to view or edit its configuration.
+                    Each organization keeps its own project scope, JQL filter and mappings.
+                  </p>
+                </>
+              )}
             </div>
           </div>
           ) : null
@@ -1216,7 +1272,10 @@ export const App = () => {
             <div style={{ padding: `${token('space.300', '24px')} ${contentHorizontalPadding}` }}>
               <div style={surfaceCard({ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: token('space.300', '24px') })}>
                 <div style={{ flex: 1 }}>
-                  <h2 style={{ margin: '0 0 8px 0' }}>{selectedOrg.name}</h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
+                    <h2 style={{ margin: '0 0 8px 0' }}>{selectedOrg.name}</h2>
+                    <Lozenge appearance="inprogress" isBold>Selected organization</Lozenge>
+                  </div>
                   <div style={{ color: '#6B778C', fontSize: '14px', display: 'flex', alignItems: 'center', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
                     <Lozenge appearance={selectedOrg.remoteUrl ? 'success' : 'removed'} isBold>
                       {selectedOrg.remoteUrl ? 'Connected' : 'Not Configured'}

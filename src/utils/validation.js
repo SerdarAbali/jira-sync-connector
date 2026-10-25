@@ -81,6 +81,29 @@ export function validateArray(value, fieldName) {
 }
 
 /**
+ * Validates an optional string without collapsing "not supplied" into an empty
+ * value. Callers that patch stored configuration use the distinction to keep
+ * existing values; an explicitly submitted empty string still clears them.
+ */
+function validateOptionalString(payload, fieldName, maxLength) {
+  if (payload[fieldName] === undefined || payload[fieldName] === null) {
+    return undefined;
+  }
+  return validateString(payload[fieldName], fieldName, maxLength);
+}
+
+/**
+ * Validates an optional array with the same omission semantics as
+ * validateOptionalString. An explicitly submitted empty array is preserved.
+ */
+function validateOptionalArray(payload, fieldName) {
+  if (payload[fieldName] === undefined || payload[fieldName] === null) {
+    return undefined;
+  }
+  return validateArray(payload[fieldName], fieldName);
+}
+
+/**
  * Validates organization payload
  */
 export function validateOrganizationPayload(payload) {
@@ -92,8 +115,8 @@ export function validateOrganizationPayload(payload) {
     remoteEmail: validateEmail(payload.remoteEmail, 'remoteEmail'),
     remoteApiToken: payload.remoteApiToken ? validateString(payload.remoteApiToken, 'remoteApiToken', 500) : undefined,
     remoteProjectKey: validateString(payload.remoteProjectKey, 'remoteProjectKey', 20),
-    allowedProjects: payload.allowedProjects ? validateArray(payload.allowedProjects, 'allowedProjects') : [],
-    jqlFilter: payload.jqlFilter ? validateString(payload.jqlFilter, 'jqlFilter', 500) : '',
+    allowedProjects: validateOptionalArray(payload, 'allowedProjects'),
+    jqlFilter: validateOptionalString(payload, 'jqlFilter', 500),
     syncDirection: payload.syncDirection ? validateString(payload.syncDirection, 'syncDirection', 20) : 'push'
   };
 }

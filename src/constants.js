@@ -30,6 +30,11 @@ export const BATCH_DELAY_MS = 5000; // Delay between batches (5 seconds) to avoi
 export const SYNC_FLAG_TTL_MS = 120000; // TTL for "syncing" flag in storage (2 minutes for large issues with attachments)
 export const RECENT_CREATION_WINDOW_MS = 3000; // 3 seconds window to detect newly created issues
 
+// The Forge event that reports a user-created issue link. These events carry no
+// changelog, so the link trigger marks the synthetic issue event it passes to
+// syncIssue with `linkChange`; the echo gate accepts only that explicit signal.
+export const LINK_CREATED_EVENT = 'avi:jira:created:issuelink';
+
 // Storage Management
 export const MAX_AUDIT_LOG_ENTRIES = 50; // Keep only 50 most recent audit entries
 export const MAX_ERROR_ENTRIES = 50; // Keep only 50 most recent errors
