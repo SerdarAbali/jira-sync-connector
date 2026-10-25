@@ -120,67 +120,26 @@ and still requires the server's explicit confirmation, ADMIN_WRITE authorization
 and exact staging identity. Neither handle runs automatically. The legacy
 activation resolver is not exposed to the page or to automation.
 
-`scripts/staging/lib/forge-admin-readiness.js`:
+The local runner now uses an owned authenticated browser adapter. See
+[authenticated browser readiness](STAGING-BROWSER-READINESS.md) for the session
+lifecycle, identity restrictions, privacy boundary and live validation.
 
-- **Acquisition is disabled and fails closed.** `readForgeAdminReadiness()`
-  takes no arguments and always rejects with
-  `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE`. There is no `page`,
-  `evaluate`, `invoke` or facts argument: a caller-supplied object with
-  `url()`/`evaluate()` members can fabricate every fact the runner asks for, so
-  the acquisition path was removed instead of being validated more strictly.
-  The runner and the CLI never invoke a caller-supplied callback.
-- `normalizeReadinessResponse()` and `bindReadinessResponse()` remain exported as
-  pure validation building blocks. `bindReadinessResponse(raw, expected)`
-  validates the response contract (version, shape, timestamps, no credential
-  material: `READINESS_RESPONSE_INVALID`,
-  `READINESS_RESPONSE_CONTAINS_SECRETS`) and binds the expected app ARI/UUID,
-  installation id, environment id, environment type and site host. Missing or
-  mismatched identity fails with `READINESS_BINDING_REQUIRED`,
-  `READINESS_APP_MISMATCH`, `READINESS_INSTALLATION_MISMATCH`,
-  `READINESS_ENVIRONMENT_ID_MISMATCH` or `READINESS_ENVIRONMENT_MISMATCH`.
-  Binding is validation, not authentication: calling it yourself with your own
-  object proves nothing.
-- The supported SDK contract is normalized: `appAri.appId` is the application
-  UUID and `toString()` is the complete `ari:cloud:ecosystem::app/<uuid>`. A
-  bare UUID is promoted to the canonical ARI and the two forms must agree.
-- `scripts/staging/lib/e2e-evidence.js` treats every readiness input as an
-  operator claim (`READINESS_BASIS.CLAIMS`): a `readiness` object, a readiness
-  document and a legacy verification object are reported as
-  `readiness-verification-unsupported` plus `readiness-unverified`, each
-  claim-derived check is downgraded to `unknown`, and write mode is blocked
-  before a request is made. An adapter failure is recorded as
-  `authenticated-connector-adapter-unavailable`; an identity mismatch or any
-  other failure stays `blocked`/`unknown` as before.
+`scripts/staging/lib/forge-admin-readiness.js` accepts no caller page, callback
+or readiness input. Only successful acquisition through the private browser can
+issue an immutable in-process readiness object. Normalization, binding, JSON
+files, reports and copied objects never acquire that identity. The runner binds
+those facts again to its configured staging host, app, environment and installation
+before checking Pause, F07, mappings, comments and signed-webhook delivery.
 
-Expected identity comes from `STAGING_E2E_FORGE_INSTALLATION_ID` and
-`STAGING_E2E_FORGE_ENVIRONMENT_ID`; the app ARI is fixed by the manifest and the
-site host by the local staging configuration. No CLI flag, environment variable,
-file or run option supplies readiness facts, so production readiness remains
-unavailable and BLOCKED. That is the required fail-closed state.
-
-### Future authenticated adapter (documented, not implemented)
-
-```
-scripts/staging/lib/forge-admin-browser-adapter.js   # does not exist yet
-  createForgeAdminBrowserAdapter({ browser, siteHost, adminUrl })
-    -> { readConnectorReadiness(): Promise<unknown> }
-  bindReadinessResponse(await adapter.readConnectorReadiness(), expectedIdentity)
-```
-
-The adapter owns the signed-in browser session, restricts navigation to
-`siteHost` and invokes `window.__syncConnectorReadinessInvoke()` exactly once
-(see `READINESS_EXPRESSION`). Only a raw payload produced by that adapter, bound
-to the expected identity, may ever be promoted to `verified`; until it exists
-`readForgeAdminReadiness()` keeps rejecting and the staging E2E write gate stays
-BLOCKED.
+Optional operator evidence documents remain unverified claims. They are not
+needed for browser acquisition and cannot authorize writes. Browser authentication
+or invocation failures stay blocked. No browser/session state enters reports.
 
 ### Corrected review defects
 
-1. Caller-created readiness cannot bypass verification: the public sealing
-   function, the `page`/`evaluate`/`invoke` entry points and every caller-supplied
-   readiness argument are removed, and `readForgeAdminReadiness()` always rejects
-   with `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE` until a real authenticated
-   browser adapter exists.
+1. Caller-created readiness cannot bypass verification: there is no public
+   sealing function or accepted page/evaluate/invoke callback. Only the owned
+   browser acquisition issues the immutable in-process authentication identity.
 2. Installation and environment identity are bound (app UUID/ARI, installation
    id, environment id, environment type). Evidence replayed from another or a
    previous installation is BLOCKED.
@@ -206,10 +165,8 @@ BLOCKED.
 - The E2E write gate additionally requires staging configuration
   (`STAGING_E2E_*`, including the expected Forge installation and environment
   ids), connector readiness verified by an authenticated admin browser adapter,
-  and the disposable-test confirmation. No such adapter is implemented in this
-  repository: `readForgeAdminReadiness()` always rejects with
-  `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE`, so every write run stays
-  `BLOCKED` before a Jira client is created.
+  and the disposable-test confirmation. The owned browser adapter now acquires
+  authenticated facts; missing operational prerequisites still block writes.
 
 ### Installation-history evidence for the new staging installation
 

@@ -1,24 +1,11 @@
 'use strict';
 
-/**
- * Connector readiness gate for the write-enabled staging E2E runner.
- *
- * Trust model:
- * - A readiness bundle written by an operator is a *claim*. Jira REST cannot
- *   prove that the connector is installed, paused, migrated to F07, mapped or
- *   receiving signed webhooks, so claims never produce a verified status.
- * - The only accepted verification would be a fact set produced by an
- *   authenticated Forge admin browser adapter. No such adapter is implemented,
- *   so no caller-supplied value is accepted: raw facts, JSON files, a `source`
- *   field, an object with `url()`/`evaluate()` members, a bare `evaluate`
- *   callback and copied or serialized objects are all reported as unsupported.
- * - Because verification is impossible, every connector fact is UNKNOWN. That
- *   blocks write-enabled synchronization testing while still allowing a
- *   read-only dry run and a plan preview.
+/** Readiness documents remain unverified claims. Only immutable facts issued
+ * in-process by the owned browser acquisition may establish connector facts.
  */
-
 const fs = require('fs');
-const { AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE } = require('./forge-admin-readiness');
+const { AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE, isAuthenticatedReadiness } = require('./forge-admin-readiness');
+const { TARGET } = require('./forge-admin-browser-adapter');
 
 const EVIDENCE_KIND = 'jira-sync-connector-readiness';
 const EVIDENCE_SCHEMA_VERSION = '1.0';
@@ -237,18 +224,20 @@ function expectedConnectorIdentity(settings = {}) {
   };
 }
 
-/**
- * Connector readiness verification is unavailable.
- *
- * No authenticated Forge admin browser adapter is implemented, so no value that
- * reaches the runner can be authenticated: an object with `url()`/`evaluate()`
- * members, a bare callback, a rendered report and a facts document are all
- * writable by the same caller that asks for writes. Accepting any of them as
- * verification would let that caller issue its own authorization, so all of
- * them are reported as unsupported instead of being inspected for a plausible
- * shape.
- */
-function readReadiness(readiness) {
+/** No copied object, file or callback can acquire the private session brand. */
+function readReadiness(readiness, config, settings) {
+  if (isAuthenticatedReadiness(readiness)) {
+    const expected = expectedConnectorIdentity(settings);
+    const mismatch = readiness.appAri !== expected.appAri
+      || readiness.environmentId !== (expected.environmentId || TARGET.environmentId)
+      || readiness.installationId !== (expected.installationId || TARGET.installationId)
+      || readiness.environment.toLowerCase() !== String(expected.environmentType).toLowerCase()
+      || readiness.installedSites.length !== 1 || readiness.installedSites[0] !== config.local?.host;
+    return mismatch
+      ? { facts: null, issues: [reason('block', 'readiness-binding-mismatch',
+        'Authenticated readiness does not match this run identity.', 'Correct the staging run identity.')] }
+      : { facts: readiness, issues: [] };
+  }
   if (readiness === undefined || readiness === null) {
     return { facts: null, issues: [] };
   }
@@ -258,11 +247,8 @@ function readReadiness(readiness) {
       reason(
         'unknown',
         'readiness-verification-unsupported',
-        'Connector readiness verification is unavailable '
-          + `(${AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE}): no authenticated Forge admin `
-          + 'browser adapter is implemented, so supplied readiness facts cannot be verified.',
-        'Keep the run read-only until an authenticated Forge admin browser adapter is '
-          + 'implemented; see docs/F07-ADMIN-READINESS.md.'
+        'Supplied readiness facts are claims; only the owned authenticated browser acquisition can verify connector state.',
+        'Use the authenticated staging browser session; supplied objects and files cannot authorize writes.'
       ),
     ],
   };
@@ -317,11 +303,20 @@ function validateReadiness(options = {}) {
   const config = options.config || {};
   const settings = options.settings || {};
   const now = typeof options.now === 'function' ? options.now() : Date.now();
-  const verification = readReadiness(options.readiness);
-  // Verification is impossible without the authenticated browser adapter, so a
-  // readiness document is always treated as a set of operator claims.
-  const basis = READINESS_BASIS.CLAIMS;
-  const document = options.document;
+  const verification = readReadiness(options.readiness, config, settings);
+  // A document alone is never authentication, even if it copies genuine facts.
+  const basis = verification.facts ? READINESS_BASIS.VERIFIED : READINESS_BASIS.CLAIMS;
+  const facts = verification.facts;
+  // Construct a validation document only inside this authenticated branch. A
+  // file or an identical copied object can never enter it.
+  const document = facts ? {
+    kind: EVIDENCE_KIND, schemaVersion: EVIDENCE_SCHEMA_VERSION, generatedAt: facts.capturedAt,
+    source: VERIFICATION_SOURCE, capturedBy: 'forge-admin-browser',
+    connector: { appId: facts.appAri, installationStatus: 'installed',
+      installedSites: facts.installedSites, environment: facts.environment },
+    pause: { paused: facts.paused }, f07: facts.f07, organizations: facts.mappings,
+    webhook: { ...facts.webhook, lastReceipt: { receivedAt: facts.webhook.lastReceiptAt } },
+  } : options.document;
   const checks = [];
   const reasons = [...verification.issues];
   if (options.readinessFailure) {
@@ -333,10 +328,8 @@ function validateReadiness(options = {}) {
         reason(
           'unknown',
           'authenticated-connector-adapter-unavailable',
-          `Authenticated connector readiness is unavailable (${AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE}): `
-            + 'no authenticated Forge admin browser adapter is implemented.',
-          'Writes stay blocked until an authenticated Forge admin browser adapter is implemented; '
-            + 'see docs/F07-ADMIN-READINESS.md.'
+          `Authenticated connector readiness is unavailable (${AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE}).`,
+          'Use the private authenticated staging browser; see docs/STAGING-BROWSER-READINESS.md.'
         )
       );
     } else {
@@ -587,7 +580,14 @@ function validateReadiness(options = {}) {
       }
     : null;
 
-  if (
+  if (facts && f07?.version === 2) {
+    if (facts.f07Valid && f07.activatedAt <= now) {
+      checks.push(check('f07-migration', 'pass', 'The production F07 gate validates the staging initialization.'));
+    } else {
+      checks.push(check('f07-migration', 'block', 'The production F07 gate is not valid.'));
+      reasons.push(reason('block', 'f07-not-verified', 'F07 initialization is not verified.', 'Inspect F07 readiness.'));
+    }
+  } else if (
     !f07 ||
     f07.version !== 1 ||
     f07.phase !== 'entity-active' ||
@@ -813,11 +813,15 @@ function validateReadiness(options = {}) {
     }
   }
 
-  // Verification is unavailable, so every claim-derived pass is downgraded.
-  downgradeClaims(checks, reasons);
+  // Only the private browser acquisition can prevent claims from being downgraded.
+  if (!facts) downgradeClaims(checks, reasons);
+  summary.verification = facts ? {
+    source: VERIFICATION_SOURCE, appId: facts.appId, environmentId: facts.environmentId,
+    installationId: facts.installationId, capturedAt: facts.capturedAt,
+  } : null;
   summary.attestation = {
     ...summary.attestation,
-    note: 'Readiness is operator-claimed. No authenticated Forge admin browser adapter is available to verify installation, pause, F07 migration, mapping or signed-webhook delivery.',
+    note: facts ? 'Connector facts were acquired through the authenticated staging admin iframe.' : 'Readiness is operator-claimed; supplied claims cannot authenticate connector state.',
   };
 
   return finalizeReadiness(checks, reasons, summary);

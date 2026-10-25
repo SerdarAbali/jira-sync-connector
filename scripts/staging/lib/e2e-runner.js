@@ -1309,16 +1309,7 @@ function blockAllScenarios(ctx, reason) {
   });
 }
 
-/**
- * Acquires connector readiness for a run.
- *
- * There is no argument that can supply it. A caller-provided object with
- * `url()`/`evaluate()` members (or a bare callback) is indistinguishable from a
- * fabricated one, so it is not accepted at all; the acquisition call below
- * always fails with `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE` until a real
- * authenticated browser adapter exists. The failure is recorded and the run
- * stays blocked instead of silently continuing as verified.
- */
+/** Acquire through the internally owned browser; no caller page or facts input. */
 async function acquireConnectorReadiness() {
   try {
     return { readiness: await readForgeAdminReadiness(), failure: null };

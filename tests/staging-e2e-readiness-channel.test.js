@@ -1,19 +1,16 @@
 /** @jest-environment node */
 'use strict';
 
-/**
- * Regression coverage for the authenticated connector-readiness channel.
- *
- * These tests are offline: no browser, Jira or Forge request is made.
- *
- * The defect pinned down here is a caller-created `{ url(), evaluate() }`
- * object. It used to be accepted as a browser page, so the same caller that
- * asked for writes also decided what "verified readiness" contained. The
- * acquisition path is now disabled and always fails with
- * `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE`; this file proves that no
- * argument, environment variable or object shape can bring it back, and that
- * the remaining surface is pure payload validation plus the claims-only gate.
+/** Offline negative controls: caller-created pages, facts and files never gain
+ * authentication. The real acquisition path is covered separately with the
+ * browser transport mocked at its dependency boundary.
  */
+jest.mock('../scripts/staging/lib/forge-admin-browser-adapter', () => ({
+  ...jest.requireActual('../scripts/staging/lib/forge-admin-browser-adapter'),
+  readInstalledStagingReadiness: jest.fn(async () => {
+    throw Object.assign(new Error('No browser in offline tests'), { code: 'AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE' });
+  }),
+}));
 const fs = require('fs');
 const path = require('path');
 
@@ -178,7 +175,7 @@ async function expectUnavailable(promise) {
 }
 
 
-describe('disabled readiness acquisition', () => {
+describe('readiness acquisition rejects caller inputs', () => {
   it('rejects a caller-created page object that returns matching facts', async () => {
     const page = pageFor();
     await expectUnavailable(
@@ -234,7 +231,7 @@ describe('disabled readiness acquisition', () => {
     );
   });
 
-  it('rejects acquisition with no argument at all', async () => {
+  it('fails closed when its internally owned browser is unavailable', async () => {
     await expectUnavailable(readForgeAdminReadiness());
     await expectUnavailable(readForgeAdminReadiness({}));
     await expectUnavailable(readForgeAdminReadiness({ expected: expected() }));
@@ -271,6 +268,7 @@ describe('disabled readiness acquisition', () => {
       'READINESS_EXPRESSION',
       'READINESS_RESOLVER',
       'bindReadinessResponse',
+      'isAuthenticatedReadiness',
       'normalizeExpectedIdentity',
       'normalizeReadinessResponse',
       'readForgeAdminReadiness',

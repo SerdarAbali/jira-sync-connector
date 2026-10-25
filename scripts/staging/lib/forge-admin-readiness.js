@@ -1,43 +1,10 @@
 'use strict';
 
-/**
- * Authenticated connector-readiness channel.
- *
- * STATUS: the acquisition path is DISABLED and fails closed.
- *
- * The only supported source of connector facts is an authenticated Forge admin
- * browser adapter: a real browser session that is signed in to the local staging
- * site, navigates to the connector admin page and performs the `ADMIN_READ`
- * resolver invocation through `@forge/bridge`. No such adapter is implemented in
- * this repository, so `readForgeAdminReadiness()` performs no invocation and
- * always rejects with `AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE`.
- *
- * There is deliberately no argument that can change that outcome. A
- * caller-supplied object with `url()`/`evaluate()` members, a bare `evaluate`
- * callback, a JSON document, a facts object or a `source` field is not a browser
- * session and cannot be authenticated: any such object can fabricate every fact
- * the runner asks for. The previous page-handle argument was exactly that
- * bypass and is therefore removed rather than validated more strictly.
- *
- * Future adapter interface (documented, not implemented):
- *
- *   // scripts/staging/lib/forge-admin-browser-adapter.js (does not exist yet)
- *   async function createForgeAdminBrowserAdapter({ browser, siteHost, adminUrl })
- *     -> { readConnectorReadiness(): Promise<unknown> }
- *
- * The adapter is responsible for the authenticated browser session, for
- * restricting navigation to `siteHost` and for invoking
- * `window.__syncConnectorReadinessInvoke()` (see `READINESS_EXPRESSION`) exactly
- * once. Its raw payload must then be passed through `bindReadinessResponse()`,
- * which validates the response contract and binds the expected app ARI/UUID,
- * installation id, environment id and environment type. Only after that adapter
- * exists may a caller treat connector readiness as verified.
- *
- * Until then the exported `normalizeReadinessResponse()` and
- * `bindReadinessResponse()` are pure validation building blocks: neither one
- * authenticates anything, and no exported function returns verified readiness.
+/** Acquires readiness exclusively through the owned staging browser adapter.
+ * Pure binding/normalization functions never authenticate caller-supplied data.
  */
-
+const authenticated = new WeakSet();
+const { TARGET, readInstalledStagingReadiness } = require('./forge-admin-browser-adapter');
 const READINESS_RESOLVER = 'getConnectorReadiness';
 const AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE =
   'AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE';
@@ -137,6 +104,17 @@ function normalizeF07(f07) {
   if (f07 === null || f07 === undefined) return null;
   if (!isPlainObject(f07)) {
     throw invalidResponse('The readiness response has a malformed F07 record.');
+  }
+  if (f07.version === 2) {
+    if (f07.basis !== 'fresh-install' || f07.policy !== 'disposable-staging-v1'
+        || f07.phase !== 'entity-active' || !Number.isSafeInteger(f07.activatedAt)
+        || f07.activatedAt < 0
+        || ['appId', 'environmentId', 'installationId', 'siteHost'].some(key => f07[key] !== TARGET[key])) {
+      throw invalidResponse('The fresh F07 marker does not match the staging policy.');
+    }
+    return { version: 2, basis: f07.basis, policy: f07.policy, phase: f07.phase,
+      activatedAt: f07.activatedAt, appId: f07.appId, environmentId: f07.environmentId,
+      installationId: f07.installationId, siteHost: f07.siteHost };
   }
   if (!Number.isSafeInteger(f07.version)
     || typeof f07.phase !== 'string'
@@ -281,6 +259,7 @@ function normalizeReadinessResponse(raw) {
     installedSites: [...new Set(installedSites)],
     paused: raw.paused,
     f07: normalizeF07(raw.f07),
+    f07Valid: raw.f07Status?.readable === true && raw.f07Status?.valid === true,
     mappings: normalizeMappings(raw.mappings),
     webhook: normalizeWebhook(raw.webhook),
   };
@@ -335,10 +314,8 @@ function normalizeExpectedIdentity(expected) {
  * Binds a raw admin resolver response to the expected app, environment and
  * installation identity.
  *
- * This is the payload half of the (not yet implemented) browser adapter
- * contract: `createForgeAdminBrowserAdapter(...).readConnectorReadiness()` must
- * return a raw payload, and only the adapter's caller may bind it. Calling this
- * function yourself with your own object authenticates nothing.
+ * This validates identity only. Calling it with a caller-supplied object never
+ * issues the private authentication brand used by the runner.
  */
 function bindReadinessResponse(raw, expected) {
   const identity = normalizeExpectedIdentity(expected);
@@ -369,28 +346,32 @@ function bindReadinessResponse(raw, expected) {
     );
   }
 
+  if (facts.installedSites.length !== 1 || facts.installedSites[0] !== identity.siteHost) {
+    throw codedError('READINESS_SITE_MISMATCH', 'The readiness response came from a different Jira site.');
+  }
   return facts;
 }
 
-/**
- * Connector readiness acquisition. Permanently unavailable in this repository:
- * no authenticated browser adapter exists, so there is no way to perform the
- * `ADMIN_READ` invocation and every call rejects.
- *
- * The function intentionally takes NO page, no `evaluate` callback, no expected
- * identity from the caller's object graph and no environment switch: a
- * caller-provided object cannot be authenticated, because it can return any
- * payload including one that matches every expectation. Only an implementation
- * that owns a real signed-in browser session may resolve this, and that
- * implementation is the future adapter described in the module header.
- */
+function freeze(value) {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 async function readForgeAdminReadiness() {
-  throw codedError(
-    AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE,
-    'Authenticated connector readiness is unavailable: no authenticated Forge '
-      + 'admin browser adapter is implemented, so connector facts cannot be '
-      + 'verified and writes stay blocked.'
-  );
+  // Do not even invoke objects that claim to be pages or browser callbacks.
+  if (arguments.length) throw codedError(AUTHENTICATED_CONNECTOR_ADAPTER_UNAVAILABLE,
+    'Caller-supplied browser or readiness inputs are not accepted.');
+  const raw = await readInstalledStagingReadiness();
+  const facts = freeze(bindReadinessResponse(raw, TARGET));
+  authenticated.add(facts);
+  return facts;
+}
+
+function isAuthenticatedReadiness(value) {
+  return !!value && authenticated.has(value);
 }
 
 module.exports = {
@@ -401,4 +382,5 @@ module.exports = {
   normalizeReadinessResponse,
   normalizeExpectedIdentity,
   readForgeAdminReadiness,
+  isAuthenticatedReadiness,
 };

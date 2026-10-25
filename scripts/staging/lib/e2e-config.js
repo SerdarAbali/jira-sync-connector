@@ -149,13 +149,6 @@ function resolveEvidencePath(rawValue, options = {}) {
 
   const value = typeof rawValue === 'string' ? rawValue.trim() : '';
   if (!value) {
-    issues.push(
-      planIssue(
-        'evidence-not-configured',
-        'STAGING_E2E_EVIDENCE_FILE is not configured.',
-        'Export the connector readiness bundle to artifacts/staging-e2e/readiness.json and set STAGING_E2E_EVIDENCE_FILE to that relative path.'
-      )
-    );
     return { path: null, label: null, issues };
   }
 

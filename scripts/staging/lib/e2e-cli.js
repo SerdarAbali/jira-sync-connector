@@ -59,9 +59,8 @@ Options:
                      skip every scenario. Never mutates. This is the default.
   --write            Run the mutating scenarios. Requires the exact
                      STAGING_E2E_WRITE_MODE confirmation as well, and verified
-                     connector readiness. Connector readiness exported by an
-                     operator is a claim, so write mode is currently blocked
-                     until an authenticated connector interface exists.
+                     connector readiness from the private staging browser.
+                     Exported files and caller-supplied facts remain claims.
   --env-file <path>  Read configuration from this environment file.
   --json             Print the machine-readable report to stdout.
   --no-report        Do not persist the report.

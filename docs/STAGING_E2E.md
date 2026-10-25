@@ -1,5 +1,10 @@
 # Staging E2E
 
+Current authenticated acquisition: see [browser readiness](STAGING-BROWSER-READINESS.md).
+The owned browser adapter supersedes older statements below that acquisition is
+unimplemented. Caller documents remain unverified; all operational safety checks
+continue to apply.
+
 `staging:e2e` is the opt-in, write-gated end-to-end suite for a local and
 remote Jira Cloud staging pair. It verifies that the deployed connector really
 synchronizes issues, field updates, status transitions and public comments in
