@@ -65,6 +65,19 @@ Use this when an upload is missing, duplicated, or marked ambiguous.
 
 Attachment deletion propagation is Off by default. Enabling it affects only explicitly mapped attachments; it never deletes the issue.
 
+## Source attachment deletion leaves the remote copy
+
+A source attachment deletion does not remove the remote copy. Attachment deletion propagation is out of scope for the initial vendor pilot.
+
+1. Confirm `propagateAttachmentDeletions` is Off and leave it Off for the whole pilot.
+2. Expect the remote attachment to remain; the direction-scoped mapping stays valid and does not indicate a failed synchronization.
+3. Delete the remote attachment manually only as a deliberate destination edit.
+4. Do not enable propagation to exercise the path; the setting is evaluated when an event is processed, not when the attachment was deleted.
+
+A delayed `avi:jira:deleted:attachment` event therefore applies whatever setting is current when it is processed: an event emitted while propagation was Off deletes the counterpart after the setting is switched On. Queued or redelivered deletions carry no recorded occurrence time, so they cannot be distinguished from deletions made while enabled.
+
+Planned correction: compare the verified Jira changelog deletion entry (`fieldId` `attachment`, `from` set to the attachment ID, `to` empty) with a durable enable-time anchor recorded from Jira server time, and fail closed when the anchor or the deletion entry is missing, unreadable, or older than the anchor.
+
 ## Webhook was not received
 
 For bidirectional targets:
