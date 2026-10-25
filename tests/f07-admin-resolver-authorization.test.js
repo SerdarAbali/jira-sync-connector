@@ -95,6 +95,7 @@ const { ACTIVATION_CONFIRMATION } = require('../src/services/sync/lease-migratio
 
 const READINESS = 'getConnectorReadiness';
 const ACTIVATION = 'activateIssueLeaseMigration';
+const INITIALIZATION = 'initializeFreshIssueLeases';
 
 function registeredHandlers() {
   const handlers = {};
@@ -120,6 +121,7 @@ describe('F07 administration authorization', () => {
     expect(POLICY_CATEGORIES).toContain('ADMIN_WRITE');
     expect(RESOLVER_POLICIES[READINESS]).toBe('ADMIN_READ');
     expect(RESOLVER_POLICIES[ACTIVATION]).toBe('ADMIN_WRITE');
+    expect(RESOLVER_POLICIES[INITIALIZATION]).toBe('ADMIN_WRITE');
   });
 
   it('denies readiness without an authenticated administrator context', async () => {
@@ -205,5 +207,28 @@ describe('F07 administration authorization', () => {
       category: 'ADMIN_WRITE',
       success: false
     }));
+  });
+
+  it('denies fresh initialization without authenticated Jira administration', async () => {
+    await expect(invoke(handlers, INITIALIZATION, {})).resolves.toMatchObject({ code: 'FORBIDDEN' });
+    forgeApi.__permissionResponse.mockResolvedValueOnce({ ok: true,
+      json: async () => ({ permissions: { ADMINISTER: { havePermission: false } } }) });
+    await expect(invoke(handlers, INITIALIZATION, { context: { accountId: 'account-1' } }))
+      .resolves.toMatchObject({ code: 'FORBIDDEN' });
+    expect(kvs.get).not.toHaveBeenCalled();
+    expect(kvs.set).not.toHaveBeenCalled();
+    expect(logAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('audits a blocked fresh initialization without accepting request dependencies', async () => {
+    const result = await invoke(handlers, INITIALIZATION, {
+      context: { accountId: 'account-1' },
+      payload: { confirmation: 'INITIALIZE_FRESH_ISSUE_LEASES', deps: { verified: true } }
+    });
+    expect(result).toMatchObject({ code: 'INVALID_FRESH_INITIALIZATION_INPUT' });
+    expect(logAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      action: INITIALIZATION, actorAccountId: 'account-1', category: 'ADMIN_WRITE', success: false
+    }));
+    expect(kvs.set).not.toHaveBeenCalled();
   });
 });

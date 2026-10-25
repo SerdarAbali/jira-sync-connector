@@ -1,5 +1,6 @@
 import { activateIssueLeaseMigration } from '../services/sync/lease-migration-activation.js';
 import logger from '../utils/logger.js';
+import { initializeFreshIssueLeases } from '../services/sync/fresh-install-initialization.js';
 
 /**
  * Guarded F07 activation entry point. ADMIN_WRITE, the Jira administrator check
@@ -7,6 +8,9 @@ import logger from '../utils/logger.js';
  * only delegates the safety decision.
  */
 export function defineLeaseMigrationResolvers(resolver) {
+  resolver.define('initializeFreshIssueLeases', async ({ payload }) => {
+    return initializeFreshIssueLeases({ payload });
+  });
   resolver.define('activateIssueLeaseMigration', async ({ payload }) => {
     try {
       return await activateIssueLeaseMigration({ payload });

@@ -341,10 +341,11 @@ describe('Batch 2 resolver inventory and actual handler', () => {
 
     expect(typeof handler).toBe('function');
     expect(Object.keys(handler)).toHaveLength(0);
-    expect(registered).toHaveLength(79);
+    expect(registered).toHaveLength(80);
     expect(registered).toEqual(classified);
     expect(RESOLVER_POLICIES.getConnectorReadiness).toBe('ADMIN_READ');
     expect(RESOLVER_POLICIES.activateIssueLeaseMigration).toBe('ADMIN_WRITE');
+    expect(RESOLVER_POLICIES.initializeFreshIssueLeases).toBe('ADMIN_WRITE');
     expect(RESOLVER_POLICIES.replaceOrganizationToken).toBe('ADMIN_WRITE');
     expect(RESOLVER_POLICIES.rotateWebhookSecret).toBe('ADMIN_WRITE');
     expect(RESOLVER_POLICIES.importOrgSettings).toBe('ADMIN_WRITE');

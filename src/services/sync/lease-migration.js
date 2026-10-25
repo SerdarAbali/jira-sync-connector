@@ -1,4 +1,8 @@
 import kvs from '@forge/kvs';
+import { getAppContext } from '@forge/api';
+import {
+  FRESH_INSTALLATION_TARGET, FRESH_INITIALIZATION_POLICY, matchesFreshInstallationContext
+} from './fresh-install-policy.js';
 
 export const ISSUE_LEASE_MIGRATION_KEY = 'issueLeaseMigration:v1';
 // Maximum handler (900s), outstanding request (180s), plus drain margin.
@@ -20,7 +24,10 @@ function isSafeTimestamp(value) {
 // field is not part of the migration contract and must not be surfaced.
 function safeMigrationState(state) {
   const safe = {};
-  for (const field of MIGRATION_FIELDS) {
+  const fields = state.version === 2
+    ? ['version', 'phase', 'basis', 'activatedAt', 'policy', ...Object.keys(FRESH_INSTALLATION_TARGET)]
+    : MIGRATION_FIELDS;
+  for (const field of fields) {
     const value = state[field];
     if (typeof value === 'string' || typeof value === 'boolean' || Number.isSafeInteger(value)) {
       safe[field] = value;
@@ -36,7 +43,7 @@ function safeMigrationState(state) {
  * insufficiently drained state is not ready. `active` only reflects the declared
  * phase; `valid` is the authorization-relevant decision.
  */
-export function evaluateIssueLeaseMigrationState(state, now = Date.now()) {
+export function evaluateIssueLeaseMigrationState(state, now = Date.now(), context) {
   if (state === null || state === undefined) {
     return {
       present: false,
@@ -57,6 +64,20 @@ export function evaluateIssueLeaseMigrationState(state, now = Date.now()) {
       state: null,
       reasons: ['migration-malformed']
     };
+  }
+
+  if (state.version === 2) {
+    const reasons = [];
+    if (state.basis !== 'fresh-install' || state.phase !== 'entity-active') reasons.push('fresh-marker-malformed');
+    if (!matchesFreshInstallationContext(context)
+        || !Object.entries(FRESH_INSTALLATION_TARGET).every(([key, value]) => state[key] === value)) {
+      reasons.push('fresh-installation-mismatch');
+    }
+    if (state.policy !== FRESH_INITIALIZATION_POLICY) reasons.push('fresh-policy-invalid');
+    if (!isSafeTimestamp(state.activatedAt) || state.activatedAt > now) reasons.push('fresh-activated-at-invalid');
+    return { present: true, valid: reasons.length === 0, active: state.phase === 'entity-active',
+      phase: typeof state.phase === 'string' ? state.phase : null,
+      state: safeMigrationState(state), reasons };
   }
 
   const reasons = [];
@@ -117,7 +138,11 @@ export async function readIssueLeaseMigrationState(now = Date.now()) {
     };
   }
 
-  return { readable: true, ...evaluateIssueLeaseMigrationState(state, now) };
+  let context;
+  if (state?.version === 2) {
+    try { context = getAppContext(); } catch { /* Invalid binding fails closed. */ }
+  }
+  return { readable: true, ...evaluateIssueLeaseMigrationState(state, now, context) };
 }
 
 export async function assertIssueLeaseMigrationReady() {

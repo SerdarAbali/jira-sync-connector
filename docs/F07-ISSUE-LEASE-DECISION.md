@@ -91,6 +91,10 @@ Official references checked:
 
 ## Migration runbook — separate approval required; not executed
 
+The separate [disposable-staging initializer](F07-FRESH-INITIALIZATION.md) is
+restricted to one installation by explicit engineering policy. It does not
+change the version-1 migration or retirement/drain requirements below.
+
 This is an offline implementation and plan. The activation gate is intentionally
 **closed by default**. Deploying this candidate alone does not activate leases
 or permit Jira mutations. There is no automatic migration or activation writer.

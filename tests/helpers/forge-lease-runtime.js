@@ -6,7 +6,7 @@ const manifest = require('./forge-manifest');
 
 const entities = new Map();
 const requests = [];
-const state = { migration: null, beforeTransaction: null, failure: null, basicStore: null };
+const state = { migration: null, beforeTransaction: null, beforeSet: null, failure: null, basicStore: null };
 let declarations = manifest.readEntities();
 function response(status, value) {
   return { ok: status < 400, status, headers: { get: () => null },
@@ -67,8 +67,19 @@ async function fetchBoundary(_target, path, options) {
   requests.push({ path, body });
   if (state.failure) throw state.failure;
   if (path === '/api/v1/get' && body.key === 'issueLeaseMigration:v1') {
-    return state.migration ? response(200, { key: body.key, value: state.migration })
+    return state.migration !== null && state.migration !== undefined ? response(200, { key: body.key, value: state.migration })
       : response(404, { code: 'KEY_NOT_FOUND', message: 'Missing' });
+  }
+  if (path === '/api/v1/set' && body.key === 'issueLeaseMigration:v1') {
+    if (body.options?.keyPolicy !== 'FAIL_IF_EXISTS') throw new Error('Unconditional migration write');
+    if (state.beforeSet) {
+      const callback = state.beforeSet; state.beforeSet = null; await callback(body);
+    }
+    if (state.migration !== null && state.migration !== undefined) {
+      return response(409, { code: 'KEY_ALREADY_EXISTS', message: 'Key already exists' });
+    }
+    state.migration = body.value;
+    return response(204);
   }
   if (path === '/api/v1/get' && body.key === 'pilotPause') {
     return response(404, { code: 'KEY_NOT_FOUND', message: 'Missing' });
@@ -129,7 +140,7 @@ function useManifest(source) {
 }
 function reset() {
   entities.clear(); requests.length = 0;
-  state.failure = null; state.beforeTransaction = null; state.basicStore = null;
+  state.failure = null; state.beforeTransaction = null; state.beforeSet = null; state.basicStore = null;
   declarations = manifest.readEntities();
   // Existing regression suites represent an already migrated installation.
   // Migration-specific tests replace/remove this explicit fixture.

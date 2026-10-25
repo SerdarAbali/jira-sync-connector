@@ -52,6 +52,27 @@ describe('Batch 7 pilot pause UI controls', () => {
   });
 });
 
+test('admin bridge registers explicit fresh initialization without invoking it automatically', async () => {
+  const handle = source.indexOf('window.__syncConnectorInitializeFreshIssueLeases =');
+  expect(handle).toBeGreaterThan(0);
+  const start = source.lastIndexOf('useEffect(() => {', handle) + 'useEffect(() => {'.length;
+  const end = source.indexOf('}, []);', handle);
+  // Execute the actual registration effect, independently of the rest of the UI.
+  const register = new Function('window', 'invoke', source.slice(start, end));
+  const frame = {};
+  const invoke = jest.fn(async () => ({ success: true }));
+  const cleanup = register(frame, invoke);
+  expect(invoke).not.toHaveBeenCalled();
+  await frame.__syncConnectorInitializeFreshIssueLeases('INITIALIZE_FRESH_ISSUE_LEASES');
+  expect(invoke).toHaveBeenCalledWith('initializeFreshIssueLeases', {
+    confirmation: 'INITIALIZE_FRESH_ISSUE_LEASES'
+  });
+  expect(invoke).toHaveBeenCalledTimes(1);
+  cleanup();
+  expect(frame.__syncConnectorInitializeFreshIssueLeases).toBeUndefined();
+  expect(frame.__syncConnectorReadinessInvoke).toBeUndefined();
+});
+
 describe('Batch 7 recovery documentation warning', () => {
   test('warns that older versions do not enforce pilotPause', () => {
     expect(recovery).toContain('do not read or enforce the `pilotPause` key');

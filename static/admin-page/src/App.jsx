@@ -191,14 +191,17 @@ export const App = () => {
     }
   }, [selectedOrgId]);
 
-  // Read-only automation handle for the authenticated readiness channel. Browser
-  // automation driving this signed-in admin page can read the ADMIN_READ
-  // readiness response; the F07 activation resolver is deliberately not exposed.
+  // Existing authenticated bridge: reads are passive; fresh initialization
+  // requires an explicit confirmation argument and server-side ADMIN_WRITE.
+  // Neither handle is invoked automatically. Legacy activation is not exposed.
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     window.__syncConnectorReadinessInvoke = () => invoke('getConnectorReadiness', {});
+    window.__syncConnectorInitializeFreshIssueLeases = (confirmation) =>
+      invoke('initializeFreshIssueLeases', { confirmation });
     return () => {
       delete window.__syncConnectorReadinessInvoke;
+      delete window.__syncConnectorInitializeFreshIssueLeases;
     };
   }, []);
 

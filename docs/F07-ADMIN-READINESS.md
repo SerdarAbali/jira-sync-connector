@@ -1,5 +1,9 @@
 # F07 administration and readiness
 
+For the separate local initializer and the exact disposable-staging policy
+exception, see [fresh initialization](F07-FRESH-INITIALIZATION.md).
+It does not enable the legacy activation operation described below.
+
 Status: implemented locally on the staging E2E branch. Nothing in this change is
 deployed, F07 remains inactive in the staging installation, Pause and webhooks
 are untouched, no Jira mutation was made and no release, tag or push followed.
@@ -109,9 +113,12 @@ there is no partial activation state to reconcile.
 
 `src/resolvers/readiness.js` serves `getConnectorReadiness` through the existing
 authenticated Forge admin resolver used by the Custom UI admin page, and
-`static/admin-page/src/App.jsx` exposes only the read-only automation handle
-`window.__syncConnectorReadinessInvoke()`. The activation resolver is not
-exposed to the page or to automation.
+`static/admin-page/src/App.jsx` exposes the read-only automation handle
+`window.__syncConnectorReadinessInvoke()`. The separate fresh initializer is
+available through `window.__syncConnectorInitializeFreshIssueLeases(confirmation)`
+and still requires the server's explicit confirmation, ADMIN_WRITE authorization
+and exact staging identity. Neither handle runs automatically. The legacy
+activation resolver is not exposed to the page or to automation.
 
 `scripts/staging/lib/forge-admin-readiness.js`:
 
@@ -193,7 +200,7 @@ BLOCKED.
   `serverInfo`.
 - Custom Entity schema deployment and both indexes must be ACTIVE before the
   entity protocol probe can pass.
-- F07 evidence requires the 19-minute drain after verified legacy writer
+- Legacy F07 migration requires the 19-minute drain after verified legacy writer
   retirement. No supported evidence source is available in this change, so
   activation stays `BLOCKED`.
 - The E2E write gate additionally requires staging configuration
@@ -205,6 +212,14 @@ BLOCKED.
   `BLOCKED` before a Jira client is created.
 
 ### Installation-history evidence for the new staging installation
+
+For installation `974910c5-2861-4d40-a7eb-37802842d0a0` only, the operator has
+waived historical provenance as an initialization prerequisite because the sites
+are disposable test environments. The exact restriction and administrator action
+are documented in [fresh initialization](F07-FRESH-INITIALIZATION.md). This is
+an engineering policy exception, not newly obtained Atlassian history. The
+historical-evidence requirements below continue to govern legacy migration;
+they do not block this installation's separate policy-bound initializer.
 
 The staging installation is `974910c5-2861-4d40-a7eb-37802842d0a0`. It was
 installed with the guarded candidate and has never been configured for
@@ -218,7 +233,7 @@ installed, the history must also establish when its writers were retired, so the
 19-minute drain can be measured. Operator-authored booleans, timestamps, signed
 files or `source` claims are not acceptable substitutes.
 
-## Minimum next step
+## Legacy migration next step
 
 Establish a supported, auditable source of legacy-writer retirement evidence
 (for example an Atlassian-confirmed deployment/consumer retirement record) and

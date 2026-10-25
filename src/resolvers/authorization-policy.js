@@ -109,7 +109,8 @@ export const RESOLVER_POLICIES = Object.freeze({
   // Readiness never returns credentials; activation is refused by automated
   // E2E tooling and never exposed as a read or a default action.
   getConnectorReadiness: 'ADMIN_READ',
-  activateIssueLeaseMigration: 'ADMIN_WRITE'
+  activateIssueLeaseMigration: 'ADMIN_WRITE',
+  initializeFreshIssueLeases: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {

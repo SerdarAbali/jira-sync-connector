@@ -123,7 +123,7 @@ describe('F07 migration state evaluation', () => {
       valid: false,
       state: null
     });
-    expect(evaluateIssueLeaseMigrationState({ version: 2, phase: 'entity-active' }, NOW).reasons)
+    expect(evaluateIssueLeaseMigrationState({ version: 3, phase: 'entity-active' }, NOW).reasons)
       .toContain('migration-version-unsupported');
   });
 
