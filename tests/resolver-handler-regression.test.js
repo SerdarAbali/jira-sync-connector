@@ -108,11 +108,12 @@ describe('Forge resolver handler regression', () => {
     const registered = [...registeredResolverNames].sort();
     const classified = Object.keys(RESOLVER_POLICIES).sort();
 
-    expect(registered).toHaveLength(82);
+    expect(registered).toHaveLength(83);
     expect(registered).toEqual(classified);
     expect(registered).toContain('getIssueCreateOperationStatus');
     expect(registered).toContain('getConnectorReadiness');
     expect(registered).toContain('exportRecoverySnapshot');
+    expect(registered).toContain('previewRecoverySnapshot');
     expect(registered).toContain('activateIssueLeaseMigration');
     expect(registered).toContain('initializeFreshIssueLeases');
   });

@@ -145,7 +145,7 @@ function sha256Hex(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-function digestLines(lines) {
+export function digestLines(lines) {
   return `sha256:${sha256Hex(`${lines.join('\n')}\n`)}`;
 }
 
@@ -421,7 +421,23 @@ async function collectSection({ orgId, section, deps }) {
   };
 }
 
-async function readOrganizationScope(orgId, deps) {
+/**
+ * Read-only single scan of one exported section.
+ *
+ * The restore preview compares a snapshot against current storage. It reuses the
+ * export normalizer and the export's cursor discipline, so an unreadable page, a
+ * stalled cursor, a repeated page, a duplicated key or an uninterpretable record
+ * fails the preview instead of producing a short comparison.
+ *
+ * @param {{orgId: string, section: 'pairs'|'ledger', deps?: object}} options
+ * @returns {Promise<{section: string, records: Array<object>, lines: string[],
+ *   pages: number, skippedRetryClaims: number, count: number, digest: string}>}
+ */
+export async function readStoredSection({ orgId, section, deps = {} }) {
+  return collectSection({ orgId, section, deps: { ...defaultDeps, ...deps } });
+}
+
+export async function readOrganizationScope(orgId, deps) {
   let stored;
   try {
     stored = await deps.getStored('organizations');

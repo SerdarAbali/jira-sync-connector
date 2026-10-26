@@ -116,7 +116,12 @@ export const RESOLVER_POLICIES = Object.freeze({
   // Read-only, downloadable recovery snapshot of one organization's mappings
   // and issue-create ledger (recovery-snapshot.js). It writes nothing, in Jira
   // or in Forge storage, and requires the emergency pause to be in force.
-  exportRecoverySnapshot: 'ADMIN_READ'
+  exportRecoverySnapshot: 'ADMIN_READ',
+
+  // Read-only, upload-and-compare restore preview for one organization's
+  // snapshot file. It classifies pairs and ledger rows against current storage
+  // and writes nothing: no mapping, ledger row, manifest or restore plan.
+  previewRecoverySnapshot: 'ADMIN_READ'
 });
 
 export function getResolverPolicy(resolverName) {

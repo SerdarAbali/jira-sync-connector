@@ -78,12 +78,66 @@ This proves completeness for the two exported prefixes while the pause holds. It
 does not prove that storage was read at a single instant: Forge storage offers no
 multi-key read transaction, so a writer outside the pause could still interleave.
 
+## Restore preview (read-only)
+
+An administrator can upload a previously exported file in the Recovery tab and
+compare it with current storage. The preview never restores anything: it writes
+no mapping, create-ledger row, manifest or restore plan, changes no Jira issue,
+and never changes the pause state. The same emergency pause is required, so the
+records it reads are not moving while it compares them.
+
+The file is accepted only when all of the following hold:
+
+- The uploaded text is at most 3 MB, LF-terminated, and has no blank or
+  unterminated lines.
+- The whole-file checksum (header, records and counts) matches the footer, and
+  the counts line equals the footer counts.
+- The header is format `jira-sync-recovery-snapshot`, version `1`, scope
+  `one-organization`, and records a paused export.
+- Every record line normalizes to exactly the canonical record the export
+  writes, so an added, removed or renamed field is refused rather than
+  interpreted.
+- Per-section counts, per-section checksums and the total agree, and no pair or
+  ledger identity appears twice.
+- The selected organization is the one in the file, the current app and Jira
+  site match, and the remote host and remote project routing are unchanged.
+
+Identity is reported as one of:
+
+| Classification | Meaning |
+| --- | --- |
+| Same installation | Same app, site, environment and installation. Records are comparable. |
+| Different installation of the same app | Same app and site, different installation or environment. Shown for comparison; never counted as restorable. |
+| (rejected) | Different app or different Jira site. Nothing is compared. |
+
+Each exported pair is classified as:
+
+| Class | Meaning |
+| --- | --- |
+| Already present and consistent | `mapping-meta` holds the same local and remote key. |
+| Missing and potentially restorable | No stored pair, no ended/repair/deleted-counterpart record, and the remote key is not already claimed. |
+| Conflicting | A stored pair points at a different remote key, or the remote key already belongs to another local issue. |
+| Blocked by an existing record | An ended mapping, partial-write repair marker or deleted-counterpart record covers exactly that pair. |
+
+Ledger rows are compared key-by-key and reported as already present, missing or
+conflicting. A conflicting or unknown live row is never resolved, and a missing
+row is evidence of a lost attempt, not something the preview recreates. A
+succeeded ledger row whose target contradicts the exported pair is reported as a
+conflict.
+
+Pairing evidence is limited to the stored `mapping-meta` index. The preview reads
+no issue description, summary or cross-reference text, so none of it can be
+mistaken for proof of a pairing. Counts and a small sample of conflicts and
+blocks are shown in the Recovery tab.
+
 ## Limits
 
 - One organization per export; no cross-organization file.
 - 100 keys per page, at most 400 pages, 8000 records per section and 3 MB of
   content. Exceeding a budget fails the export instead of truncating it.
-- No restore, adoption or integrity-state behaviour is implemented in this phase.
+- No restore, adoption or integrity-state behaviour is implemented. The preview
+  classifies records and writes nothing; there is no restore button, no restore
+  resolver and no restore plan.
 
 ## Directional mapping consistency
 

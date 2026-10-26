@@ -13,8 +13,13 @@ import { createRoot } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { invoke } from '@forge/bridge';
 import RecoverySnapshot, {
+  SNAPSHOT_PREVIEW_MAX_BYTES,
+  SNAPSHOT_PREVIEW_PAUSE_TEXT,
+  SNAPSHOT_PREVIEW_TEXT,
   SNAPSHOT_SCOPE_TEXT,
-  formatBytes
+  formatBytes,
+  previewIdentityText,
+  previewReasonText
 } from '../static/admin-page/src/components/RecoverySnapshot.jsx';
 
 jest.mock('@forge/bridge', () => ({ invoke: jest.fn() }), { virtual: true });
@@ -103,6 +108,22 @@ describe('recovery snapshot UI wiring', () => {
     expect(componentSource).not.toContain("invoke('resume");
     expect(SNAPSHOT_SCOPE_TEXT).toContain('not a complete Forge installation backup');
     expect(componentSource).toContain('not a signature');
+  });
+
+  test('offers a read-only restore preview with no restore endpoint', () => {
+    expect(componentSource).toContain("invoke('previewRecoverySnapshot'");
+    expect(componentSource).toContain('Preview only. Nothing was written');
+    expect(SNAPSHOT_PREVIEW_TEXT).toContain('It only reads');
+    expect(componentSource).not.toMatch(/invoke\('(restore|apply|import)/);
+  });
+
+  test('preview labels are operator-readable', () => {
+    expect(previewIdentityText('same-installation')).toBe('Same installation');
+    expect(previewIdentityText('different-installation'))
+      .toBe('Different installation of the same app');
+    expect(previewIdentityText(undefined)).toBe('Not comparable');
+    expect(previewReasonText('remote-key-differs')).toBe('stored remote key differs');
+    expect(previewReasonText(undefined)).toBe('unspecified');
   });
 
   test('formatBytes renders bounded sizes', () => {
@@ -233,3 +254,174 @@ describe('recovery snapshot UI behaviour', () => {
     expect(container.textContent).toContain('Too large to export as one file.');
   });
 });
+
+const PREVIEW_CONTENT = '{"kind":"header"}\n{"kind":"counts","pairs":1,"ledger":0,"total":1}\n{"kind":"footer"}\n';
+
+const previewFixture = () => ({
+  success: true,
+  readOnly: true,
+  noWritesPerformed: true,
+  checksum: { verified: true, declared: 'sha256:abc123', algorithm: 'sha256' },
+  identity: { classification: 'same-installation', crossInstallation: false, differences: [] },
+  organization: { match: true, differences: [] },
+  counts: {
+    snapshot: { pairs: 3, ledger: 1, total: 4, skippedRetryClaims: 0 },
+    live: { pairs: 2, ledger: 1, skippedRetryClaims: 0 },
+    pairs: {
+      'already-present-consistent': 1,
+      'missing-potentially-restorable': 1,
+      conflicting: 1,
+      'blocked-by-existing-record': 0
+    },
+    ledger: { 'already-present-consistent': 1, missing: 0, conflicting: 0 },
+    restorablePairs: 1
+  },
+  samples: {
+    pairs: {
+      missing: [{ localKey: 'LOCAL-2', remoteKey: 'VEND-2', reason: null }],
+      conflicting: [{
+        localKey: 'LOCAL-3',
+        remoteKey: 'VEND-3',
+        liveRemoteKey: 'VEND-9',
+        reason: 'remote-key-differs'
+      }],
+      blocked: []
+    },
+    ledger: { missing: [], conflicting: [] }
+  }
+});
+
+function previewButton(container) {
+  return [...container.querySelectorAll('button')]
+    .find((button) => button.textContent.includes('Preview restore'));
+}
+
+async function flush() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 25)); });
+}
+
+async function chooseFile(container, content, { name = 'recovery-snapshot.ndjson', size } = {}) {
+  const input = container.querySelector('input[type="file"]');
+  const file = new File([content], name, { type: 'application/x-ndjson' });
+  if (size !== undefined) {
+    Object.defineProperty(file, 'size', { value: size, configurable: true });
+  }
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  await act(async () => {
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await flush();
+  return input;
+}
+
+describe('recovery snapshot restore preview UI', () => {
+  let originalCreateObjectURL;
+  let originalRevokeObjectURL;
+  let blobs;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    blobs = [];
+    originalCreateObjectURL = URL.createObjectURL;
+    originalRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = jest.fn((blob) => {
+      blobs.push(blob);
+      return 'blob:recovery-snapshot';
+    });
+    URL.revokeObjectURL = jest.fn();
+  });
+
+  afterEach(() => {
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+    delete global.IS_REACT_ACT_ENVIRONMENT;
+    document.body.innerHTML = '';
+  });
+
+  test('keeps the preview disabled and explains the pause while writes are active', async () => {
+    invoke.mockImplementation(async (name) => (
+      name === 'getPilotStatus' ? { success: true, paused: false } : previewFixture()
+    ));
+
+    const { container } = render(<RecoverySnapshot selectedOrg={ORG} showMessage={jest.fn()} />);
+    await act(async () => {});
+    await chooseFile(container, PREVIEW_CONTENT);
+
+    expect(previewButton(container).disabled).toBe(true);
+    expect(container.textContent).toContain(SNAPSHOT_PREVIEW_PAUSE_TEXT);
+    expect(invoke).not.toHaveBeenCalledWith('previewRecoverySnapshot', expect.anything());
+  });
+
+  test('sends the selected file and renders counts, identity and conflict samples', async () => {
+    invoke.mockImplementation(async (name) => (
+      name === 'getPilotStatus' ? { success: true, paused: true } : previewFixture()
+    ));
+
+    const { container } = render(<RecoverySnapshot selectedOrg={ORG} showMessage={jest.fn()} />);
+    await act(async () => {});
+    await chooseFile(container, PREVIEW_CONTENT);
+
+    const button = previewButton(container);
+    expect(button.disabled).toBe(false);
+
+    await act(async () => {
+      button.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(invoke).toHaveBeenCalledWith('previewRecoverySnapshot', {
+      orgId: 'org-1',
+      content: PREVIEW_CONTENT
+    });
+    expect(container.textContent).toContain('Same installation');
+    expect(container.textContent).toContain('Matches the selected organization');
+    expect(container.textContent).toContain('Verified (sha256)');
+    expect(container.textContent).toContain('Pairs conflicting');
+    expect(container.textContent).toContain('Ledger rows already present');
+    expect(container.textContent).toContain('LOCAL-3 to VEND-3: stored remote key differs');
+    expect(container.textContent).toContain('Preview only. Nothing was written');
+    // Previewing never triggers an export or a download.
+    expect(invoke).not.toHaveBeenCalledWith('exportRecoverySnapshot', expect.anything());
+    expect(blobs).toHaveLength(0);
+  });
+
+  test('renders the server refusal without counts', async () => {
+    invoke.mockImplementation(async (name) => (
+      name === 'getPilotStatus'
+        ? { success: true, paused: true }
+        : {
+          success: false,
+          code: 'SNAPSHOT_PREVIEW_CHECKSUM_MISMATCH',
+          error: 'The file checksum does not match its contents. Nothing was compared.'
+        }
+    ));
+
+    const { container } = render(<RecoverySnapshot selectedOrg={ORG} showMessage={jest.fn()} />);
+    await act(async () => {});
+    await chooseFile(container, PREVIEW_CONTENT);
+
+    await act(async () => {
+      previewButton(container).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('Snapshot not previewed');
+    expect(container.textContent).toContain('checksum does not match');
+    expect(container.textContent).not.toContain('Pairs conflicting');
+    expect(blobs).toHaveLength(0);
+  });
+
+  test('refuses an oversized file before invoking the resolver', async () => {
+    invoke.mockImplementation(async () => ({ success: true, paused: true }));
+
+    const { container } = render(<RecoverySnapshot selectedOrg={ORG} showMessage={jest.fn()} />);
+    await act(async () => {});
+    await chooseFile(container, 'x', { size: SNAPSHOT_PREVIEW_MAX_BYTES + 1 });
+
+    expect(container.textContent).toContain('larger than the 3 MB preview budget');
+    expect(previewButton(container).disabled).toBe(true);
+    expect(invoke).not.toHaveBeenCalledWith('previewRecoverySnapshot', expect.anything());
+  });
+});
+

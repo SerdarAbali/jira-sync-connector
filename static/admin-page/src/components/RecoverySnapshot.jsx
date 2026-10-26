@@ -48,6 +48,56 @@ export function formatBytes(value) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+export const SNAPSHOT_PREVIEW_TEXT =
+  'Preview compares a previously exported file with current storage. It only reads: no mapping, create-ledger, manifest or restore-plan write is made, and no Jira issue is read or modified.';
+
+export const SNAPSHOT_PREVIEW_PAUSE_TEXT =
+  'Preview requires the same emergency pause as the export.';
+
+export const SNAPSHOT_PREVIEW_MAX_BYTES = 3 * 1024 * 1024;
+
+const PREVIEW_REASON_TEXT = {
+  'remote-key-differs': 'stored remote key differs',
+  'remote-key-already-mapped': 'remote key already mapped to another local issue',
+  'ledger-target-differs-from-pair': 'ledger target contradicts the exported pair',
+  'ledger-state-differs': 'stored ledger state differs',
+  'mapping-ended': 'pair was ended by an administrator',
+  'mapping-repair': 'partial mapping write needs repair',
+  'counterpart-deleted': 'counterpart is recorded as deleted',
+  'counterpart-archived': 'counterpart record is archived',
+  'counterpart-unreadable': 'counterpart record is unreadable'
+};
+
+export function previewReasonText(reason) {
+  return PREVIEW_REASON_TEXT[reason] || reason || 'unspecified';
+}
+
+export function previewIdentityText(classification) {
+  if (classification === 'same-installation') return 'Same installation';
+  if (classification === 'different-installation') return 'Different installation of the same app';
+  return 'Not comparable';
+}
+
+/**
+ * Reads a selected file as UTF-8 text. `Blob.text()` is used when available and
+ * FileReader otherwise; both paths are local to the browser.
+ */
+export async function readFileText(file) {
+  if (file && typeof file.text === 'function') {
+    return await file.text();
+  }
+  if (typeof FileReader === 'function') {
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('File could not be read'));
+      reader.readAsText(file);
+    });
+  }
+  throw new Error('File reading is unavailable');
+}
+
+
 function downloadSnapshot(result) {
   const blob = new Blob([result.content], { type: result.contentType || 'application/x-ndjson' });
   const url = URL.createObjectURL(blob);
@@ -73,12 +123,21 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [previewFile, setPreviewFile] = useState(null);
+  const [previewContent, setPreviewContent] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [previewError, setPreviewError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setResult(null);
     setError(null);
     setPause({ readable: true, paused: null });
+    setPreviewFile(null);
+    setPreviewContent(null);
+    setPreview(null);
+    setPreviewError(null);
 
     invoke('getPilotStatus')
       .then(status => {
@@ -123,6 +182,69 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
 
   const paused = pause.paused === true;
   const canExport = Boolean(orgId) && paused && !exporting;
+
+  const selectPreviewFile = useCallback(async (event) => {
+    const file = event?.target?.files?.[0] || null;
+    setPreview(null);
+    setPreviewError(null);
+    setPreviewContent(null);
+    setPreviewFile(null);
+    if (!file) return;
+
+    if (Number(file.size) > SNAPSHOT_PREVIEW_MAX_BYTES) {
+      setPreviewError('The selected file is larger than the 3 MB preview budget.');
+      return;
+    }
+
+    try {
+      const text = await readFileText(file);
+      setPreviewContent(text);
+      setPreviewFile({
+        name: file.name || 'recovery-snapshot.ndjson',
+        size: Number.isFinite(Number(file.size)) ? Number(file.size) : text.length
+      });
+    } catch {
+      setPreviewError('The selected file could not be read.');
+    }
+  }, []);
+
+  const previewSnapshot = useCallback(async () => {
+    if (!orgId || !previewContent || previewing) return;
+    setPreviewing(true);
+    setPreviewError(null);
+
+    try {
+      const response = await invoke('previewRecoverySnapshot', { orgId, content: previewContent });
+      if (!response?.success) {
+        setPreview(null);
+        setPreviewError(response?.error || 'The snapshot could not be previewed.');
+        return;
+      }
+      setPreview(response);
+    } catch (invokeError) {
+      setPreview(null);
+      setPreviewError('The snapshot could not be previewed. Nothing was written.');
+    } finally {
+      setPreviewing(false);
+    }
+  }, [orgId, previewContent, previewing]);
+
+  const canPreview = Boolean(orgId) && paused && Boolean(previewContent) && !previewing;
+  const pairCounts = preview?.counts?.pairs || {};
+  const ledgerCounts = preview?.counts?.ledger || {};
+  const conflictSamples = preview
+    ? [
+      ...(preview.samples?.pairs?.conflicting || []).map(
+        (entry) => `Pair ${entry.localKey} to ${entry.remoteKey}: ${previewReasonText(entry.reason)}`
+      ),
+      ...(preview.samples?.pairs?.blocked || []).map(
+        (entry) => `Pair ${entry.localKey} to ${entry.remoteKey}: ${previewReasonText(entry.reason)}`
+      ),
+      ...(preview.samples?.ledger?.conflicting || []).map(
+        (entry) => `Ledger ${entry.direction} ${entry.sourceKey}: ${previewReasonText(entry.reason)}`
+      )
+    ]
+    : [];
 
   return (
     <div style={surfaceCard({ marginBottom: token('space.200', '16px') })}>
@@ -210,6 +332,115 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
           </p>
         </div>
       )}
+
+      <div
+        style={{
+          marginTop: token('space.300', '24px'),
+          paddingTop: token('space.300', '24px'),
+          borderTop: `1px solid ${token('color.border', '#DFE1E6')}`
+        }}
+      >
+        <h3 style={{ margin: 0, marginBottom: token('space.100', '8px'), fontSize: '16px', fontWeight: 600 }}>
+          Preview restore from a snapshot file
+        </h3>
+
+        <p style={{ marginTop: 0, marginBottom: token('space.200', '16px'), fontSize: '13px', color: token('color.text.subtle', '#6B778C') }}>
+          {SNAPSHOT_PREVIEW_TEXT}
+        </p>
+
+        <input
+          type="file"
+          accept=".ndjson,.json,.txt,application/x-ndjson"
+          onChange={selectPreviewFile}
+          disabled={!orgId || previewing}
+          aria-label="Recovery snapshot file"
+          style={{ marginBottom: token('space.150', '12px'), fontSize: '13px' }}
+        />
+
+        {previewFile && (
+          <p style={{ marginTop: 0, marginBottom: token('space.150', '12px'), fontSize: '12px', ...monoStyle }}>
+            {previewFile.name} ({formatBytes(previewFile.size)})
+          </p>
+        )}
+
+        {orgId && pause.readable && pause.paused === false && (
+          <p style={{ marginTop: 0, marginBottom: token('space.150', '12px'), fontSize: '12px' }}>
+            {SNAPSHOT_PREVIEW_PAUSE_TEXT}
+          </p>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: token('space.150', '12px') }}>
+          <Button isDisabled={!canPreview} isLoading={previewing} onClick={previewSnapshot}>
+            Preview restore (read-only)
+          </Button>
+          {previewing && <Spinner size="small" />}
+        </div>
+
+        {previewError && (
+          <div style={{ marginTop: token('space.200', '16px') }}>
+            <SectionMessage appearance="error" title="Snapshot not previewed">
+              <p style={{ margin: 0 }}>{previewError}</p>
+            </SectionMessage>
+          </div>
+        )}
+
+        {preview && (
+          <div style={{ marginTop: token('space.200', '16px'), display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
+              <SummaryItem
+                label="Installation identity"
+                value={previewIdentityText(preview.identity?.classification)}
+              />
+              <SummaryItem
+                label="Organization routing"
+                value={preview.organization?.match
+                  ? 'Matches the selected organization'
+                  : `Differs: ${(preview.organization?.differences || []).join(', ')}`}
+              />
+              <SummaryItem
+                label="File checksum"
+                value={preview.checksum?.verified ? 'Verified (sha256)' : 'Not verified'}
+              />
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
+              <SummaryItem label="Pairs already present" value={pairCounts['already-present-consistent'] ?? 0} />
+              <SummaryItem label="Pairs missing" value={pairCounts['missing-potentially-restorable'] ?? 0} />
+              <SummaryItem label="Pairs conflicting" value={pairCounts.conflicting ?? 0} />
+              <SummaryItem label="Pairs blocked" value={pairCounts['blocked-by-existing-record'] ?? 0} />
+              <SummaryItem label="Pairs restorable here" value={preview.counts?.restorablePairs ?? 0} />
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
+              <SummaryItem label="Ledger rows already present" value={ledgerCounts['already-present-consistent'] ?? 0} />
+              <SummaryItem label="Ledger rows missing" value={ledgerCounts.missing ?? 0} />
+              <SummaryItem label="Ledger rows conflicting" value={ledgerCounts.conflicting ?? 0} />
+            </div>
+
+            {preview.identity?.crossInstallation && (
+              <SectionMessage appearance="warning" title="Different installation">
+                <p style={{ margin: 0 }}>
+                  This file was exported from another installation of the same app. Its records are
+                  shown for comparison only and are not restorable here.
+                </p>
+              </SectionMessage>
+            )}
+
+            {conflictSamples.length > 0 && (
+              <div>
+                <div style={summaryLabelStyle}>Conflicts and blocks (sample)</div>
+                <ul style={{ margin: 0, paddingLeft: token('space.300', '24px'), ...monoStyle }}>
+                  {conflictSamples.map((line) => <li key={line}>{line}</li>)}
+                </ul>
+              </div>
+            )}
+
+            <p style={{ margin: 0, fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
+              Preview only. Nothing was written to Forge storage, Jira or the pause state.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
