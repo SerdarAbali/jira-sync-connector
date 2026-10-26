@@ -1,6 +1,6 @@
 import * as kvsStore from './kvs.js';
-import { MAX_AUDIT_LOG_ENTRIES, MAX_ERROR_ENTRIES, MAX_HOURLY_HISTORY } from '../../constants.js';
-import { sanitizeAuditEntry, sanitizeErrorEntry, boundHistory, safeErrorForLog } from '../../utils/redaction.js';
+import { MAX_AUDIT_LOG_ENTRIES, MAX_AUDIT_LOG_BYTES, MAX_ERROR_ENTRIES, MAX_HOURLY_HISTORY } from '../../constants.js';
+import { sanitizeAuditEntry, sanitizeErrorEntry, boundHistory, boundAuditLog, safeErrorForLog } from '../../utils/redaction.js';
 
 const NORMAL_SKIP_REASON_KEYS = new Set([
   'loop-prevention',
@@ -372,9 +372,10 @@ export async function logAuditEntry(entry) {
       ...entry,
       timestamp: new Date().toISOString()
     }));
-    // Bound the KVS array so audit history cannot grow indefinitely.
-    const bounded = boundHistory(auditLog, MAX_AUDIT_LOG_ENTRIES);
-    bounded.length = Math.min(bounded.length, MAX_AUDIT_LOG_ENTRIES);
+    // Bound the KVS array so audit history cannot grow indefinitely: by entry
+    // count first, then by serialized size, because the whole log is one value
+    // and Forge caps a value at 240 KiB. Oldest entries are dropped first.
+    const bounded = boundAuditLog(auditLog, MAX_AUDIT_LOG_ENTRIES, MAX_AUDIT_LOG_BYTES);
     await kvsStore.set('auditLog', bounded);
   } catch (error) {
     console.error('Error logging audit entry:', safeErrorForLog(error));

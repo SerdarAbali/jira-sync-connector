@@ -224,3 +224,26 @@ export function boundHistory(value, maxEntries) {
   if (!Array.isArray(value)) return [];
   return Number.isInteger(maxEntries) && maxEntries >= 0 ? value.slice(0, maxEntries) : value;
 }
+
+/**
+ * Bounds a sanitized audit log by entry count and by serialized size.
+ *
+ * Order is preserved (newest first): entries are kept from the head and the
+ * oldest are dropped first, so a rotation never reorders what remains. At least
+ * one entry is always kept — a single entry is already bounded by the field
+ * caps in sanitizeAuditEntry, and returning nothing would hide the newest event.
+ */
+export function boundAuditLog(value, maxEntries, maxBytes) {
+  const entries = boundHistory(value, maxEntries);
+  if (!Number.isInteger(maxBytes) || maxBytes <= 0) return entries;
+
+  const kept = [];
+  let totalBytes = 2; // the enclosing "[]"
+  for (const entry of entries) {
+    const entryBytes = JSON.stringify(entry).length + 1; // + the separator comma
+    if (kept.length > 0 && totalBytes + entryBytes > maxBytes) break;
+    kept.push(entry);
+    totalBytes += entryBytes;
+  }
+  return kept;
+}

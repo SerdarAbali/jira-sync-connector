@@ -273,7 +273,7 @@ Every permit-shaped request produces audit entries through the existing audit lo
 | --- | --- | --- |
 | `attempted` | permit satisfied, before the transport | never claims the write happened |
 | `succeeded` | transport answered 2xx | records the HTTP status |
-| `failed` | transport answered non-2xx or threw | records the status, or `transport-error` |
+| `failed` | transport answered non-2xx or threw | records the status, or `transport_error` |
 | `refused` | permit-shaped but not authorized | records the refusal reason, nothing is submitted |
 
 Each entry carries only `orgId`, `site`, stable `issueId`, `pairId`, `permitId`,
@@ -281,6 +281,13 @@ Each entry carries only `orgId`, `site`, stable `issueId`, `pairId`, `permitId`,
 keys, descriptions and comments are never recorded. Auditing is best-effort and
 independent of authorization: a failed audit write cannot block a permitted
 write, and it cannot turn a refused one into an allowed one.
+
+The log is one KVS value, and Forge caps a single persisted value at 240 KiB, so
+retention is bounded twice: `MAX_AUDIT_LOG_ENTRIES` (200 entries, newest first)
+and `MAX_AUDIT_LOG_BYTES` (96 KiB). Whichever bound is reached first drops the
+oldest entries; order is never changed and at least the newest entry is always
+kept. A refused permit-shaped request may return before the resolution phase, so
+`refused` entries record no HTTP status.
 
 ### Timing diagnostics
 

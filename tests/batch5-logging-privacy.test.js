@@ -1,5 +1,7 @@
 const mockStore = new Map();
 
+const { MAX_AUDIT_LOG_ENTRIES } = require('../src/constants.js');
+
 jest.mock('@forge/api', () => {
   const requestJira = jest.fn();
   const fetchMock = jest.fn();
@@ -200,7 +202,7 @@ describe('Batch 5 safe logger and audit boundary', () => {
     mockStore.set('auditLog', Array.from({ length: 80 }, (_, i) => ({ action: 'update', sourceIssue: `LOCAL-${i}` })));
     await logAuditEntry({ action: 'update', sourceIssue: 'LOCAL-NEW', success: true });
     const stored = mockStore.get('auditLog');
-    expect(stored).toHaveLength(50);
+    expect(stored.length).toBe(Math.min(81, MAX_AUDIT_LOG_ENTRIES));
     expect(stored[0].sourceIssue).toBe('LOCAL-NEW');
   });
 

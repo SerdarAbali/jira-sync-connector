@@ -36,7 +36,13 @@ export const RECENT_CREATION_WINDOW_MS = 3000; // 3 seconds window to detect new
 export const LINK_CREATED_EVENT = 'avi:jira:created:issuelink';
 
 // Storage Management
-export const MAX_AUDIT_LOG_ENTRIES = 50; // Keep only 50 most recent audit entries
+// Audit retention is counted in entries *and* bounded in bytes. The KVS stores
+// the whole audit log as one value, and Forge caps a single persisted value at
+// 240 KiB, so a count-only bound can be exceeded by large entries.
+// 200 entries covers the remaining maintenance migration (16 pairs x 2 writes x
+// 2 events = 64 events) plus headroom for ordinary sync/recovery entries.
+export const MAX_AUDIT_LOG_ENTRIES = 200; // Keep the 200 most recent audit entries
+export const MAX_AUDIT_LOG_BYTES = 96 * 1024; // Trim oldest entries beyond 96 KiB
 export const MAX_ERROR_ENTRIES = 50; // Keep only 50 most recent errors
 export const MAX_PENDING_LINK_ATTEMPTS = 10; // Remove pending links after 10 failed attempts
 export const MAX_HOURLY_HISTORY = 24; // Keep last 24 hourly sync stats
