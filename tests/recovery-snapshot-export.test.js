@@ -170,6 +170,68 @@ function seedPair(localKey, remoteKey, orgId = 'org-1', extra = {}) {
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...extra
   });
+  // Production writes both directed lookups alongside the metadata index, so the
+  // fixture does too; a metadata-only pair is seeded explicitly where a test
+  // needs one.
+  store.set(`${orgId}:local-to-remote:${localKey}`, remoteKey);
+  store.set(`${orgId}:remote-to-local:${remoteKey}`, localKey);
+}
+
+function seedMetaOnlyPair(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`mapping-meta:${orgId}:${localKey}`, {
+    localKey,
+    remoteKey,
+    orgId,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...extra
+  });
+}
+
+function seedEnded(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`mapping-ended:${orgId}:${localKey}:${remoteKey}`, {
+    localKey,
+    remoteKey,
+    orgId,
+    endedAt: '2026-01-05T00:00:00.000Z',
+    endedBy: 'admin-account-id',
+    reasonCode: 'administrator_ended',
+    ...extra
+  });
+}
+
+function seedRepair(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`mapping-repair:${orgId}:${localKey}:${remoteKey}`, {
+    localKey,
+    remoteKey,
+    orgId,
+    reason: 'partial-mapping-write',
+    detectedAt: '2026-01-05T00:00:00.000Z',
+    ...extra
+  });
+}
+
+function seedCounterpartStatus(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`counterpart-status:${orgId}:${localKey}:${remoteKey}`, {
+    version: 1,
+    orgId,
+    localKey,
+    remoteKey,
+    status: 'confirmed_deleted',
+    deletedSide: 'remote',
+    source: 'jira-probe',
+    reasonCode: 'deleted',
+    probeStatusCode: 404,
+    firstDetectedAt: '2026-01-05T00:00:00.000Z',
+    lastDetectedAt: '2026-01-05T00:00:00.000Z',
+    updatedAt: '2026-01-05T00:00:00.000Z',
+    state: 'active',
+    endedAt: null,
+    endedBy: 'admin-account-id',
+    resolvedAt: null,
+    replacementLocalKey: null,
+    replacementRemoteKey: null,
+    ...extra
+  });
 }
 
 function seedLedger({
@@ -220,7 +282,10 @@ describe('recovery snapshot export', () => {
     const result = await buildRecoverySnapshot({ orgId: 'org-1', deps });
 
     expect(result.success).toBe(true);
-    expect(result.counts).toEqual({ pairs: 250, ledger: 1, total: 251, skippedRetryClaims: 0 });
+    expect(result.counts).toEqual({
+      pairs: 250, ledger: 1, directions: 500, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 751, skippedRetryClaims: 0
+    });
 
     for (const [, options] of deps.queryPage.mock.calls) {
       expect(options.limit).toBeLessThanOrEqual(100);
@@ -244,14 +309,18 @@ describe('recovery snapshot export', () => {
     const result = await buildRecoverySnapshot({ orgId: 'org-1', deps: baseDeps() });
 
     expect(result.counts.pairs).toBe(1200);
-    expect(result.counts.total).toBe(1200);
+    expect(result.counts.directions).toBe(2400);
+    expect(result.counts.total).toBe(3600);
     expect(kvsStore.queryByPrefix).not.toHaveBeenCalled();
   });
 
   test('exports an empty integration as a valid zero-record snapshot', async () => {
     const result = await buildRecoverySnapshot({ orgId: 'org-1', deps: baseDeps() });
 
-    expect(result.counts).toEqual({ pairs: 0, ledger: 0, total: 0, skippedRetryClaims: 0 });
+    expect(result.counts).toEqual({
+      pairs: 0, ledger: 0, directions: 0, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 0, skippedRetryClaims: 0
+    });
     const lines = snapshotLines(result);
     expect(lines.map((line) => line.kind)).toEqual(['header', 'counts', 'footer']);
     expect(verifySnapshotContent(result.content).valid).toBe(true);
@@ -415,7 +484,7 @@ describe('recovery snapshot contents', () => {
     const [header] = snapshotLines(result);
 
     expect(header.format).toBe(RECOVERY_SNAPSHOT_FORMAT);
-    expect(header.formatVersion).toBe(1);
+    expect(header.formatVersion).toBe(2);
     expect(header.exportedAt).toBe('2026-02-03T04:05:06.000Z');
     expect(header.identity).toEqual({
       appId: IDENTITY.appId,
@@ -468,7 +537,10 @@ describe('recovery snapshot contents', () => {
 
     const result = await buildRecoverySnapshot({ orgId: 'org-1', deps: baseDeps() });
 
-    expect(result.counts).toEqual({ pairs: 1, ledger: 0, total: 1, skippedRetryClaims: 0 });
+    expect(result.counts).toEqual({
+      pairs: 1, ledger: 0, directions: 2, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 3, skippedRetryClaims: 0
+    });
     expect(result.content).toContain('LOCAL-1');
     expect(result.content).not.toContain('LOCAL-2');
     expect(result.content).not.toContain('LOCAL-4');
@@ -499,7 +571,10 @@ describe('recovery snapshot contents', () => {
 
     const result = await buildRecoverySnapshot({ orgId: 'org-1', deps: baseDeps() });
 
-    expect(result.counts).toEqual({ pairs: 0, ledger: 1, total: 1, skippedRetryClaims: 1 });
+    expect(result.counts).toEqual({
+      pairs: 0, ledger: 1, directions: 0, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 1, skippedRetryClaims: 1
+    });
     expect(result.content).not.toContain('abc123');
   });
 
@@ -619,7 +694,10 @@ describe('recovery snapshot resolver authorization', () => {
     const result = await invoke({ orgId: 'org-1' });
 
     expect(result.success).toBe(true);
-    expect(result.counts).toEqual({ pairs: 1, ledger: 1, total: 2, skippedRetryClaims: 0 });
+    expect(result.counts).toEqual({
+      pairs: 1, ledger: 1, directions: 2, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 4, skippedRetryClaims: 0
+    });
     expect(result.identity).toEqual(expect.objectContaining({
       appId: '362d8e6b-b68c-4403-8020-d32ddcc02716',
       installationId: 'installation-0000001',

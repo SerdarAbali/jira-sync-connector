@@ -6,15 +6,22 @@ import {
   MAX_SECTION_RECORDS,
   MAX_SNAPSHOT_BYTES,
   RECOVERY_SNAPSHOT_FORMAT,
-  RECOVERY_SNAPSHOT_VERSION,
+  RECOVERY_SNAPSHOT_SECTIONS,
+  RECOVERY_SNAPSHOT_SECTIONS_FOR_VERSION,
+  RECOVERY_SNAPSHOT_VERSION_V1,
   RecoverySnapshotError,
   SNAPSHOT_PAGE_SIZE,
   digestLines,
+  normalizeCounterpartStatusRecord,
+  normalizeDirectionRecord,
   normalizeLedgerRecord,
+  normalizeMappingEndedRecord,
+  normalizeMappingRepairRecord,
   normalizePairRecord,
   normalizeSnapshotOrgId,
   readOrganizationScope,
   readStoredSection,
+  sectionRecordLimit,
   stableStringify,
   verifySnapshotContent
 } from './recovery-snapshot.js';
@@ -47,7 +54,11 @@ export const PREVIEW_PAIR_CLASSES = Object.freeze({
   PRESENT: 'already-present-consistent',
   MISSING: 'missing-potentially-restorable',
   CONFLICTING: 'conflicting',
-  BLOCKED: 'blocked-by-existing-record'
+  BLOCKED: 'blocked-by-existing-record',
+  // Version 2 only. Storage holds the pair metadata but not both directed
+  // lookups (or the two directions disagree), so synchronization cannot resolve
+  // the pair and the record must never be reported as healthy.
+  INCOMPLETE_DIRECTIONAL: 'incomplete-directional'
 });
 
 export const PREVIEW_LEDGER_CLASSES = Object.freeze({
@@ -74,15 +85,31 @@ export const PREVIEW_BLOCKER_REASONS = Object.freeze({
 export const PREVIEW_CONFLICT_REASONS = Object.freeze({
   REMOTE_KEY_DIFFERS: 'remote-key-differs',
   REMOTE_KEY_ALREADY_MAPPED: 'remote-key-already-mapped',
+  DIRECTED_MAPPING_DIFFERS: 'directed-mapping-differs',
   LEDGER_TARGET_DIFFERS: 'ledger-target-differs-from-pair',
   LEDGER_STATE_DIFFERS: 'ledger-state-differs'
 });
 
+export const PREVIEW_EVIDENCE_CLASSES = Object.freeze({
+  ENDED: 'ended-by-administrator',
+  REPAIRED: 'repair-required',
+  COUNTERPART_BLOCKING: 'counterpart-blocking',
+  COUNTERPART_ARCHIVED: 'counterpart-archived',
+  CONFLICTING: 'conflicting-evidence'
+});
+
+export const PREVIEW_RECOVERABILITY_REASONS = Object.freeze({
+  V1_INSUFFICIENT_EVIDENCE: 'v1-insufficient-evidence',
+  DIFFERENT_INSTALLATION: 'different-installation',
+  DIRECTIONAL_EVIDENCE_INCOMPLETE: 'directional-evidence-incomplete',
+  DIRECTIONAL_EVIDENCE_CONFLICTING: 'directional-evidence-conflicting',
+  EVIDENCE_CONFLICTING: 'evidence-conflicting'
+});
+
 export const PREVIEW_LIMITATIONS = Object.freeze([
   'The preview only compares records. It writes no mapping, ledger row, manifest or restore plan, and it changes no Jira issue.',
-  'Pairing evidence is limited to the stored mapping-meta index. No issue description, summary or cross-reference text is read, so none of it is trusted as proof of a pairing.',
+  'Pairing evidence is limited to the stored mapping-meta index and the two directed lookup prefixes. No issue description, summary or cross-reference text is read, so none of it is trusted as proof of a pairing.',
   'Live storage is read with one bounded cursor scan per section while the emergency pause holds; Forge storage offers no multi-key read transaction.',
-  'Directed lookup records are not compared. A pair left half-written and repaired only through ensureMappingPair() is invisible to both the export and this preview.',
   'A ledger row reported as missing is evidence of a lost create attempt, not a row this preview would recreate. Nothing resolves an unknown or pending ledger row.'
 ]);
 
@@ -180,7 +207,8 @@ function readHeader(header) {
   if (header.format !== RECOVERY_SNAPSHOT_FORMAT) {
     throw previewError('SNAPSHOT_PREVIEW_FORMAT_UNSUPPORTED');
   }
-  if (header.formatVersion !== RECOVERY_SNAPSHOT_VERSION) {
+  const expectedSections = RECOVERY_SNAPSHOT_SECTIONS_FOR_VERSION[header.formatVersion];
+  if (!Array.isArray(expectedSections)) {
     throw previewError('SNAPSHOT_PREVIEW_VERSION_UNSUPPORTED', {
       formatVersion: header.formatVersion
     });
@@ -231,14 +259,15 @@ function readHeader(header) {
   }
 
   const manifest = new Map();
-  if (!Array.isArray(header.sections) || header.sections.length !== 2) {
+  if (!Array.isArray(header.sections) || header.sections.length !== expectedSections.length) {
     throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { field: 'sections' });
   }
   for (const section of header.sections) {
-    if (!isPlainObject(section) || (section.name !== 'pairs' && section.name !== 'ledger')) {
+    if (!isPlainObject(section) || !expectedSections.includes(section.name)) {
       throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { field: 'sections' });
     }
     if (!Number.isInteger(section.count) || section.count < 0
+      || section.count > sectionRecordLimit(section.name)
       || typeof section.checksum !== 'string' || !section.checksum.startsWith('sha256:')) {
       throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { field: `sections.${section.name}` });
     }
@@ -247,12 +276,14 @@ function readHeader(header) {
     }
     manifest.set(section.name, { count: section.count, checksum: section.checksum });
   }
-  if (manifest.size !== 2) {
+  if (manifest.size !== expectedSections.length) {
     throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { field: 'sections' });
   }
 
   return {
     orgId,
+    formatVersion: header.formatVersion,
+    expectedSections,
     identity,
     organization: {
       id: orgId,
@@ -323,6 +354,82 @@ function normalizeSnapshotLedger(record, line, index, orgId) {
   }
 }
 
+/** Builds the storage key the export would have read for a parsed record line. */
+function snapshotRecordKey(section, record, orgId) {
+  if (section === 'pairs') {
+    return `mapping-meta:${orgId}:${typeof record.localKey === 'string' ? record.localKey : ''}`;
+  }
+  if (section === 'ledger') {
+    const direction = typeof record.direction === 'string' ? record.direction : '';
+    const sourceKey = typeof record.sourceKey === 'string' ? record.sourceKey : '';
+    const base = `issue-create-op:${orgId}:${direction}:${encodeURIComponent(sourceKey)}`;
+    return typeof record.operationSuffix === 'string'
+      ? `${base}:${encodeURIComponent(record.operationSuffix)}`
+      : base;
+  }
+  if (section === 'directions') {
+    return record.direction === 'local-to-remote'
+      ? `${orgId}:local-to-remote:${typeof record.localKey === 'string' ? record.localKey : ''}`
+      : `${orgId}:remote-to-local:${typeof record.remoteKey === 'string' ? record.remoteKey : ''}`;
+  }
+  const localKey = typeof record.localKey === 'string' ? record.localKey : '';
+  const remoteKey = typeof record.remoteKey === 'string' ? record.remoteKey : '';
+  if (section === 'counterpartStatus') return `counterpart-status:${orgId}:${localKey}:${remoteKey}`;
+  if (section === 'mappingEnded') return `mapping-ended:${orgId}:${localKey}:${remoteKey}`;
+  if (section === 'mappingRepair') return `mapping-repair:${orgId}:${localKey}:${remoteKey}`;
+  return null;
+}
+
+const EVIDENCE_NORMALIZERS = Object.freeze({
+  directions: normalizeDirectionRecord,
+  counterpartStatus: normalizeCounterpartStatusRecord,
+  mappingEnded: normalizeMappingEndedRecord,
+  mappingRepair: normalizeMappingRepairRecord
+});
+
+/**
+ * Normalizes one record line through the export's own normalizer and requires
+ * the line to be byte-identical to the canonical record. A file that carries an
+ * added, removed or renamed field is refused instead of being interpreted.
+ */
+function normalizeSnapshotRecord(section, record, line, index, orgId) {
+  if (section === 'pairs') return normalizeSnapshotPair(record, line, index, orgId);
+  if (section === 'ledger') return normalizeSnapshotLedger(record, line, index, orgId);
+
+  const normalize = EVIDENCE_NORMALIZERS[section];
+  const key = snapshotRecordKey(section, record, orgId);
+  if (!normalize || key === null) {
+    throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { line: index, reason: 'unknown-section' });
+  }
+  const value = section === 'directions'
+    ? (record.direction === 'local-to-remote' ? record.remoteKey : record.localKey)
+    : record;
+  try {
+    const normalized = normalize(key, value, orgId);
+    if (normalized.skipped || stableStringify(normalized.record) !== line) {
+      throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { line: index });
+    }
+    return normalized.record;
+  } catch (error) {
+    if (error instanceof RecoverySnapshotError && error.code.startsWith('SNAPSHOT_PREVIEW_')) {
+      throw error;
+    }
+    throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
+      line: index,
+      cause: typeof error?.code === 'string' ? error.code : 'evidence-record-invalid'
+    });
+  }
+}
+
+function snapshotSectionIdentity(section, record) {
+  if (section === 'pairs') return record.localKey;
+  if (section === 'ledger') return ledgerIdentity(record);
+  if (section === 'directions') {
+    return `${record.direction}\u0000${record.localKey}\u0000${record.remoteKey}`;
+  }
+  return `${record.localKey}\u0000${record.remoteKey}`;
+}
+
 /**
  * Parses and fully validates uploaded snapshot text without reading storage.
  *
@@ -355,7 +462,9 @@ export function parseRecoverySnapshotContent(content) {
   if (lines.some((line) => line.trim() === '')) {
     throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { reason: 'blank-line' });
   }
-  if (lines.length > (MAX_SECTION_RECORDS * 2) + 3) {
+  const maxLines = RECOVERY_SNAPSHOT_SECTIONS
+    .reduce((sum, name) => sum + sectionRecordLimit(name), 0) + 3;
+  if (lines.length > maxLines) {
     throw previewError('SNAPSHOT_PREVIEW_TOO_LARGE', { lines: lines.length });
   }
 
@@ -372,9 +481,11 @@ export function parseRecoverySnapshotContent(content) {
   const header = readHeader(parseSnapshotLine(lines[0], 0));
 
   const counts = parseSnapshotLine(lines[lines.length - 2], lines.length - 2);
+  const countKeys = header.formatVersion === RECOVERY_SNAPSHOT_VERSION_V1
+    ? ['pairs', 'ledger']
+    : RECOVERY_SNAPSHOT_SECTIONS;
   if (!isPlainObject(counts) || counts.kind !== 'counts'
-    || !Number.isInteger(counts.pairs) || counts.pairs < 0
-    || !Number.isInteger(counts.ledger) || counts.ledger < 0
+    || countKeys.some((name) => !Number.isInteger(counts[name]) || counts[name] < 0)
     || !Number.isInteger(counts.total) || counts.total < 0
     || !Number.isInteger(counts.skipped?.ledgerRetryClaims)
     || counts.skipped.ledgerRetryClaims < 0) {
@@ -384,18 +495,17 @@ export function parseRecoverySnapshotContent(content) {
   const footer = parseSnapshotLine(lines[lines.length - 1], lines.length - 1);
   if (!isPlainObject(footer) || footer.kind !== 'footer'
     || footer.format !== RECOVERY_SNAPSHOT_FORMAT
-    || footer.formatVersion !== RECOVERY_SNAPSHOT_VERSION
+    || footer.formatVersion !== header.formatVersion
     || footer.checksumScope !== 'header,records,counts'
     || !isPlainObject(footer.sectionChecksums)) {
     throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { field: 'footer' });
   }
 
-  const pairs = [];
-  const ledger = [];
-  const pairKeys = new Set();
-  const ledgerKeys = new Set();
-  const pairLines = [];
-  const ledgerLines = [];
+  const sectionRecords = Object.fromEntries(header.expectedSections.map((name) => [name, []]));
+  const sectionLines = Object.fromEntries(header.expectedSections.map((name) => [name, []]));
+  const seenIdentities = Object.fromEntries(
+    header.expectedSections.map((name) => [name, new Set()])
+  );
   const recordLines = lines.slice(1, lines.length - 2);
 
   for (let index = 0; index < recordLines.length; index += 1) {
@@ -406,79 +516,75 @@ export function parseRecoverySnapshotContent(content) {
       throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { line: lineNumber });
     }
 
-    if (record.section === 'pairs') {
-      const normalized = normalizeSnapshotPair(record, line, lineNumber, header.orgId);
-      if (pairKeys.has(normalized.localKey)) {
-        throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
-          line: lineNumber,
-          reason: 'duplicate-pair'
-        });
-      }
-      pairKeys.add(normalized.localKey);
-      pairs.push(normalized);
-      pairLines.push(line);
-      if (pairs.length > MAX_SECTION_RECORDS) {
-        throw previewError('SNAPSHOT_PREVIEW_TOO_LARGE', { section: 'pairs' });
-      }
-      continue;
+    const section = record.section;
+    if (typeof section !== 'string' || !header.expectedSections.includes(section)) {
+      throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
+        line: lineNumber,
+        reason: 'unknown-section'
+      });
     }
 
-    if (record.section === 'ledger') {
-      const normalized = normalizeSnapshotLedger(record, line, lineNumber, header.orgId);
-      const identity = ledgerIdentity(normalized);
-      if (ledgerKeys.has(identity)) {
-        throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
-          line: lineNumber,
-          reason: 'duplicate-ledger'
-        });
-      }
-      ledgerKeys.add(identity);
-      ledger.push(normalized);
-      ledgerLines.push(line);
-      if (ledger.length > MAX_SECTION_RECORDS) {
-        throw previewError('SNAPSHOT_PREVIEW_TOO_LARGE', { section: 'ledger' });
-      }
-      continue;
+    const normalized = normalizeSnapshotRecord(section, record, line, lineNumber, header.orgId);
+    const identity = snapshotSectionIdentity(section, normalized);
+    if (seenIdentities[section].has(identity)) {
+      throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
+        line: lineNumber,
+        reason: `duplicate-${section}`
+      });
     }
-
-    throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
-      line: lineNumber,
-      reason: 'unknown-section'
-    });
+    seenIdentities[section].add(identity);
+    sectionRecords[section].push(normalized);
+    sectionLines[section].push(line);
+    if (sectionRecords[section].length > sectionRecordLimit(section)) {
+      throw previewError('SNAPSHOT_PREVIEW_TOO_LARGE', { section });
+    }
   }
 
-  const pairDigest = digestLines(pairLines);
-  const ledgerDigest = digestLines(ledgerLines);
-  const pairsManifest = header.sections.get('pairs');
-  const ledgerManifest = header.sections.get('ledger');
-
-  if (pairsManifest.count !== pairs.length || pairsManifest.checksum !== pairDigest
-    || ledgerManifest.count !== ledger.length || ledgerManifest.checksum !== ledgerDigest) {
-    throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { reason: 'section-manifest-mismatch' });
+  const sectionDigests = Object.fromEntries(
+    header.expectedSections.map((name) => [name, digestLines(sectionLines[name])])
+  );
+  for (const name of header.expectedSections) {
+    const entry = header.sections.get(name);
+    if (!entry
+      || entry.count !== sectionRecords[name].length
+      || entry.checksum !== sectionDigests[name]) {
+      throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { reason: 'section-manifest-mismatch' });
+    }
+    if (footer.sectionChecksums[name] !== sectionDigests[name]) {
+      throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
+        reason: 'footer-section-checksum-mismatch'
+      });
+    }
+    if (counts[name] !== sectionRecords[name].length) {
+      throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { reason: 'counts-mismatch' });
+    }
   }
-  if (footer.sectionChecksums.pairs !== pairDigest
-    || footer.sectionChecksums.ledger !== ledgerDigest) {
-    throw previewError('SNAPSHOT_PREVIEW_MALFORMED', {
-      reason: 'footer-section-checksum-mismatch'
-    });
-  }
-  if (counts.pairs !== pairs.length
-    || counts.ledger !== ledger.length
-    || counts.total !== pairs.length + ledger.length) {
+  const totalRecords = header.expectedSections
+    .reduce((sum, name) => sum + sectionRecords[name].length, 0);
+  if (counts.total !== totalRecords) {
     throw previewError('SNAPSHOT_PREVIEW_MALFORMED', { reason: 'counts-mismatch' });
   }
 
   return {
     orgId: header.orgId,
+    formatVersion: header.formatVersion,
     identity: header.identity,
     organization: header.organization,
     pause: header.pause,
     exportedAt: header.exportedAt,
-    pairs,
-    ledger,
+    pairs: sectionRecords.pairs,
+    ledger: sectionRecords.ledger,
+    directions: sectionRecords.directions || [],
+    counterpartStatus: sectionRecords.counterpartStatus || [],
+    mappingEnded: sectionRecords.mappingEnded || [],
+    mappingRepair: sectionRecords.mappingRepair || [],
     counts: {
       pairs: counts.pairs,
       ledger: counts.ledger,
+      directions: counts.directions ?? 0,
+      counterpartStatus: counts.counterpartStatus ?? 0,
+      mappingEnded: counts.mappingEnded ?? 0,
+      mappingRepair: counts.mappingRepair ?? 0,
       total: counts.total,
       skippedRetryClaims: counts.skipped.ledgerRetryClaims
     },
@@ -753,13 +859,52 @@ function pushSample(list, entry) {
   }
 }
 
-function pairClassCounts() {
-  return {
+function pairClassCounts(includeDirectional) {
+  const counts = {
     [PREVIEW_PAIR_CLASSES.PRESENT]: 0,
     [PREVIEW_PAIR_CLASSES.MISSING]: 0,
     [PREVIEW_PAIR_CLASSES.CONFLICTING]: 0,
     [PREVIEW_PAIR_CLASSES.BLOCKED]: 0
   };
+  if (includeDirectional) {
+    counts[PREVIEW_PAIR_CLASSES.INCOMPLETE_DIRECTIONAL] = 0;
+  }
+  return counts;
+}
+
+/**
+ * Indexes the directed lookup records so a pair can be resolved the way
+ * synchronization resolves it: `local-to-remote:<local>` and
+ * `remote-to-local:<remote>`, never the metadata index alone.
+ */
+function indexDirections(records) {
+  const localToRemote = new Map();
+  const remoteToLocal = new Map();
+  for (const record of records || []) {
+    if (record.direction === 'local-to-remote') {
+      if (!localToRemote.has(record.localKey)) {
+        localToRemote.set(record.localKey, record.remoteKey);
+      }
+    } else if (!remoteToLocal.has(record.remoteKey)) {
+      remoteToLocal.set(record.remoteKey, record.localKey);
+    }
+  }
+  return { localToRemote, remoteToLocal };
+}
+
+/**
+ * A pair is directionally complete only when both lookups resolve to exactly
+ * that pair. `absent` means neither lookup exists, `partial` means exactly one
+ * exists, and `conflicting` means a lookup resolves to a different issue.
+ */
+function directionState(directions, localKey, remoteKey) {
+  const forward = directions.localToRemote.get(localKey);
+  const backward = directions.remoteToLocal.get(remoteKey);
+  if (forward === remoteKey && backward === localKey) return 'complete';
+  if (forward === undefined && backward === undefined) return 'absent';
+  if (forward !== undefined && forward !== remoteKey) return 'conflicting';
+  if (backward !== undefined && backward !== localKey) return 'conflicting';
+  return 'partial';
 }
 
 /**
@@ -771,9 +916,11 @@ function pairClassCounts() {
  * deleted-counterpart record exists for exactly that pair; otherwise it is
  * missing and potentially restorable.
  */
-function classifyPairs({ snapshotPairs, livePairs, blocking }) {
-  const counts = pairClassCounts();
+function classifyPairs({ snapshotPairs, livePairs, blocking, liveDirections = null }) {
+  const hasDirections = liveDirections !== null && liveDirections !== undefined;
+  const counts = pairClassCounts(hasDirections);
   const samples = { missing: [], conflicting: [], blocked: [] };
+  if (hasDirections) samples.incomplete = [];
   const missingPairs = [];
   const liveByLocal = new Map();
   const liveByRemote = new Map();
@@ -787,10 +934,33 @@ function classifyPairs({ snapshotPairs, livePairs, blocking }) {
 
   for (const pair of snapshotPairs) {
     const live = liveByLocal.get(pair.localKey);
+    const state = hasDirections
+      ? directionState(liveDirections, pair.localKey, pair.remoteKey)
+      : null;
 
     if (live) {
       if (live.remoteKey === pair.remoteKey) {
-        counts[PREVIEW_PAIR_CLASSES.PRESENT] += 1;
+        if (!hasDirections || state === 'complete') {
+          counts[PREVIEW_PAIR_CLASSES.PRESENT] += 1;
+          continue;
+        }
+        if (state === 'conflicting') {
+          counts[PREVIEW_PAIR_CLASSES.CONFLICTING] += 1;
+          pushSample(samples.conflicting, {
+            classification: PREVIEW_PAIR_CLASSES.CONFLICTING,
+            localKey: pair.localKey,
+            remoteKey: pair.remoteKey,
+            reason: PREVIEW_CONFLICT_REASONS.DIRECTED_MAPPING_DIFFERS
+          });
+          continue;
+        }
+        counts[PREVIEW_PAIR_CLASSES.INCOMPLETE_DIRECTIONAL] += 1;
+        pushSample(samples.incomplete, {
+          classification: PREVIEW_PAIR_CLASSES.INCOMPLETE_DIRECTIONAL,
+          localKey: pair.localKey,
+          remoteKey: pair.remoteKey,
+          directionalState: state
+        });
         continue;
       }
       counts[PREVIEW_PAIR_CLASSES.CONFLICTING] += 1;
@@ -829,13 +999,36 @@ function classifyPairs({ snapshotPairs, livePairs, blocking }) {
       continue;
     }
 
+    if (hasDirections && state === 'conflicting') {
+      counts[PREVIEW_PAIR_CLASSES.CONFLICTING] += 1;
+      pushSample(samples.conflicting, {
+        classification: PREVIEW_PAIR_CLASSES.CONFLICTING,
+        localKey: pair.localKey,
+        remoteKey: pair.remoteKey,
+        reason: PREVIEW_CONFLICT_REASONS.DIRECTED_MAPPING_DIFFERS
+      });
+      continue;
+    }
+
+    if (hasDirections && state === 'partial') {
+      counts[PREVIEW_PAIR_CLASSES.INCOMPLETE_DIRECTIONAL] += 1;
+      pushSample(samples.incomplete, {
+        classification: PREVIEW_PAIR_CLASSES.INCOMPLETE_DIRECTIONAL,
+        localKey: pair.localKey,
+        remoteKey: pair.remoteKey,
+        directionalState: state
+      });
+      continue;
+    }
+
     counts[PREVIEW_PAIR_CLASSES.MISSING] += 1;
     missingPairs.push(pair);
     pushSample(samples.missing, {
       classification: PREVIEW_PAIR_CLASSES.MISSING,
       localKey: pair.localKey,
       remoteKey: pair.remoteKey,
-      reason: null
+      reason: null,
+      directionalState: state
     });
   }
 
@@ -947,6 +1140,125 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
 }
 
 
+/**
+ * Indexes the evidence a version 2 file carries. Pairing intent lives in these
+ * records, so a restore must consult them before it may re-create a mapping: an
+ * ended pair, a repair marker or a deleted counterpart must never be revived by
+ * restoring an older file over a newer decision.
+ */
+function buildFileEvidence(snapshot) {
+  const ended = new Map();
+  const repaired = new Map();
+  const counterpart = new Map();
+  for (const record of snapshot.mappingEnded || []) {
+    ended.set(pairKey(record.localKey, record.remoteKey), record);
+  }
+  for (const record of snapshot.mappingRepair || []) {
+    repaired.set(pairKey(record.localKey, record.remoteKey), record);
+  }
+  for (const record of snapshot.counterpartStatus || []) {
+    counterpart.set(pairKey(record.localKey, record.remoteKey), record);
+  }
+
+  const counterpartReason = (record) => {
+    if (!record) return null;
+    if (record.state === 'ended' || record.state === 'replaced') {
+      return PREVIEW_BLOCKER_REASONS.COUNTERPART_ARCHIVED;
+    }
+    return counterpartStatusBlocksSync(record, { hasMapping: false }).blocked
+      ? PREVIEW_BLOCKER_REASONS.COUNTERPART_DELETED
+      : null;
+  };
+
+  return {
+    ended,
+    repaired,
+    counterpart,
+    reasonFor(localKey, remoteKey) {
+      const key = pairKey(localKey, remoteKey);
+      if (ended.has(key)) return PREVIEW_BLOCKER_REASONS.MAPPING_ENDED;
+      if (repaired.has(key)) return PREVIEW_BLOCKER_REASONS.MAPPING_REPAIR;
+      return counterpartReason(counterpart.get(key));
+    }
+  };
+}
+
+/**
+ * Summarizes the directional evidence the file itself carries, so an incomplete
+ * or self-contradictory export is detectable before anything is labelled
+ * recoverable.
+ */
+function buildSnapshotDirectionReport(snapshot) {
+  const directions = indexDirections(snapshot.directions);
+  const pairKeys = new Set((snapshot.pairs || []).map((pair) => pairKey(pair.localKey, pair.remoteKey)));
+  const conflicting = new Set();
+  const incomplete = new Set();
+  const orphans = [];
+
+  for (const pair of snapshot.pairs || []) {
+    const key = pairKey(pair.localKey, pair.remoteKey);
+    const state = directionState(directions, pair.localKey, pair.remoteKey);
+    if (state === 'conflicting') conflicting.add(key);
+    else if (state !== 'complete') incomplete.add(key);
+  }
+
+  for (const record of snapshot.directions || []) {
+    const key = pairKey(record.localKey, record.remoteKey);
+    const mirrored = record.direction === 'local-to-remote'
+      ? directions.remoteToLocal.get(record.remoteKey)
+      : directions.localToRemote.get(record.localKey);
+    if (mirrored !== undefined && mirrored !== (record.direction === 'local-to-remote'
+      ? record.localKey
+      : record.remoteKey)) {
+      conflicting.add(key);
+    }
+    if (!pairKeys.has(key)) {
+      orphans.push(record);
+      if (record.direction === 'local-to-remote'
+        ? directions.remoteToLocal.get(record.remoteKey) !== record.localKey
+        : directions.localToRemote.get(record.localKey) !== record.remoteKey) {
+        incomplete.add(key);
+      }
+    }
+  }
+
+  return {
+    directions,
+    incompletePairs: incomplete.size,
+    conflictingPairs: conflicting.size,
+    orphanDirections: orphans.length
+  };
+}
+
+/** Evidence that contradicts itself, so the file cannot be called recoverable. */
+function buildEvidenceConflicts(snapshot, directionReport) {
+  const evidence = buildFileEvidence(snapshot);
+  const conflicts = [];
+  for (const ended of evidence.ended.values()) {
+    const key = pairKey(ended.localKey, ended.remoteKey);
+    const status = evidence.counterpart.get(key);
+    if (status && status.state === 'active') {
+      conflicts.push({
+        localKey: ended.localKey,
+        remoteKey: ended.remoteKey,
+        reason: 'ended-with-active-counterpart'
+      });
+    }
+  }
+  for (const repair of evidence.repaired.values()) {
+    const state = directionReport.directions.localToRemote.get(repair.localKey) === repair.remoteKey
+      && directionReport.directions.remoteToLocal.get(repair.remoteKey) === repair.localKey;
+    if (state) {
+      conflicts.push({
+        localKey: repair.localKey,
+        remoteKey: repair.remoteKey,
+        reason: 'repair-with-complete-directions'
+      });
+    }
+  }
+  return conflicts;
+}
+
 const defaultDeps = {
   queryPage: (prefix, options) => kvsStore.queryPageByPrefix(prefix, options),
   getStored: (key) => kvsStore.get(key),
@@ -1002,23 +1314,59 @@ export async function previewRestoreSnapshot(options = {}) {
     throw previewError(identityCheck.rejection, { fields: identityCheck.differences });
   }
 
+  const hasEvidenceSections = snapshot.formatVersion >= 2;
   const livePairs = await readLiveSection(orgId, 'pairs', deps);
   const liveLedger = await readLiveSection(orgId, 'ledger', deps);
+  const liveDirections = hasEvidenceSections
+    ? indexDirections((await readLiveSection(orgId, 'directions', deps)).records)
+    : null;
+  const liveDirectionCount = liveDirections
+    ? liveDirections.localToRemote.size + liveDirections.remoteToLocal.size
+    : 0;
 
-  // Blocking records are only read when at least one pair is actually absent.
-  // A fully consistent file therefore costs two section scans and nothing else.
-  let blocking = { blocking: new Map(), counters: null };
+  const directionReport = hasEvidenceSections
+    ? buildSnapshotDirectionReport(snapshot)
+    : {
+      directions: indexDirections([]),
+      incompletePairs: 0,
+      conflictingPairs: 0,
+      orphanDirections: 0
+    };
+  const fileEvidence = hasEvidenceSections ? buildFileEvidence(snapshot) : null;
+  const evidenceConflicts = hasEvidenceSections
+    ? buildEvidenceConflicts(snapshot, directionReport)
+    : [];
+
+  // Evidence carried by the file always applies. Live blocking records are only
+  // scanned when a pair is actually absent, so a fully consistent file stays
+  // cheap; both sources feed a single blocker map.
+  const fileBlocking = new Map();
+  if (fileEvidence) {
+    for (const pair of snapshot.pairs) {
+      const reason = fileEvidence.reasonFor(pair.localKey, pair.remoteKey);
+      if (reason) fileBlocking.set(pairKey(pair.localKey, pair.remoteKey), reason);
+    }
+  }
+
+  let blocking = { blocking: new Map(fileBlocking), counters: null };
   let pairs = classifyPairs({
     snapshotPairs: snapshot.pairs,
     livePairs: livePairs.records,
-    blocking: null
+    blocking: blocking.blocking,
+    liveDirections
   });
   if (pairs.missingPairs.length > 0) {
-    blocking = await readBlockingRecords(orgId, deps);
+    const liveBlocking = await readBlockingRecords(orgId, deps);
+    const merged = new Map(liveBlocking.blocking);
+    for (const [key, reason] of fileBlocking) {
+      if (!merged.has(key)) merged.set(key, reason);
+    }
+    blocking = { blocking: merged, counters: liveBlocking.counters };
     pairs = classifyPairs({
       snapshotPairs: snapshot.pairs,
       livePairs: livePairs.records,
-      blocking: blocking.blocking
+      blocking: merged,
+      liveDirections
     });
   }
 
@@ -1028,9 +1376,60 @@ export async function previewRestoreSnapshot(options = {}) {
     snapshotPairs: snapshot.pairs
   });
 
+  const counterpartRecords = snapshot.counterpartStatus || [];
+  const evidence = {
+    available: hasEvidenceSections,
+    ended: (snapshot.mappingEnded || []).length,
+    repaired: (snapshot.mappingRepair || []).length,
+    counterpartBlocking: counterpartRecords.filter((record) => (
+      record.state !== 'ended'
+      && record.state !== 'replaced'
+      && counterpartStatusBlocksSync(record, { hasMapping: false }).blocked
+    )).length,
+    counterpartArchived: counterpartRecords.filter((record) =>
+      record.state === 'ended' || record.state === 'replaced').length,
+    directional: {
+      records: directionReport.directions.localToRemote.size
+        + directionReport.directions.remoteToLocal.size,
+      incompletePairs: directionReport.incompletePairs,
+      conflictingPairs: directionReport.conflictingPairs,
+      orphanRecords: directionReport.orphanDirections
+    },
+    conflicting: evidenceConflicts
+  };
+
   const crossInstallation = identityCheck.classification
     === PREVIEW_IDENTITY_CLASSES.DIFFERENT_INSTALLATION;
+
+  const recoverabilityReasons = [];
+  if (!hasEvidenceSections) {
+    recoverabilityReasons.push(PREVIEW_RECOVERABILITY_REASONS.V1_INSUFFICIENT_EVIDENCE);
+  }
+  if (crossInstallation) {
+    recoverabilityReasons.push(PREVIEW_RECOVERABILITY_REASONS.DIFFERENT_INSTALLATION);
+  }
+  if (hasEvidenceSections && directionReport.conflictingPairs > 0) {
+    recoverabilityReasons.push(PREVIEW_RECOVERABILITY_REASONS.DIRECTIONAL_EVIDENCE_CONFLICTING);
+  }
+  if (hasEvidenceSections && directionReport.incompletePairs > 0) {
+    recoverabilityReasons.push(PREVIEW_RECOVERABILITY_REASONS.DIRECTIONAL_EVIDENCE_INCOMPLETE);
+  }
+  if (hasEvidenceSections && evidenceConflicts.length > 0) {
+    recoverabilityReasons.push(PREVIEW_RECOVERABILITY_REASONS.EVIDENCE_CONFLICTING);
+  }
+  const recoverability = {
+    recoverable: recoverabilityReasons.length === 0,
+    reasons: recoverabilityReasons
+  };
+
   const limitations = [...PREVIEW_LIMITATIONS];
+  if (!hasEvidenceSections) {
+    limitations.push(
+      'This is a version 1 snapshot. It carries no directed lookup, ended-mapping, '
+      + 'repair or counterpart-status records, so it is insufficient for recovery '
+      + 'after total storage loss and is reported as not recoverable.'
+    );
+  }
   if (crossInstallation) {
     limitations.push(
       'This file was exported from a different installation or environment of the same app. '
@@ -1038,12 +1437,33 @@ export async function previewRestoreSnapshot(options = {}) {
     );
   }
 
+  const snapshotCounts = snapshot.formatVersion === RECOVERY_SNAPSHOT_VERSION_V1
+    ? {
+      pairs: snapshot.counts.pairs,
+      ledger: snapshot.counts.ledger,
+      total: snapshot.counts.total,
+      skippedRetryClaims: snapshot.counts.skippedRetryClaims
+    }
+    : { ...snapshot.counts };
+  const liveCounts = hasEvidenceSections
+    ? {
+      pairs: livePairs.count,
+      ledger: liveLedger.count,
+      directions: liveDirectionCount,
+      skippedRetryClaims: liveLedger.skippedRetryClaims
+    }
+    : {
+      pairs: livePairs.count,
+      ledger: liveLedger.count,
+      skippedRetryClaims: liveLedger.skippedRetryClaims
+    };
+
   return {
     success: true,
     readOnly: true,
     noWritesPerformed: true,
     format: RECOVERY_SNAPSHOT_FORMAT,
-    formatVersion: RECOVERY_SNAPSHOT_VERSION,
+    formatVersion: snapshot.formatVersion,
     exportedAt: snapshot.exportedAt,
     checkedAt: new Date(deps.now()).toISOString(),
     bytes: snapshot.bytes,
@@ -1082,14 +1502,11 @@ export async function previewRestoreSnapshot(options = {}) {
       current: currentOrganization
     },
     counts: {
-      snapshot: snapshot.counts,
-      live: {
-        pairs: livePairs.count,
-        ledger: liveLedger.count,
-        skippedRetryClaims: liveLedger.skippedRetryClaims
-      },
+      snapshot: snapshotCounts,
+      live: liveCounts,
       pairs: pairs.counts,
       ledger: ledger.counts,
+      evidence,
       restorablePairs: crossInstallation ? 0 : pairs.counts[PREVIEW_PAIR_CLASSES.MISSING],
       blockingRecords: blocking.counters || {
         mappingEnded: 0,
@@ -1098,6 +1515,21 @@ export async function previewRestoreSnapshot(options = {}) {
         unattributed: 0
       }
     },
+    evidence: {
+      available: hasEvidenceSections,
+      ended: evidence.ended,
+      repaired: evidence.repaired,
+      counterpartBlocking: evidence.counterpartBlocking,
+      counterpartArchived: evidence.counterpartArchived,
+      directional: evidence.directional,
+      conflicting: evidence.conflicting,
+      samples: {
+        ended: (snapshot.mappingEnded || []).slice(0, PREVIEW_SAMPLE_LIMIT),
+        repaired: (snapshot.mappingRepair || []).slice(0, PREVIEW_SAMPLE_LIMIT),
+        counterpart: (snapshot.counterpartStatus || []).slice(0, PREVIEW_SAMPLE_LIMIT)
+      }
+    },
+    recoverability,
     samples: {
       pairs: pairs.samples,
       ledger: ledger.samples

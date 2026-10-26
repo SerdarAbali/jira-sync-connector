@@ -27,7 +27,8 @@ import { isValidIssueKey } from '../storage/mappings.js';
  */
 
 export const RECOVERY_SNAPSHOT_FORMAT = 'jira-sync-recovery-snapshot';
-export const RECOVERY_SNAPSHOT_VERSION = 1;
+export const RECOVERY_SNAPSHOT_VERSION = 2;
+export const RECOVERY_SNAPSHOT_VERSION_V1 = 1;
 export const RECOVERY_SNAPSHOT_CONTENT_TYPE = 'application/x-ndjson; charset=utf-8';
 export const RECOVERY_SNAPSHOT_NOTICE =
   'Mapping and create-operation ledger recovery snapshot for one organization. '
@@ -40,12 +41,50 @@ export const MAX_SECTION_PAGES = 400;
 export const MAX_SECTION_RECORDS = 8000;
 export const MAX_SNAPSHOT_BYTES = 3 * 1024 * 1024;
 
-export const RECOVERY_SNAPSHOT_SECTIONS = Object.freeze(['pairs', 'ledger']);
+export const RECOVERY_SNAPSHOT_SECTIONS_V1 = Object.freeze(['pairs', 'ledger']);
+
+/**
+ * Version 2 sections, in file order. The first two are the version 1 sections,
+ * unchanged; the remaining four add the evidence a restore needs so that an old
+ * backup cannot silently reactivate a relationship an administrator ended, a
+ * repair marker left half-written, or a counterpart recorded as deleted.
+ */
+export const RECOVERY_SNAPSHOT_SECTIONS = Object.freeze([
+  ...RECOVERY_SNAPSHOT_SECTIONS_V1,
+  'directions',
+  'counterpartStatus',
+  'mappingEnded',
+  'mappingRepair'
+]);
+
+export const RECOVERY_SNAPSHOT_SECTIONS_FOR_VERSION = Object.freeze({
+  1: RECOVERY_SNAPSHOT_SECTIONS_V1,
+  2: RECOVERY_SNAPSHOT_SECTIONS
+});
+
+export const RECOVERY_SNAPSHOT_SECTION_RECORD_TYPES = Object.freeze({
+  pairs: 'issue-pair-mapping',
+  ledger: 'issue-create-ledger',
+  directions: 'mapping-direction',
+  counterpartStatus: 'counterpart-status',
+  mappingEnded: 'mapping-ended',
+  mappingRepair: 'mapping-repair'
+});
 
 const SAFE_REASON_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
 const SAFE_OPERATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SAFE_STATUS_TOKEN_PATTERN = /^[A-Za-z0-9_.:-]{1,80}$/;
 const PROJECT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,49}$/;
 const MAX_ALLOWED_PROJECTS = 200;
+
+const COUNTERPART_STATES = Object.freeze(['active', 'resolved', 'ended', 'replaced', 'dismissed']);
+const COUNTERPART_STATUS_VALUES = Object.freeze([
+  'confirmed_deleted',
+  'unavailable',
+  'access_problem',
+  'temporary_failure'
+]);
+const COUNTERPART_DELETED_SIDES = Object.freeze(['local', 'remote']);
 
 export const SNAPSHOT_OMISSIONS = Object.freeze([
   'api tokens and webhook signing secrets',
@@ -53,18 +92,18 @@ export const SNAPSHOT_OMISSIONS = Object.freeze([
   'attachment content and attachment mappings',
   'remote API user email address',
   'JQL filter and installation-level Forge configuration',
-  'deleted-counterpart, repair and ended-mapping records'
+  'account identifiers recorded on ended-mapping, repair and counterpart-status records'
 ]);
 
 export const SNAPSHOT_LIMITATIONS = Object.freeze([
-  'Completeness is proven only for the two exported prefixes and only while the '
+  'Completeness is proven only for the six exported prefixes and only while the '
     + 'emergency pause stays unchanged for the whole export.',
   'Two agreeing full scans detect concurrent modification; they cannot prove '
     + 'that Forge storage was read at a single instant.',
-  'Pairs are exported from the mapping-meta index only. The directed lookup '
-    + 'records are derived from it, so a pair held only in those lookup records '
-    + '(partial-write repair) is not part of this file; the export neither '
-    + 'detects nor repairs that divergence.',
+  'Pairs are exported from the mapping-meta index and both directed lookup '
+    + 'prefixes. A pair that is present in only one of those two directions is '
+    + 'exported as evidence and reported by the preview as incomplete; the export '
+    + 'never repairs that divergence.',
   'The checksum detects accidental corruption and edit-after-download tampering; '
     + 'it is not a signature and does not authenticate the file.'
 ]);
@@ -167,11 +206,40 @@ function safeOperationId(value) {
   return typeof value === 'string' && SAFE_OPERATION_ID_PATTERN.test(value) ? value : null;
 }
 
-export function sectionPrefix(orgId, section) {
-  if (section === 'pairs') return `mapping-meta:${orgScope(orgId)}:`;
-  if (section === 'ledger') return `issue-create-op:${orgScope(orgId)}:`;
+export function sectionPrefixes(orgId, section) {
+  const scope = orgScope(orgId);
+  if (section === 'pairs') return [`mapping-meta:${scope}:`];
+  if (section === 'ledger') return [`issue-create-op:${scope}:`];
+  if (section === 'directions') return [`${scope}:local-to-remote:`, `${scope}:remote-to-local:`];
+  if (section === 'counterpartStatus') return [`counterpart-status:${scope}:`];
+  if (section === 'mappingEnded') return [`mapping-ended:${scope}:`];
+  if (section === 'mappingRepair') return [`mapping-repair:${scope}:`];
   throw snapshotError('SNAPSHOT_EXPORT_FAILED', 'Unknown snapshot section');
 }
+
+/** First prefix of a section. Kept for callers that only need the primary one. */
+export function sectionPrefix(orgId, section) {
+  return sectionPrefixes(orgId, section)[0];
+}
+
+/** Parses `<localKey>:<remoteKey>` suffixes used by the evidence sections. */
+function parseEvidencePairKey(key, prefix, section) {
+  if (typeof key !== 'string' || !key.startsWith(prefix)) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', `${section} record outside the selected organization`);
+  }
+  const parts = key.slice(prefix.length).split(':');
+  if (parts.length !== 2 || !isValidIssueKey(parts[0]) || !isValidIssueKey(parts[1])) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', `${section} record has an invalid issue pair`);
+  }
+  return { localKey: parts[0], remoteKey: parts[1] };
+}
+
+function safeStatusToken(value) {
+  return typeof value === 'string' && SAFE_STATUS_TOKEN_PATTERN.test(value)
+    ? value.slice(0, 80)
+    : null;
+}
+
 
 function hostFromUrl(value) {
   if (typeof value !== 'string' || value.trim() === '') return null;
@@ -308,100 +376,237 @@ export function normalizeLedgerRecord(key, value, orgId) {
   };
 }
 
+/**
+ * Directional mapping evidence.
+ *
+ * Version 1 exported only the mapping-meta index, so a pair held only in the
+ * directed lookup records was invisible and a metadata-only pair looked healthy.
+ * Version 2 exports both directions as canonical records, so the preview can
+ * distinguish a complete pair, a metadata-only pair, a directional-only pair and
+ * two directions that disagree.
+ */
+export function normalizeDirectionRecord(key, value, orgId) {
+  const [localToRemotePrefix, remoteToLocalPrefix] = sectionPrefixes(orgId, 'directions');
+  let direction;
+  let localKey;
+  let remoteKey;
+  if (typeof key === 'string' && key.startsWith(localToRemotePrefix)) {
+    direction = 'local-to-remote';
+    localKey = key.slice(localToRemotePrefix.length);
+    remoteKey = value;
+  } else if (typeof key === 'string' && key.startsWith(remoteToLocalPrefix)) {
+    direction = 'remote-to-local';
+    remoteKey = key.slice(remoteToLocalPrefix.length);
+    localKey = value;
+  } else {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', 'Direction record outside the selected organization');
+  }
+  if (!isValidIssueKey(localKey) || !isValidIssueKey(remoteKey)) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', 'Direction record has an invalid issue pair');
+  }
+  return {
+    identity: `${direction}\u0000${localKey}\u0000${remoteKey}`,
+    record: {
+      kind: 'record',
+      section: 'directions',
+      direction,
+      localKey,
+      remoteKey
+    }
+  };
+}
+
+/**
+ * Counterpart-status evidence. A record whose status is not one this connector
+ * writes is refused instead of being exported as an uninterpretable state: a
+ * backup that cannot say why a counterpart was blocked is worse than no backup.
+ */
+export function normalizeCounterpartStatusRecord(key, value, orgId) {
+  const prefix = sectionPrefixes(orgId, 'counterpartStatus')[0];
+  const { localKey, remoteKey } = parseEvidencePairKey(key, prefix, 'Counterpart status');
+  if (!isPlainObject(value)) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', 'Counterpart status record is not an object');
+  }
+  if (!COUNTERPART_STATUS_VALUES.includes(value.status)) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', 'Counterpart status record has an unrecognized status');
+  }
+  return {
+    identity: `${localKey}\u0000${remoteKey}`,
+    record: {
+      kind: 'record',
+      section: 'counterpartStatus',
+      localKey,
+      remoteKey,
+      state: COUNTERPART_STATES.includes(value.state) ? value.state : 'active',
+      status: value.status,
+      deletedSide: COUNTERPART_DELETED_SIDES.includes(value.deletedSide) ? value.deletedSide : null,
+      source: safeStatusToken(value.source),
+      reasonCode: safeStatusToken(value.reasonCode),
+      probeStatusCode: Number.isInteger(value.probeStatusCode) ? value.probeStatusCode : null,
+      firstDetectedAt: safeTimestamp(value.firstDetectedAt),
+      lastDetectedAt: safeTimestamp(value.lastDetectedAt),
+      updatedAt: safeTimestamp(value.updatedAt),
+      endedAt: safeTimestamp(value.endedAt),
+      resolvedAt: safeTimestamp(value.resolvedAt),
+      replacementLocalKey: isValidIssueKey(value.replacementLocalKey) ? value.replacementLocalKey : null,
+      replacementRemoteKey: isValidIssueKey(value.replacementRemoteKey) ? value.replacementRemoteKey : null
+    }
+  };
+}
+
+/** Administrator intent: this exact pair was ended and must not be revived. */
+export function normalizeMappingEndedRecord(key, value, orgId) {
+  const prefix = sectionPrefixes(orgId, 'mappingEnded')[0];
+  const { localKey, remoteKey } = parseEvidencePairKey(key, prefix, 'Ended mapping');
+  if (!isPlainObject(value)) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', 'Ended mapping record is not an object');
+  }
+  return {
+    identity: `${localKey}\u0000${remoteKey}`,
+    record: {
+      kind: 'record',
+      section: 'mappingEnded',
+      localKey,
+      remoteKey,
+      endedAt: safeTimestamp(value.endedAt),
+      reasonCode: safeStatusToken(value.reasonCode)
+    }
+  };
+}
+
+/** A pair whose write was only partially applied; it must not be completed. */
+export function normalizeMappingRepairRecord(key, value, orgId) {
+  const prefix = sectionPrefixes(orgId, 'mappingRepair')[0];
+  const { localKey, remoteKey } = parseEvidencePairKey(key, prefix, 'Mapping repair');
+  if (!isPlainObject(value)) {
+    throw snapshotError('SNAPSHOT_RECORD_INVALID', 'Mapping repair record is not an object');
+  }
+  return {
+    identity: `${localKey}\u0000${remoteKey}`,
+    record: {
+      kind: 'record',
+      section: 'mappingRepair',
+      localKey,
+      remoteKey,
+      reason: safeStatusToken(value.reason),
+      detectedAt: safeTimestamp(value.detectedAt)
+    }
+  };
+}
+
 const SECTION_NORMALIZERS = Object.freeze({
   pairs: normalizePairRecord,
-  ledger: normalizeLedgerRecord
+  ledger: normalizeLedgerRecord,
+  directions: normalizeDirectionRecord,
+  counterpartStatus: normalizeCounterpartStatusRecord,
+  mappingEnded: normalizeMappingEndedRecord,
+  mappingRepair: normalizeMappingRepairRecord
 });
 
 /**
- * Reads one section to exhaustion using bounded cursor pages. Throws instead of
- * returning a short read.
+ * Per-section record budget. The direction section carries two records per pair
+ * (one per direction), so it needs twice the budget of a pair section.
+ */
+export function sectionRecordLimit(section) {
+  return section === 'directions' ? MAX_SECTION_RECORDS * 2 : MAX_SECTION_RECORDS;
+}
+
+/**
+ * Reads one section to exhaustion using bounded cursor pages. A section may span
+ * more than one storage prefix (the two directed mapping lookups); each prefix is
+ * walked with its own cursor while the page budget and the duplicate-key check
+ * cover the section as a whole. Throws instead of returning a short read.
  */
 async function collectSection({ orgId, section, deps }) {
-  const prefix = sectionPrefix(orgId, section);
+  const prefixes = sectionPrefixes(orgId, section);
   const normalize = SECTION_NORMALIZERS[section];
+  const limit = sectionRecordLimit(section);
   const entries = [];
   const seenKeys = new Set();
   const seenPages = new Set();
   let skippedRetryClaims = 0;
-  let cursor = null;
   let pages = 0;
 
-  for (;;) {
-    if (pages >= MAX_SECTION_PAGES) {
-      throw snapshotError('SNAPSHOT_TOO_LARGE', 'Section exceeds the page budget', {
-        section,
-        pages
-      });
-    }
-    pages += 1;
-
-    let page;
-    try {
-      page = await deps.queryPage(prefix, { cursor, limit: SNAPSHOT_PAGE_SIZE });
-    } catch (error) {
-      throw snapshotError('SNAPSHOT_PAGE_UNREADABLE', 'A storage page could not be read', {
-        section,
-        cause: typeof error?.code === 'string' ? error.code : 'unknown'
-      });
-    }
-
-    if (!page || !Array.isArray(page.records)) {
-      throw snapshotError('SNAPSHOT_PAGE_UNREADABLE', 'A storage page was not readable', {
-        section,
-        cause: 'malformed-page'
-      });
-    }
-
-    const pageSignature = page.records
-      .map((record) => (typeof record?.key === 'string' ? record.key : '?invalid?'))
-      .join('\n');
-    if (seenPages.has(pageSignature)) {
-      throw snapshotError('SNAPSHOT_PAGINATION_INCOMPLETE', 'The same page was returned twice', {
-        section,
-        pages
-      });
-    }
-    seenPages.add(pageSignature);
-
-    // A cursor that advances without records would otherwise loop or truncate.
-    if (page.records.length === 0 && page.nextCursor) {
-      throw snapshotError(
-        'SNAPSHOT_PAGINATION_INCOMPLETE',
-        'Pagination returned an empty page with a continuation cursor',
-        { section, pages }
-      );
-    }
-
-    for (const entry of page.records) {
-      if (!entry || typeof entry.key !== 'string' || entry.key.length === 0) {
-        throw snapshotError('SNAPSHOT_RECORD_INVALID', 'A stored entry has no usable key', {
-          section
-        });
-      }
-      if (seenKeys.has(entry.key)) {
-        throw snapshotError('SNAPSHOT_PAGINATION_INCOMPLETE', 'A stored key was returned twice', {
-          section
-        });
-      }
-      seenKeys.add(entry.key);
-
-      const normalized = normalize(entry.key, entry.value, orgId);
-      if (normalized.skipped) {
-        skippedRetryClaims += 1;
-        continue;
-      }
-      entries.push(normalized);
-      if (entries.length > MAX_SECTION_RECORDS) {
-        throw snapshotError('SNAPSHOT_TOO_LARGE', 'Section exceeds the record budget', {
+  for (const prefix of prefixes) {
+    let cursor = null;
+    for (;;) {
+      if (pages >= MAX_SECTION_PAGES) {
+        throw snapshotError('SNAPSHOT_TOO_LARGE', 'Section exceeds the page budget', {
           section,
-          records: entries.length
+          pages
         });
       }
-    }
+      pages += 1;
 
-    cursor = typeof page.nextCursor === 'string' && page.nextCursor ? page.nextCursor : null;
-    if (!cursor) break;
+      let page;
+      try {
+        page = await deps.queryPage(prefix, { cursor, limit: SNAPSHOT_PAGE_SIZE });
+      } catch (error) {
+        throw snapshotError('SNAPSHOT_PAGE_UNREADABLE', 'A storage page could not be read', {
+          section,
+          cause: typeof error?.code === 'string' ? error.code : 'unknown'
+        });
+      }
+
+      if (!page || !Array.isArray(page.records)) {
+        throw snapshotError('SNAPSHOT_PAGE_UNREADABLE', 'A storage page was not readable', {
+          section,
+          cause: 'malformed-page'
+        });
+      }
+
+      // The prefix is part of the signature so two different prefixes that both
+      // return an empty page are not mistaken for a repeated page.
+      const pageSignature = `${prefix}\u0000${page.records
+        .map((record) => (typeof record?.key === 'string' ? record.key : '?invalid?'))
+        .join('\n')}`;
+      if (seenPages.has(pageSignature)) {
+        throw snapshotError('SNAPSHOT_PAGINATION_INCOMPLETE', 'The same page was returned twice', {
+          section,
+          pages
+        });
+      }
+      seenPages.add(pageSignature);
+
+      // A cursor that advances without records would otherwise loop or truncate.
+      if (page.records.length === 0 && page.nextCursor) {
+        throw snapshotError(
+          'SNAPSHOT_PAGINATION_INCOMPLETE',
+          'Pagination returned an empty page with a continuation cursor',
+          { section, pages }
+        );
+      }
+
+      for (const entry of page.records) {
+        if (!entry || typeof entry.key !== 'string' || entry.key.length === 0) {
+          throw snapshotError('SNAPSHOT_RECORD_INVALID', 'A stored entry has no usable key', {
+            section
+          });
+        }
+        if (seenKeys.has(entry.key)) {
+          throw snapshotError('SNAPSHOT_PAGINATION_INCOMPLETE', 'A stored key was returned twice', {
+            section
+          });
+        }
+        seenKeys.add(entry.key);
+
+        const normalized = normalize(entry.key, entry.value, orgId);
+        if (normalized.skipped) {
+          skippedRetryClaims += 1;
+          continue;
+        }
+        entries.push(normalized);
+        if (entries.length > limit) {
+          throw snapshotError('SNAPSHOT_TOO_LARGE', 'Section exceeds the record budget', {
+            section,
+            records: entries.length
+          });
+        }
+      }
+
+      cursor = typeof page.nextCursor === 'string' && page.nextCursor ? page.nextCursor : null;
+      if (!cursor) break;
+    }
   }
 
   entries.sort((left, right) => (left.identity < right.identity
@@ -583,14 +788,20 @@ export async function buildRecoverySnapshot(options = {}) {
 
   assertSamePause(pauseBefore, await readPauseState(deps));
 
-  const pairs = sections.find((entry) => entry.section === 'pairs');
-  const ledger = sections.find((entry) => entry.section === 'ledger');
+  const sectionCount = (name) => (sections.find((entry) => entry.section === name)?.count ?? 0);
+  const sectionDigest = (name) => (sections.find((entry) => entry.section === name)?.digest ?? null);
   const counts = {
     kind: 'counts',
-    pairs: pairs.count,
-    ledger: ledger.count,
-    total: pairs.count + ledger.count,
-    skipped: { ledgerRetryClaims: ledger.skippedRetryClaims }
+    pairs: sectionCount('pairs'),
+    ledger: sectionCount('ledger'),
+    directions: sectionCount('directions'),
+    counterpartStatus: sectionCount('counterpartStatus'),
+    mappingEnded: sectionCount('mappingEnded'),
+    mappingRepair: sectionCount('mappingRepair'),
+    total: sections.reduce((sum, entry) => sum + entry.count, 0),
+    skipped: {
+      ledgerRetryClaims: sections.find((entry) => entry.section === 'ledger')?.skippedRetryClaims ?? 0
+    }
   };
 
   const header = {
@@ -618,7 +829,7 @@ export async function buildRecoverySnapshot(options = {}) {
     },
     sections: sections.map((entry) => ({
       name: entry.section,
-      recordType: entry.section === 'pairs' ? 'issue-pair-mapping' : 'issue-create-ledger',
+      recordType: RECOVERY_SNAPSHOT_SECTION_RECORD_TYPES[entry.section],
       count: entry.count,
       pagesScanned: entry.pages,
       checksum: entry.digest
@@ -643,10 +854,9 @@ export async function buildRecoverySnapshot(options = {}) {
     checksumScope: 'header,records,counts',
     checksum,
     counts,
-    sectionChecksums: {
-      pairs: pairs.digest,
-      ledger: ledger.digest
-    },
+    sectionChecksums: Object.fromEntries(
+      RECOVERY_SNAPSHOT_SECTIONS.map((name) => [name, sectionDigest(name)])
+    ),
     notice: RECOVERY_SNAPSHOT_NOTICE,
     limitations: [...SNAPSHOT_LIMITATIONS]
   });
@@ -671,6 +881,10 @@ export async function buildRecoverySnapshot(options = {}) {
     counts: {
       pairs: counts.pairs,
       ledger: counts.ledger,
+      directions: counts.directions,
+      counterpartStatus: counts.counterpartStatus,
+      mappingEnded: counts.mappingEnded,
+      mappingRepair: counts.mappingRepair,
       total: counts.total,
       skippedRetryClaims: counts.skipped.ledgerRetryClaims
     },

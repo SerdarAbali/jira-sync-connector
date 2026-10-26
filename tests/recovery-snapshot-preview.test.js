@@ -178,11 +178,67 @@ function baseDeps(overrides = {}) {
 }
 
 function seedPair(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  // Production writes the metadata index and both directed lookups together.
   store.set(`mapping-meta:${orgId}:${localKey}`, {
     localKey,
     remoteKey,
     orgId,
     updatedAt: '2026-01-01T00:00:00.000Z',
+    ...extra
+  });
+  store.set(`${orgId}:local-to-remote:${localKey}`, remoteKey);
+  store.set(`${orgId}:remote-to-local:${remoteKey}`, localKey);
+}
+
+function removePair(localKey, remoteKey, orgId = 'org-1') {
+  store.delete(`mapping-meta:${orgId}:${localKey}`);
+  store.delete(`${orgId}:local-to-remote:${localKey}`);
+  store.delete(`${orgId}:remote-to-local:${remoteKey}`);
+}
+
+function seedEnded(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`mapping-ended:${orgId}:${localKey}:${remoteKey}`, {
+    localKey,
+    remoteKey,
+    orgId,
+    endedAt: '2026-01-05T00:00:00.000Z',
+    endedBy: 'admin-account-id',
+    reasonCode: 'administrator_ended',
+    ...extra
+  });
+}
+
+function seedRepair(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`mapping-repair:${orgId}:${localKey}:${remoteKey}`, {
+    localKey,
+    remoteKey,
+    orgId,
+    reason: 'partial-mapping-write',
+    detectedAt: '2026-01-05T00:00:00.000Z',
+    ...extra
+  });
+}
+
+function seedCounterpartStatus(localKey, remoteKey, orgId = 'org-1', extra = {}) {
+  store.set(`counterpart-status:${orgId}:${localKey}:${remoteKey}`, {
+    version: 1,
+    orgId,
+    localKey,
+    remoteKey,
+    status: 'confirmed_deleted',
+    deletedSide: 'remote',
+    source: 'jira-probe',
+    reasonCode: 'deleted',
+    probeStatusCode: 404,
+    firstDetectedAt: '2026-01-05T00:00:00.000Z',
+    lastDetectedAt: '2026-01-05T00:00:00.000Z',
+    updatedAt: '2026-01-05T00:00:00.000Z',
+    state: 'active',
+    endedAt: null,
+    endedBy: 'admin-account-id',
+    resolvedAt: null,
+    replacementLocalKey: null,
+    replacementRemoteKey: null,
     ...extra
   });
 }
@@ -326,13 +382,19 @@ describe('recovery snapshot preview classification', () => {
       pausedAt: PAUSED.pausedAt,
       reasonCode: PAUSED.reasonCode
     });
-    expect(result.counts.snapshot).toEqual({ pairs: 2, ledger: 1, total: 3, skippedRetryClaims: 0 });
-    expect(result.counts.live).toEqual({ pairs: 2, ledger: 1, skippedRetryClaims: 0 });
+    expect(result.counts.snapshot).toEqual({
+      pairs: 2, ledger: 1, directions: 4, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 7, skippedRetryClaims: 0
+    });
+    expect(result.counts.live).toEqual({
+      pairs: 2, ledger: 1, directions: 4, skippedRetryClaims: 0
+    });
     expect(result.counts.pairs).toEqual({
       [PREVIEW_PAIR_CLASSES.PRESENT]: 2,
       [PREVIEW_PAIR_CLASSES.MISSING]: 0,
       [PREVIEW_PAIR_CLASSES.CONFLICTING]: 0,
-      [PREVIEW_PAIR_CLASSES.BLOCKED]: 0
+      [PREVIEW_PAIR_CLASSES.BLOCKED]: 0,
+      [PREVIEW_PAIR_CLASSES.INCOMPLETE_DIRECTIONAL]: 0
     });
     expect(result.counts.ledger).toEqual({
       'already-present-consistent': 1,
@@ -340,7 +402,9 @@ describe('recovery snapshot preview classification', () => {
       conflicting: 0
     });
     expect(result.counts.restorablePairs).toBe(0);
-    expect(result.samples.pairs).toEqual({ missing: [], conflicting: [], blocked: [] });
+    expect(result.samples.pairs).toEqual({
+      missing: [], conflicting: [], blocked: [], incomplete: []
+    });
     expect(result.samples.ledger).toEqual({ missing: [], conflicting: [] });
 
     expect(kvsStore.set).not.toHaveBeenCalled();
@@ -355,7 +419,7 @@ describe('recovery snapshot preview classification', () => {
     seedPair('LOCAL-2', 'VEND-2');
     const snapshot = await exportSnapshot();
 
-    store.delete('mapping-meta:org-1:LOCAL-2');
+    removePair('LOCAL-2', 'VEND-2');
     const result = await preview({ content: snapshot.content });
 
     expect(result.counts.pairs[PREVIEW_PAIR_CLASSES.PRESENT]).toBe(1);
@@ -388,7 +452,7 @@ describe('recovery snapshot preview classification', () => {
     seedPair('LOCAL-1', 'VEND-1');
     const snapshot = await exportSnapshot();
 
-    store.delete('mapping-meta:org-1:LOCAL-1');
+    removePair('LOCAL-1', 'VEND-1');
     seedPair('LOCAL-9', 'VEND-1');
     const result = await preview({ content: snapshot.content });
 
@@ -408,7 +472,7 @@ describe('recovery snapshot preview classification', () => {
     seedPair('LOCAL-1', 'VEND-1');
     const snapshot = await exportSnapshot();
 
-    store.delete('mapping-meta:org-1:LOCAL-1');
+    removePair('LOCAL-1', 'VEND-1');
     store.set('mapping-ended:org-1:LOCAL-1:VEND-1', {
       localKey: 'LOCAL-1',
       remoteKey: 'VEND-1',
@@ -435,7 +499,7 @@ describe('recovery snapshot preview classification', () => {
     seedPair('LOCAL-1', 'VEND-1');
     const snapshot = await exportSnapshot();
 
-    store.delete('mapping-meta:org-1:LOCAL-1');
+    removePair('LOCAL-1', 'VEND-1');
     store.set('counterpart-status:org-1:LOCAL-1:VEND-1', {
       orgId: 'org-1',
       localKey: 'LOCAL-1',
@@ -457,7 +521,7 @@ describe('recovery snapshot preview classification', () => {
     seedPair('LOCAL-1', 'VEND-1');
     const snapshot = await exportSnapshot();
 
-    store.delete('mapping-meta:org-1:LOCAL-1');
+    removePair('LOCAL-1', 'VEND-1');
     store.set('mapping-repair:org-1:LOCAL-1:VEND-1', {
       localKey: 'LOCAL-1',
       remoteKey: 'VEND-1',
@@ -581,7 +645,7 @@ describe('recovery snapshot preview identity, routing and pause gates', () => {
   test('reports a different installation of the same app without counting anything as restorable', async () => {
     seedPair('LOCAL-1', 'VEND-1');
     const snapshot = await exportSnapshot();
-    store.delete('mapping-meta:org-1:LOCAL-1');
+    removePair('LOCAL-1', 'VEND-1');
 
     const result = await preview({
       content: snapshot.content,
@@ -871,7 +935,15 @@ describe('recovery snapshot preview file validation', () => {
     const parsed = parseRecoverySnapshotContent(snapshot.content);
 
     expect(parsed.orgId).toBe('org-1');
-    expect(parsed.counts).toEqual({ pairs: 1, ledger: 1, total: 2, skippedRetryClaims: 0 });
+    expect(parsed.formatVersion).toBe(2);
+    expect(parsed.counts).toEqual({
+      pairs: 1, ledger: 1, directions: 2, counterpartStatus: 0,
+      mappingEnded: 0, mappingRepair: 0, total: 4, skippedRetryClaims: 0
+    });
+    expect(parsed.directions).toEqual([
+      expect.objectContaining({ direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'VEND-1' }),
+      expect.objectContaining({ direction: 'remote-to-local', localKey: 'LOCAL-1', remoteKey: 'VEND-1' })
+    ]);
     expect(parsed.pairs).toEqual([
       expect.objectContaining({ localKey: 'LOCAL-1', remoteKey: 'VEND-1' })
     ]);
@@ -920,7 +992,7 @@ describe('recovery snapshot preview write boundary', () => {
     const snapshot = await exportSnapshot();
 
     seedPair('LOCAL-1', 'VEND-7');
-    store.delete('mapping-meta:org-1:LOCAL-2');
+    removePair('LOCAL-2', 'VEND-2');
     store.set('mapping-ended:org-1:LOCAL-2:VEND-2', {
       localKey: 'LOCAL-2',
       remoteKey: 'VEND-2',

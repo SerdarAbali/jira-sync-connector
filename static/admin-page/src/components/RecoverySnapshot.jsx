@@ -59,6 +59,7 @@ export const SNAPSHOT_PREVIEW_MAX_BYTES = 3 * 1024 * 1024;
 const PREVIEW_REASON_TEXT = {
   'remote-key-differs': 'stored remote key differs',
   'remote-key-already-mapped': 'remote key already mapped to another local issue',
+  'directed-mapping-differs': 'a directed lookup points at another issue',
   'ledger-target-differs-from-pair': 'ledger target contradicts the exported pair',
   'ledger-state-differs': 'stored ledger state differs',
   'mapping-ended': 'pair was ended by an administrator',
@@ -66,6 +67,14 @@ const PREVIEW_REASON_TEXT = {
   'counterpart-deleted': 'counterpart is recorded as deleted',
   'counterpart-archived': 'counterpart record is archived',
   'counterpart-unreadable': 'counterpart record is unreadable'
+};
+
+export const RECOVERABILITY_REASON_TEXT = {
+  'v1-insufficient-evidence': 'This is a version 1 file, so it has no directional, ended, repair or counterpart evidence.',
+  'different-installation': 'The file belongs to a different installation or environment.',
+  'directional-evidence-incomplete': 'At least one exported pair is missing a directed lookup.',
+  'directional-evidence-conflicting': 'At least one pair has two directed lookups that disagree.',
+  'evidence-conflicting': 'The file carries recovery records that contradict each other.'
 };
 
 export function previewReasonText(reason) {
@@ -408,8 +417,26 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
               <SummaryItem label="Pairs missing" value={pairCounts['missing-potentially-restorable'] ?? 0} />
               <SummaryItem label="Pairs conflicting" value={pairCounts.conflicting ?? 0} />
               <SummaryItem label="Pairs blocked" value={pairCounts['blocked-by-existing-record'] ?? 0} />
+              <SummaryItem label="Pairs incomplete directional" value={pairCounts['incomplete-directional'] ?? 0} />
               <SummaryItem label="Pairs restorable here" value={preview.counts?.restorablePairs ?? 0} />
             </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
+              <SummaryItem label="Ended mappings in file" value={preview.evidence?.ended ?? 0} />
+              <SummaryItem label="Repair markers in file" value={preview.evidence?.repaired ?? 0} />
+              <SummaryItem label="Deleted counterparts in file" value={preview.evidence?.counterpartBlocking ?? 0} />
+              <SummaryItem label="Archived counterparts in file" value={preview.evidence?.counterpartArchived ?? 0} />
+            </div>
+
+            {preview.recoverability && !preview.recoverability.recoverable && (
+              <SectionMessage appearance="warning" title="Not sufficient for recovery after storage loss">
+                <ul style={{ margin: 0, paddingLeft: token('space.300', '24px') }}>
+                  {preview.recoverability.reasons.map((reason) => (
+                    <li key={reason}>{RECOVERABILITY_REASON_TEXT[reason] || reason}</li>
+                  ))}
+                </ul>
+              </SectionMessage>
+            )}
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
               <SummaryItem label="Ledger rows already present" value={ledgerCounts['already-present-consistent'] ?? 0} />

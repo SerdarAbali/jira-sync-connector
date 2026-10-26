@@ -9,13 +9,16 @@ state outside Forge storage.
 | Included | Excluded |
 | --- | --- |
 | Issue-pair mappings (`mapping-meta:<orgId>:*`) | API tokens and webhook signing secrets |
-| Issue-create ledger records (`issue-create-op:<orgId>:*`) | Comments, descriptions, attachment content, attachment mappings |
-| Organization routing identity (id, name, remote host, project, allowed projects, direction) | Remote API user email address, JQL filter |
-| Forge app, environment, installation, site and cloud identity | Installation-level Forge configuration, deleted-counterpart/repair/ended records |
+| Directed lookups (`<orgId>:local-to-remote:*`, `<orgId>:remote-to-local:*`) | Comments, descriptions, attachment content, attachment mappings |
+| Issue-create ledger records (`issue-create-op:<orgId>:*`) | Remote API user email address, JQL filter |
+| Counterpart status (`counterpart-status:<orgId>:*`), ended mappings (`mapping-ended:<orgId>:*`) and repair markers (`mapping-repair:<orgId>:*`) | Installation-level Forge configuration |
+| Organization routing identity (id, name, remote host, project, allowed projects, direction) | Account identifiers recorded on ended, repair and counterpart-status records |
+| Forge app, environment, installation, site and cloud identity | |
 
 The file is **not** a complete Forge installation backup and cannot rebuild the
-app on its own. It contains exactly the two record sets needed to check whether
-mappings and create attempts were lost.
+app on its own. It contains the record sets needed to check whether mappings and
+create attempts were lost, and the evidence needed to see that a pair was
+deliberately ended, replaced or recorded as deleted.
 
 ## Preconditions
 
@@ -30,16 +33,24 @@ mappings and create attempts were lost.
 
 NDJSON, UTF-8, one JSON object per line, in this order:
 
-1. `header` — `format`, `formatVersion`, `exportedAt`, `identity`,
+1. `header` — `format`, `formatVersion` (`2`), `exportedAt`, `identity`,
    `organization`, `pause`, per-section `count`, `pagesScanned` and `checksum`,
    plus `omissions` and `limitations`.
-2. `0..n` `record` lines — `section` is `pairs` or `ledger`. Pair records carry
-   `localKey`, `remoteKey`, `createdAt`, `updatedAt`. Ledger records carry
-   `direction`, `sourceKey`, `operationSuffix`, `state`, `attempt`, `targetKey`,
-   `operationId` and the lifecycle timestamps. Ledger `attemptToken` values are
-   never exported.
-3. `counts` — `pairs`, `ledger`, `total` and `skipped.ledgerRetryClaims`.
-   Transient retry-claim markers are counted here and not exported as records.
+2. `0..n` `record` lines, in the fixed section order
+   `pairs`, `ledger`, `directions`, `counterpartStatus`, `mappingEnded`,
+   `mappingRepair`. Pair records carry `localKey`, `remoteKey`, `createdAt`,
+   `updatedAt`. Ledger records carry `direction`, `sourceKey`,
+   `operationSuffix`, `state`, `attempt`, `targetKey`, `operationId` and the
+   lifecycle timestamps. Direction records carry `direction`, `localKey` and
+   `remoteKey`. Counterpart-status records carry `state`, `status`,
+   `deletedSide`, `source`, `reasonCode`, `probeStatusCode`, the detection
+   timestamps and any replacement keys. Ended records carry `endedAt` and
+   `reasonCode`; repair records carry `reason` and `detectedAt`.
+   Ledger `attemptToken` values and actor account identifiers are never exported.
+3. `counts` — one key per section (`pairs`, `ledger`, `directions`,
+   `counterpartStatus`, `mappingEnded`, `mappingRepair`), plus `total` and
+   `skipped.ledgerRetryClaims`. Transient retry-claim markers are counted here
+   and not exported as records.
 4. `footer` — repeats the checksum, counts and per-section checksums, and
    restates the notice and limitations.
 
@@ -92,13 +103,15 @@ The file is accepted only when all of the following hold:
   unterminated lines.
 - The whole-file checksum (header, records and counts) matches the footer, and
   the counts line equals the footer counts.
-- The header is format `jira-sync-recovery-snapshot`, version `1`, scope
+- The header is format `jira-sync-recovery-snapshot`, version `1` or `2`, scope
   `one-organization`, and records a paused export.
+- A version 2 file must carry all six sections with matching counts and
+  checksums; a version 1 file is accepted with its two sections only.
 - Every record line normalizes to exactly the canonical record the export
   writes, so an added, removed or renamed field is refused rather than
   interpreted.
-- Per-section counts, per-section checksums and the total agree, and no pair or
-  ledger identity appears twice.
+- Per-section counts, per-section checksums and the total agree, and no identity
+  appears twice inside a section.
 - The selected organization is the one in the file, the current app and Jira
   site match, and the remote host and remote project routing are unchanged.
 
@@ -114,10 +127,24 @@ Each exported pair is classified as:
 
 | Class | Meaning |
 | --- | --- |
-| Already present and consistent | `mapping-meta` holds the same local and remote key. |
-| Missing and potentially restorable | No stored pair, no ended/repair/deleted-counterpart record, and the remote key is not already claimed. |
-| Conflicting | A stored pair points at a different remote key, or the remote key already belongs to another local issue. |
-| Blocked by an existing record | An ended mapping, partial-write repair marker or deleted-counterpart record covers exactly that pair. |
+| Already present and consistent | The metadata index holds the same local and remote key **and** both directed lookups resolve to that pair. |
+| Missing and potentially restorable | No stored pair, no ended/repair/deleted-counterpart evidence, and the remote key is not already claimed. |
+| Incomplete directional | Storage holds the metadata record but not both directed lookups, or the two lookups disagree with the pair. Never reported as healthy or restorable. |
+| Conflicting | A stored pair points at a different remote key, the remote key belongs to another local issue, or a directed lookup points at another issue. |
+| Blocked by existing evidence | An ended mapping, partial-write repair marker or deleted-counterpart record covers exactly that pair, in live storage or in the file. |
+
+For a version 2 file the preview also reports the evidence it carries and the
+reason codes behind every block: `mapping-ended`, `mapping-repair`,
+`counterpart-deleted` and `counterpart-archived`. Evidence from the file is
+applied even when live storage no longer holds it, so an old backup cannot make
+an ended or deleted relationship look restorable.
+
+A file is only reported as **recoverable** when it is a version 2 export that
+matches this installation and organization, every exported pair carries both
+directed lookups, no two lookups disagree, and the evidence does not contradict
+itself (for example an ended mapping together with an active counterpart record,
+or a repair marker for a pair whose directions are complete). Otherwise the
+preview lists the reasons it is not recoverable and the Recovery tab shows them.
 
 Ledger rows are compared key-by-key and reported as already present, missing or
 conflicting. A conflicting or unknown live row is never resolved, and a missing
@@ -125,30 +152,29 @@ row is evidence of a lost attempt, not something the preview recreates. A
 succeeded ledger row whose target contradicts the exported pair is reported as a
 conflict.
 
-Pairing evidence is limited to the stored `mapping-meta` index. The preview reads
-no issue description, summary or cross-reference text, so none of it can be
-mistaken for proof of a pairing. Counts and a small sample of conflicts and
-blocks are shown in the Recovery tab.
+Pairing evidence is limited to the stored metadata index and the two directed
+lookup prefixes. The preview reads no issue description, summary or
+cross-reference text, so none of it can be mistaken for proof of a pairing.
+
+### Version 1 is not sufficient for recovery after storage loss
+
+Version 1 files contain only `pairs` and `ledger`. They carry no directed
+lookups, no ended-mapping records, no repair markers and no counterpart status.
+Restoring one over a wiped installation could therefore revive a relationship an
+administrator had deliberately ended, or one whose counterpart was confirmed
+deleted. The preview still reads version 1 files and still classifies them, but
+it reports `v1-insufficient-evidence` and never calls them recoverable. Anyone
+who needs a recovery-capable backup must export a version 2 file.
 
 ## Limits
 
 - One organization per export; no cross-organization file.
-- 100 keys per page, at most 400 pages, 8000 records per section and 3 MB of
-  content. Exceeding a budget fails the export instead of truncating it.
+- 100 keys per page, at most 400 pages, 8000 records per section (16000 for the
+  direction section, which holds two records per pair) and 3 MB of content.
+  Exceeding a budget fails the export instead of truncating it.
 - No restore, adoption or integrity-state behaviour is implemented. The preview
   classifies records and writes nothing; there is no restore button, no restore
   resolver and no restore plan.
-
-## Directional mapping consistency
-
-Only the `mapping-meta:<orgId>:*` index is exported. The directed lookups
-`<orgId>:local-to-remote:*` and `<orgId>:remote-to-local:*` are written in the
-same write as the index record by `storeMapping()` and `replaceIssueMapping()`,
-and a restore derives them from the exported pairs, so they are not duplicated in
-the file.
-
-The one case this does not cover: `ensureMappingPair()` repairs a missing
-direction key without writing an index record. A pair that was left half-written
-and then touched only by that repair path exists in the lookup records but not in
-the index, so it is absent from the export. The export neither detects nor
-repairs that divergence; it is out of scope for this read-only phase.
+- The direction section is written from the live lookup prefixes, so a pair that
+  exists only in those lookups is exported as directional evidence and reported
+  as incomplete. The export never repairs that divergence.
