@@ -285,7 +285,10 @@ describe('pairing-witness findings rendering', () => {
 
 describe('pair selection control', () => {
   function setInputValue(input, value) {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    const prototype = input.tagName === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value').set;
     setter.call(input, value);
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
   }
@@ -384,7 +387,7 @@ describe('pair selection control', () => {
     const { container } = render(<WitnessMigrationControls orgId="org-1" />);
     await flush();
 
-    const input = container.querySelector('input[aria-label="Witness migration pair selection"]');
+    const input = container.querySelector('[aria-label="Witness migration pair selection"]');
     act(() => { setInputValue(input, 'MOB-8 VMOB-13'); });
 
     const buildButton = [...container.querySelectorAll('button')]
@@ -437,6 +440,52 @@ describe('pair selection control', () => {
     expect(container.textContent).toContain('APPROVE WITNESS org-1 fullfullfull 20');
   });
 
+  test('three pairs can be entered on separate lines and are sent as three', async () => {
+    invoke.mockImplementation(async (action) => (
+      action === 'getPairWitnessMigrationStatus'
+        ? { success: true, plan: null, permit: null }
+        : {
+          success: true,
+          plan: {
+            selectionMode: 'explicit',
+            selection: [
+              { localKey: 'MOB-10', remoteKey: 'VMOB-15' },
+              { localKey: 'MOB-11', remoteKey: 'VMOB-16' },
+              { localKey: 'MOB-12', remoteKey: 'VMOB-17' }
+            ],
+            digest: 'sha256:three',
+            approvalPhrase: 'APPROVE WITNESS org-1 threeeeeeeee 3',
+            counts: { pairs: 3, writablePairs: 3, writesRequired: 6, excludedPairs: 0 },
+            items: [],
+            excluded: []
+          }
+        }
+    ));
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+
+    const selection = container.querySelector('[aria-label="Witness migration pair selection"]');
+    expect(selection).toBeTruthy();
+    expect(selection.tagName).toBe('TEXTAREA');
+
+    act(() => {
+      setInputValue(selection, 'MOB-10 VMOB-15\nMOB-11 VMOB-16\nMOB-12 VMOB-17');
+    });
+    await clickButton(container, 'Build plan');
+
+    expect(invoke).toHaveBeenCalledWith('planPairWitnessMigration', {
+      orgId: 'org-1',
+      pairs: [
+        { localKey: 'MOB-10', remoteKey: 'VMOB-15' },
+        { localKey: 'MOB-11', remoteKey: 'VMOB-16' },
+        { localKey: 'MOB-12', remoteKey: 'VMOB-17' }
+      ]
+    });
+    expect(container.textContent).toContain('APPROVE WITNESS org-1 threeeeeeeee 3');
+  });
+
+
   test('switching back to Selected pairs re-requires a selection', async () => {
     invoke.mockImplementation(async (action) => (
       action === 'getPairWitnessMigrationStatus'
@@ -470,7 +519,7 @@ describe('pair selection control', () => {
     await flush();
     invoke.mockClear();
 
-    const input = container.querySelector('input[aria-label="Witness migration pair selection"]');
+    const input = container.querySelector('[aria-label="Witness migration pair selection"]');
     act(() => { setInputValue(input, 'MOB-8'); });
     await clickButton(container, 'Build plan');
 
@@ -500,7 +549,7 @@ describe('pair selection control', () => {
     const { container } = render(<WitnessMigrationControls orgId="org-1" />);
     await flush();
 
-    const selection = container.querySelector('input[aria-label="Witness migration pair selection"]');
+    const selection = container.querySelector('[aria-label="Witness migration pair selection"]');
     act(() => { setInputValue(selection, 'MOB-8 VMOB-13'); });
     await clickButton(container, 'Build plan');
 

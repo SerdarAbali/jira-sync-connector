@@ -536,12 +536,23 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
               {WITNESS_SELECTION_TEXT}
             </p>
             <div style={{ maxWidth: '520px', marginBottom: token('space.100', '8px') }}>
-              <Textfield
+              <textarea
                 aria-label="Witness migration pair selection"
                 value={selectionText}
                 onChange={(event) => setSelectionText(event.target.value)}
-                isDisabled={busy}
-                placeholder={'MOB-8 VMOB-13'}
+                disabled={busy}
+                rows={3}
+                placeholder={'MOB-8 VMOB-13\nMOB-9 VMOB-14'}
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  fontSize: '12px',
+                  padding: token('space.075', '6px'),
+                  border: `1px solid ${token('color.border', '#DFE1E6')}`,
+                  borderRadius: token('border.radius.100', '3px'),
+                  resize: 'vertical'
+                }}
               />
             </div>
             {parsed.error ? (
