@@ -10,7 +10,10 @@ const CONTENT_KEY_PATTERN = /^(summary|description|comment|body|text|content|fie
 const SAFE_AUDIT_KEYS = new Set([
   'action', 'sourceIssue', 'targetIssue', 'orgId', 'success',
   'timestamp', 'remoteKey', 'issueKey', 'commentId', 'reason', 'decision',
-  'status', 'errorCount'
+  'status', 'errorCount',
+  // Maintenance-write audit fields. Every value below is re-validated against a
+  // strict pattern; none of them may carry free text.
+  'outcome', 'source', 'site', 'issueId', 'pairId', 'permitId', 'statusCode'
 ]);
 const SAFE_ERROR_DETAIL_KEYS = new Set([
   'reason', 'statusCode', 'operation', 'remoteKey', 'decision', 'errorCount'
@@ -18,6 +21,7 @@ const SAFE_ERROR_DETAIL_KEYS = new Set([
 const SAFE_REASON_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
 const SAFE_CODE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9_:.-]{1,120}$/;
+const PAIR_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_LOG_ARRAY_ITEMS = 20;
 const MAX_LOG_OBJECT_KEYS = 50;
 const MAX_LOG_DEPTH = 6;
@@ -159,6 +163,26 @@ export function sanitizeAuditEntry(entry) {
     } else if (key === 'orgId' || key === 'sourceIssue' || key === 'targetIssue' || key === 'remoteKey' || key === 'issueKey' || key === 'commentId') {
       const identifier = sanitizeAuditIdentifier(value);
       if (identifier) safe[key] = identifier;
+    } else if (key === 'outcome' || key === 'source') {
+      const code = sanitizeLogText(value, 32);
+      if (SAFE_CODE_PATTERN.test(code)) safe[key] = code;
+    } else if (key === 'site') {
+      const site = sanitizeAuditIdentifier(value);
+      if (site) safe.site = site;
+    } else if (key === 'permitId') {
+      const permitId = sanitizeAuditIdentifier(value);
+      if (permitId) safe.permitId = permitId;
+    } else if (key === 'issueId') {
+      const issueId = typeof value === 'string' || Number.isInteger(value) ? String(value) : '';
+      if (/^\d{1,32}$/.test(issueId)) safe.issueId = issueId;
+    } else if (key === 'pairId') {
+      const pairId = sanitizeAuditIdentifier(value);
+      if (PAIR_ID_PATTERN.test(pairId || '')) safe.pairId = pairId;
+    } else if (key === 'statusCode') {
+      const statusCode = Number(value);
+      if (Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599) {
+        safe.statusCode = statusCode;
+      }
     }
   }
   const errorCount = Array.isArray(entry.errors) ? entry.errors.length : Number(entry.errorCount) || 0;

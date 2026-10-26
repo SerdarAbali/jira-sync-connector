@@ -768,7 +768,7 @@ describe('maintenance write audit trail through the real transport', () => {
 
     const entries = auditEntries();
     expect(entries.map((entry) => entry.outcome)).toEqual(['attempted', 'failed']);
-    expect(entries[1]).toMatchObject({ outcome: 'failed', statusCode: 500, reason: 'http-status' });
+    expect(entries[1]).toMatchObject({ outcome: 'failed', statusCode: 500, reason: 'http_status' });
   });
 
   test('a transport error is recorded as failed and still propagated', async () => {
@@ -782,7 +782,7 @@ describe('maintenance write audit trail through the real transport', () => {
 
     const entries = auditEntries();
     expect(entries.map((entry) => entry.outcome)).toEqual(['attempted', 'failed']);
-    expect(entries[1]).toMatchObject({ outcome: 'failed', reason: 'transport-error', statusCode: null });
+    expect(entries[1]).toMatchObject({ outcome: 'failed', reason: 'transport_error', statusCode: null });
   });
 
   test('a refused permit is recorded as refused and nothing is submitted', async () => {

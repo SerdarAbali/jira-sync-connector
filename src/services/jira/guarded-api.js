@@ -47,7 +47,7 @@ async function submitMaintenanceWrite(decision, submit) {
       entry: decision.entry,
       site: decision.site,
       issueId: decision.issueId,
-      reason: 'transport-error'
+      reason: 'transport_error'
     });
     throw error;
   }
@@ -61,7 +61,7 @@ async function submitMaintenanceWrite(decision, submit) {
     site: decision.site,
     issueId: decision.issueId,
     statusCode: Number.isFinite(status) ? status : null,
-    reason: succeeded ? null : 'http-status'
+    reason: succeeded ? null : 'http_status'
   });
   return response;
 }

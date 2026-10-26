@@ -22,6 +22,7 @@ import IssueCreateRecovery from './components/IssueCreateRecovery';
 import RecoverySnapshot from './components/RecoverySnapshot';
 import SyncAuthorization from './components/SyncAuthorization.jsx';
 import PairWitnessMigration from './components/PairWitnessMigration.jsx';
+import WitnessAuditLog from './components/WitnessAuditLog.jsx';
 import RecurringReconciliation from './components/RecurringReconciliation';
 import {
   readStoredOrganizationId,
@@ -1457,6 +1458,7 @@ export const App = () => {
                     selectedOrg={selectedOrg}
                     showMessage={showMessage}
                   />
+                  <WitnessAuditLog showMessage={showMessage} />
                   <IssueCreateRecovery
                     selectedOrg={selectedOrg}
                     showMessage={showMessage}
