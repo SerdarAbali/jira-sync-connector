@@ -1,3 +1,6 @@
+// The synchronization authorization gate has its own suite; this suite tests another behaviour.
+jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+
 import { entities, requests, state } from './helpers/forge-lease-runtime';
 import {
   acquireIssueLease, assertIssueLeaseOwned, renewIssueLease, releaseIssueLease,

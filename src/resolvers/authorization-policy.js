@@ -121,7 +121,13 @@ export const RESOLVER_POLICIES = Object.freeze({
   // Read-only, upload-and-compare restore preview for one organization's
   // snapshot file. It classifies pairs and ledger rows against current storage
   // and writes nothing: no mapping, ledger row, manifest or restore plan.
-  previewRecoverySnapshot: 'ADMIN_READ'
+  previewRecoverySnapshot: 'ADMIN_READ',
+
+  // Installation-wide synchronization authorization. Reading the state is
+  // read-only; granting it is an explicit ADMIN_WRITE that writes one storage
+  // record and performs no Jira request of any kind.
+  getSyncAuthorizationStatus: 'ADMIN_READ',
+  authorizeSynchronization: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {

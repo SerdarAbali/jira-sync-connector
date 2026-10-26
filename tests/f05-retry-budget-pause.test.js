@@ -1,3 +1,6 @@
+// The synchronization authorization gate has its own suite; this suite tests another behaviour.
+jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+
 /**
  * F05 regressions: Forge-safe Jira retries and emergency-pause enforcement.
  *

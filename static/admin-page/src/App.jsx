@@ -20,6 +20,7 @@ import GuidedSetupWizard from './components/GuidedSetupWizard';
 import DeletedCounterpartRecovery from './components/DeletedCounterpartRecovery';
 import IssueCreateRecovery from './components/IssueCreateRecovery';
 import RecoverySnapshot from './components/RecoverySnapshot';
+import SyncAuthorization from './components/SyncAuthorization.jsx';
 import RecurringReconciliation from './components/RecurringReconciliation';
 import {
   readStoredOrganizationId,
@@ -1446,6 +1447,7 @@ export const App = () => {
               {/* Recovery Tab */}
               <TabPanel>
                 <div style={tabPanelContainerStyle}>
+                  <SyncAuthorization showMessage={showMessage} />
                   <RecoverySnapshot
                     selectedOrg={selectedOrg}
                     showMessage={showMessage}

@@ -1,6 +1,7 @@
 /** Jira submission boundary: preserve SDK transport, add fail-closed checks. */
 import api, { fetch as forgeFetch } from '@forge/api';
 import { assertPilotWritesAllowed } from '../sync/pilot-pause.js';
+import { assertSyncAuthorized } from '../sync/sync-authorization.js';
 import { assertIssueLeaseMigrationReady } from '../sync/lease-migration.js';
 import { assertCurrentIssueLeases } from '../sync/issue-lease-context.js';
 export { route } from '@forge/api';
@@ -21,6 +22,10 @@ export async function assertJiraSubmissionAllowed(path, options) {
     unavailable.code = 'PAUSE_STATE_UNAVAILABLE';
     throw unavailable;
   }
+  // Positive authorization, independent of the pause. Absent, malformed,
+  // unreadable, foreign or restore-in-progress authorization throws here and the
+  // request is never handed to the SDK transport.
+  await assertSyncAuthorized();
   await assertCurrentIssueLeases();
 }
 

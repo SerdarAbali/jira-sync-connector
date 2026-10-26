@@ -1,3 +1,6 @@
+// The synchronization authorization gate has its own suite; this suite tests another behaviour.
+jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+
 // Success uses the real installation-specific staging policy, without a provenance mock.
 // KVS calls and entity probes use the installed SDK and local storage model.
 jest.mock('@forge/api', () => ({

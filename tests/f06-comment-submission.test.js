@@ -1,3 +1,6 @@
+// The synchronization authorization gate has its own suite; this suite tests another behaviour.
+jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+
 /** Production comment paths + real Forge KVS wrapper/SDK; only HTTP edges modelled. */
 const mockFetch = jest.fn();
 const mockRequest = jest.fn();

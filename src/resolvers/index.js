@@ -11,6 +11,7 @@ import { defineReconciliationResolvers } from './reconciliation.js';
 import { defineReadinessResolvers } from './readiness.js';
 import { defineLeaseMigrationResolvers } from './lease-migration.js';
 import { defineRecoverySnapshotResolvers } from './recovery-snapshot.js';
+import { defineSyncAuthorizationResolvers } from './sync-authorization.js';
 import { createAuthorizedResolver } from './authorization.js';
 
 const resolver = createAuthorizedResolver();
@@ -30,6 +31,7 @@ defineReconciliationResolvers(resolver);
 defineReadinessResolvers(resolver);
 defineLeaseMigrationResolvers(resolver);
 defineRecoverySnapshotResolvers(resolver);
+defineSyncAuthorizationResolvers(resolver);
 
 export const registeredResolverNames = resolver.getRegisteredNames();
 

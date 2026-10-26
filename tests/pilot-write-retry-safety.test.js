@@ -1,3 +1,6 @@
+// The synchronization authorization gate has its own suite; this suite tests another behaviour.
+jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+
 import { createRemoteIssue } from '../src/services/sync/issue-sync.js';
 import { syncComment } from '../src/services/sync/comment-sync.js';
 import { createLinkOnRemote } from '../src/services/sync/link-sync.js';

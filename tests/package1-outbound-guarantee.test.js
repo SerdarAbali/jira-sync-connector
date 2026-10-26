@@ -1,3 +1,6 @@
+// The synchronization authorization gate has its own suite; this suite tests another behaviour.
+jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+
 /** Production entry points and services; only platform storage/HTTP are modelled. */
 const mockStore = new Map();
 const mockCommentMaps = new Map();
