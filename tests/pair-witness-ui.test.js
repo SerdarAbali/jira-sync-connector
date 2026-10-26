@@ -16,8 +16,13 @@ import PairWitnessMigration, {
   PAIR_WITNESS_PAUSE_TEXT,
   PAIR_WITNESS_READ_ONLY_TEXT,
   PAIR_WITNESS_SCOPE_TEXT,
+  WITNESS_ORGANIZATION_WARNING,
+  WITNESS_SELECTION_REQUIRED_TEXT,
+  WITNESS_SELECTION_TEXT,
+  WitnessMigrationControls,
   pairClassText,
-  pairWitnessFindingText
+  pairWitnessFindingText,
+  parsePairSelection
 } from '../static/admin-page/src/components/PairWitnessMigration.jsx';
 
 jest.mock('@forge/bridge', () => ({ invoke: jest.fn() }), { virtual: true });
@@ -274,6 +279,240 @@ describe('pairing-witness findings rendering', () => {
     expect(pairWitnessFindingText({ code: 'pair-ended', localKey: 'A-1', remoteKey: 'B-2' }))
       .toContain('A-1 ↔ B-2');
     expect(pairWitnessFindingText(null)).toBe('Unknown finding');
+  });
+});
+
+
+describe('pair selection control', () => {
+  function setInputValue(input, value) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, value);
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  }
+
+  async function clickButton(container, label) {
+    const button = [...container.querySelectorAll('button')]
+      .find((node) => node.textContent === label);
+    expect(button).toBeTruthy();
+    await act(async () => {
+      button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    return button;
+  }
+
+  test('the parser treats blank as "not supplied" and reads exact pairs', () => {
+    expect(parsePairSelection('')).toEqual({ pairs: undefined, error: null, blank: true });
+    expect(parsePairSelection('   ')).toEqual({ pairs: undefined, error: null, blank: true });
+
+    expect(parsePairSelection('MOB-8 VMOB-13')).toEqual({
+      pairs: [{ localKey: 'MOB-8', remoteKey: 'VMOB-13' }],
+      error: null,
+      blank: false
+    });
+    expect(parsePairSelection('MOB-8,VMOB-13').pairs)
+      .toEqual([{ localKey: 'MOB-8', remoteKey: 'VMOB-13' }]);
+    expect(parsePairSelection('MOB-8 -> VMOB-13').pairs)
+      .toEqual([{ localKey: 'MOB-8', remoteKey: 'VMOB-13' }]);
+    expect(parsePairSelection('MOB-8 VMOB-13\nMOB-9 VMOB-14').pairs).toHaveLength(2);
+  });
+
+  test('a malformed selection line is reported instead of guessed', () => {
+    const parsed = parsePairSelection('MOB-8');
+    expect(parsed.pairs).toBeNull();
+    expect(parsed.error).toContain('MOB-8');
+    expect(parsePairSelection('A-1 B-2 C-3').error).toBeTruthy();
+  });
+
+  test('selected-pairs mode explains that a blank entry cannot build a plan', () => {
+    expect(WITNESS_SELECTION_TEXT).toContain('cannot build a plan');
+    expect(WITNESS_SELECTION_REQUIRED_TEXT).toContain('Build plan stays disabled');
+    expect(WITNESS_ORGANIZATION_WARNING).toContain('Every eligible pair');
+  });
+
+  test('the default scope is Selected pairs and a blank entry keeps Build plan disabled', async () => {
+    invoke.mockImplementation(async (action) => (
+      action === 'getPairWitnessMigrationStatus'
+        ? { success: true, plan: null, permit: null }
+        : { success: true, plan: null }
+    ));
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+
+    const buildButton = [...container.querySelectorAll('button')]
+      .find((node) => node.textContent === 'Build plan');
+    expect(buildButton.disabled).toBe(true);
+    expect(container.textContent).toContain(WITNESS_SELECTION_REQUIRED_TEXT);
+    expect(container.textContent).not.toContain(WITNESS_ORGANIZATION_WARNING);
+
+    invoke.mockClear();
+    await clickButton(container, 'Build plan');
+    expect(invoke).not.toHaveBeenCalledWith('planPairWitnessMigration', expect.anything());
+  });
+
+  test('a valid pair enables Build plan and is sent as the selection', async () => {
+    invoke.mockImplementation(async (action) => {
+      if (action === 'getPairWitnessMigrationStatus') {
+        return { success: true, plan: null, permit: null };
+      }
+      if (action === 'planPairWitnessMigration') {
+        return {
+          success: true,
+          plan: {
+            selectionMode: 'explicit',
+            selection: [{ localKey: 'MOB-8', remoteKey: 'VMOB-13' }],
+            digest: 'sha256:abc123',
+            approvalPhrase: 'APPROVE WITNESS org-1 abcdefabcdef 1',
+            counts: { pairs: 1, writablePairs: 1, verifyOnlyPairs: 0, writesRequired: 2, excludedPairs: 0 },
+            items: [{
+              seq: 1,
+              localKey: 'MOB-8',
+              localIssueId: '10039',
+              remoteKey: 'VMOB-13',
+              remoteIssueId: '20881',
+              pairId: '3e8e7c47-6530-566a-ba14-076a8762fb1c',
+              action: 'both'
+            }],
+            excluded: []
+          }
+        };
+      }
+      return { success: true };
+    });
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+
+    const input = container.querySelector('input[aria-label="Witness migration pair selection"]');
+    act(() => { setInputValue(input, 'MOB-8 VMOB-13'); });
+
+    const buildButton = [...container.querySelectorAll('button')]
+      .find((node) => node.textContent === 'Build plan');
+    expect(buildButton.disabled).toBe(false);
+
+    await clickButton(container, 'Build plan');
+
+    expect(invoke).toHaveBeenCalledWith('planPairWitnessMigration', {
+      orgId: 'org-1',
+      pairs: [{ localKey: 'MOB-8', remoteKey: 'VMOB-13' }]
+    });
+    expect(container.textContent).toContain('APPROVE WITNESS org-1 abcdefabcdef 1');
+    expect(container.textContent).toContain('sha256:abc123');
+    expect(container.textContent).toContain('MOB-8 / 10039');
+    expect(container.textContent).toContain('VMOB-13 / 20881');
+    expect(container.textContent).toContain('3e8e7c47-6530-566a-ba14-076a8762fb1c');
+  });
+
+  test('entire-organization scope must be chosen and warns before it is used', async () => {
+    invoke.mockImplementation(async (action) => (
+      action === 'getPairWitnessMigrationStatus'
+        ? { success: true, plan: null, permit: null }
+        : {
+          success: true,
+          plan: {
+            selectionMode: 'organization',
+            selection: null,
+            digest: 'sha256:full',
+            approvalPhrase: 'APPROVE WITNESS org-1 fullfullfull 20',
+            counts: { pairs: 20, writablePairs: 20, writesRequired: 40, excludedPairs: 0 },
+            items: [],
+            excluded: []
+          }
+        }
+    ));
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+    invoke.mockClear();
+
+    await clickButton(container, 'Entire organization');
+
+    expect(container.textContent).toContain(WITNESS_ORGANIZATION_WARNING);
+    await clickButton(container, 'Build plan');
+
+    // No selection is sent: the backend's whole-organization path is used.
+    expect(invoke).toHaveBeenCalledWith('planPairWitnessMigration', { orgId: 'org-1' });
+    expect(container.textContent).toContain('Entire organization');
+    expect(container.textContent).toContain('APPROVE WITNESS org-1 fullfullfull 20');
+  });
+
+  test('switching back to Selected pairs re-requires a selection', async () => {
+    invoke.mockImplementation(async (action) => (
+      action === 'getPairWitnessMigrationStatus'
+        ? { success: true, plan: null, permit: null }
+        : { success: true, plan: null }
+    ));
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+
+    await clickButton(container, 'Entire organization');
+    let buildButton = [...container.querySelectorAll('button')]
+      .find((node) => node.textContent === 'Build plan');
+    expect(buildButton.disabled).toBe(false);
+
+    await clickButton(container, 'Selected pairs');
+    buildButton = [...container.querySelectorAll('button')]
+      .find((node) => node.textContent === 'Build plan');
+    expect(buildButton.disabled).toBe(true);
+    expect(container.textContent).not.toContain(WITNESS_ORGANIZATION_WARNING);
+  });
+
+  test('a malformed selection never reaches the server', async () => {
+    invoke.mockImplementation(async (action) => (
+      action === 'getPairWitnessMigrationStatus'
+        ? { success: true, plan: null, permit: null }
+        : { success: true, plan: null }
+    ));
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+    invoke.mockClear();
+
+    const input = container.querySelector('input[aria-label="Witness migration pair selection"]');
+    act(() => { setInputValue(input, 'MOB-8'); });
+    await clickButton(container, 'Build plan');
+
+    expect(invoke).not.toHaveBeenCalledWith('planPairWitnessMigration', expect.anything());
+    expect(container.textContent).toContain('Could not read "MOB-8"');
+  });
+
+  test('approval sends the same selection the administrator planned with', async () => {
+    invoke.mockImplementation(async (action) => {
+      if (action === 'getPairWitnessMigrationStatus') {
+        return { success: true, plan: null, permit: null };
+      }
+      if (action === 'planPairWitnessMigration') {
+        return {
+          success: true,
+          plan: {
+            selectionMode: 'explicit',
+            digest: 'sha256:abc',
+            approvalPhrase: 'APPROVE WITNESS org-1 abcdefabcdef 1',
+            counts: { pairs: 1, writablePairs: 1, writesRequired: 2, excludedPairs: 0 }
+          }
+        };
+      }
+      return { success: true, status: 'approved' };
+    });
+
+    const { container } = render(<WitnessMigrationControls orgId="org-1" />);
+    await flush();
+
+    const selection = container.querySelector('input[aria-label="Witness migration pair selection"]');
+    act(() => { setInputValue(selection, 'MOB-8 VMOB-13'); });
+    await clickButton(container, 'Build plan');
+
+    const phrase = container.querySelector('input[aria-label="Witness migration confirmation"]');
+    act(() => { setInputValue(phrase, 'APPROVE WITNESS org-1 abcdefabcdef 1'); });
+    await clickButton(container, 'Approve witness plan');
+
+    expect(invoke).toHaveBeenCalledWith('approvePairWitnessMigration', {
+      orgId: 'org-1',
+      confirmation: 'APPROVE WITNESS org-1 abcdefabcdef 1',
+      pairs: [{ localKey: 'MOB-8', remoteKey: 'VMOB-13' }]
+    });
   });
 });
 

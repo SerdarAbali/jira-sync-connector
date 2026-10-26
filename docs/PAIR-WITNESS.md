@@ -314,6 +314,49 @@ A plan with no remaining work reports `completed` when everything verified and
 the plan, the markers or the recorded states; continuation revalidates the stored
 plan before minting any new permit.
 
+### Selecting exact pairs
+
+A migration can be restricted to specific pairs. The selection is a list of exact
+`{ localKey, remoteKey }` entries and is enforced on the server, never by the UI:
+
+| Input | Result |
+| --- | --- |
+| selection omitted | whole organization, as before; unsafe pairs are listed and skipped |
+| selection supplied, non-empty | only those pairs; anything unsafe refuses the **whole** plan |
+| selection supplied but empty | refused (`PAIR_WITNESS_SELECTION_EMPTY`) — never read as "all pairs" |
+| unknown pair | refused (`…_SELECTION_PAIR_UNKNOWN`), including a pair from another organization |
+| wrong remote key for a mapped local issue | refused (`…_SELECTION_PAIR_MISMATCH`) |
+| the same pair, or the same local issue, twice | refused (`…_SELECTION_DUPLICATE`) |
+| selected pair is ended, conflicting, inaccessible or in doubt | refused (`…_SELECTION_PAIR_INELIGIBLE`) with the reason |
+
+The selection is normalized into canonical order (local key, then remote key) and
+the digest covers the selection mode, the exact selected pairs, the item count and
+every item's identity. Approval rebuilds the plan with the same selection, so:
+
+- a one-pair plan and a whole-organization plan can never share a digest or a phrase;
+- a phrase built for one selection cannot approve another (adding a pair changes
+  the count and the digest);
+- the permit issued at approval contains only the selected issues and their exact
+  approved payloads, so no other issue can be written under it.
+
+### Scope choice in the admin panel
+
+The panel makes the scope an explicit decision rather than a side effect of an
+empty box:
+
+| Scope | Behaviour |
+| --- | --- |
+| **Selected pairs** (default) | Requires at least one valid `LOCAL-KEY REMOTE-KEY` entry. A blank or malformed entry keeps **Build plan** disabled; there is no fallback to the organization. |
+| **Entire organization** | Must be chosen deliberately, shows a warning that every eligible pair (two writes each) will be included, and sends no selection at all. |
+
+The plan panel then shows the digest, every planned pair with both stable issue
+ids and its pair UUID, the action per pair and any excluded pairs, so what will be
+written is visible before the phrase is typed. Approval is bound to the same
+scope: switching scope or editing the selection changes the rebuilt plan and the
+phrase no longer matches.
+
+
+
 ### Administration
 
 | Resolver | Policy | Effect |

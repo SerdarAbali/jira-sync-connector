@@ -1,7 +1,7 @@
 import * as kvsStore from '../storage/kvs.js';
 import { getAppContext } from '@forge/api';
 import { readForgeInstallationIdentity } from '../readiness/connector-readiness.js';
-import { getOrganizationsWithTokens } from '../storage/mappings.js';
+import { getOrganizationsWithTokens, isValidIssueKey } from '../storage/mappings.js';
 import { getPilotPause } from './pilot-pause.js';
 import {
   PAIR_WITNESS_ISSUE_CLASSES,
@@ -97,7 +97,13 @@ export const PAIR_WITNESS_MIGRATION_ERRORS = Object.freeze({
   IDENTITY_UNAVAILABLE: 'PAIR_WITNESS_IDENTITY_UNAVAILABLE',
   BUSY: 'PAIR_WITNESS_BATCH_BUSY',
   PREVIEW_FAILED: 'PAIR_WITNESS_PREVIEW_FAILED',
-  APPLY_FAILED: 'PAIR_WITNESS_APPLY_FAILED'
+  APPLY_FAILED: 'PAIR_WITNESS_APPLY_FAILED',
+  SELECTION_INVALID: 'PAIR_WITNESS_SELECTION_INVALID',
+  SELECTION_EMPTY: 'PAIR_WITNESS_SELECTION_EMPTY',
+  SELECTION_DUPLICATE: 'PAIR_WITNESS_SELECTION_DUPLICATE',
+  SELECTION_PAIR_UNKNOWN: 'PAIR_WITNESS_SELECTION_PAIR_UNKNOWN',
+  SELECTION_PAIR_MISMATCH: 'PAIR_WITNESS_SELECTION_PAIR_MISMATCH',
+  SELECTION_PAIR_INELIGIBLE: 'PAIR_WITNESS_SELECTION_PAIR_INELIGIBLE'
 });
 
 export const PAIR_WITNESS_MIGRATION_MESSAGES = Object.freeze({
@@ -125,7 +131,19 @@ export const PAIR_WITNESS_MIGRATION_MESSAGES = Object.freeze({
     'Another witness migration batch is already running for this installation.',
   [PAIR_WITNESS_MIGRATION_ERRORS.PREVIEW_FAILED]:
     'The plan could not be validated against current storage and Jira.',
-  [PAIR_WITNESS_MIGRATION_ERRORS.APPLY_FAILED]: 'The witness migration batch could not be completed.'
+  [PAIR_WITNESS_MIGRATION_ERRORS.APPLY_FAILED]: 'The witness migration batch could not be completed.',
+  [PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_INVALID]:
+    'The pair selection is not a list of { localKey, remoteKey } entries with valid issue keys.',
+  [PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_EMPTY]:
+    'An empty pair selection is refused. Omit the selection entirely to plan the whole organization.',
+  [PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_DUPLICATE]:
+    'The pair selection names the same pair, or the same local issue, more than once.',
+  [PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_UNKNOWN]:
+    'A selected pair is not mapped in this organization.',
+  [PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_MISMATCH]:
+    'A selected pair does not match the stored mapping for that local issue.',
+  [PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_INELIGIBLE]:
+    'A selected pair cannot be witnessed safely, so the whole plan was refused.'
 });
 
 export class PairWitnessMigrationError extends Error {
@@ -147,11 +165,79 @@ function sha256(value) {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
 
-function planDigestOf({ orgId, installationId, items }) {
+/**
+ * Normalizes an explicit pair selection.
+ *
+ * `undefined` means "not supplied" and keeps the full-organization behaviour.
+ * Anything else must be a non-empty list of exact `{ localKey, remoteKey }`
+ * pairs: an empty list is refused rather than read as "all pairs", and the
+ * result is sorted so the same selection always produces the same digest
+ * regardless of the order an administrator typed it in.
+ */
+export function normalizePairSelection(input) {
+  if (input === undefined) return null;
+  if (!Array.isArray(input)) {
+    throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_INVALID, {
+      type: typeof input
+    });
+  }
+  if (input.length === 0) {
+    throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_EMPTY);
+  }
+
+  const byLocalKey = new Map();
+  const selection = [];
+  for (const entry of input) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_INVALID, {
+        entry: 'not-an-object'
+      });
+    }
+    const localKey = typeof entry.localKey === 'string' ? entry.localKey.trim() : null;
+    const remoteKey = typeof entry.remoteKey === 'string' ? entry.remoteKey.trim() : null;
+    if (!isValidIssueKey(localKey) || !isValidIssueKey(remoteKey)) {
+      throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_INVALID, {
+        localKey,
+        remoteKey
+      });
+    }
+    // One local issue can only ever have one remote counterpart, so a repeated
+    // local key is a conflicting selection even when the remote key differs.
+    if (byLocalKey.has(localKey)) {
+      throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_DUPLICATE, {
+        localKey,
+        firstRemoteKey: byLocalKey.get(localKey),
+        remoteKey
+      });
+    }
+    byLocalKey.set(localKey, remoteKey);
+    selection.push({ localKey, remoteKey });
+  }
+
+  return selection.sort((left, right) => (
+    left.localKey.localeCompare(right.localKey) || left.remoteKey.localeCompare(right.remoteKey)
+  ));
+}
+
+/**
+ * Digest over the plan's immutable identity: the selection mode, the exact
+ * selected pairs in canonical order, the resulting item count and every item's
+ * pair identity. A one-pair plan and a whole-organization plan can therefore
+ * never share a digest, and neither can two selections of different sizes.
+ */
+function planDigestOf({ orgId, installationId, items, selection, selectionMode }) {
+  const mode = selectionMode === 'explicit' && Array.isArray(selection)
+    ? 'explicit'
+    : 'organization';
   return sha256(stableStringify({
     purpose: 'pair-witness-migration',
     orgId,
     installationId,
+    selectionMode: mode,
+    selection: mode === 'explicit'
+      ? selection.map((entry) => [entry.localKey, entry.remoteKey])
+      : null,
+    itemCount: items.length,
     items: items.map((item) => ({
       seq: item.seq,
       localKey: item.localKey,
@@ -219,15 +305,50 @@ export async function buildPairWitnessPlan(options = {}) {
   const items = [];
   const excluded = [];
   const remoteSite = preview.organization?.remoteSite || null;
+  const selection = normalizePairSelection(options.pairs);
+  const previewPairs = Array.isArray(preview.pairs) ? preview.pairs : [];
 
-  for (const pair of preview.pairs || []) {
+  // An explicit selection is resolved strictly against this organization's
+  // mapped pairs. Unknown, re-pointed or partially matched pairs are refused
+  // before a single item is built, so the plan can never be wider than asked.
+  let pairsToPlan = previewPairs;
+  if (selection) {
+    pairsToPlan = selection.map((requested) => {
+      const pair = previewPairs.find((candidate) => candidate.localKey === requested.localKey);
+      if (!pair) {
+        throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_UNKNOWN, {
+          localKey: requested.localKey,
+          remoteKey: requested.remoteKey,
+          orgId
+        });
+      }
+      if (pair.remoteKey !== requested.remoteKey) {
+        throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_MISMATCH, {
+          localKey: requested.localKey,
+          requestedRemoteKey: requested.remoteKey,
+          storedRemoteKey: pair.remoteKey
+        });
+      }
+      return pair;
+    });
+  }
+
+  for (const pair of pairsToPlan) {
     const localIssueId = pair.local?.issue?.id || null;
     const remoteIssueId = pair.remote?.issue?.id || null;
-    const exclude = (reason) => excluded.push({
-      localKey: pair.localKey,
-      remoteKey: pair.remoteKey,
-      reason
-    });
+    // In full-organization mode an unsafe pair is reported and skipped. In
+    // explicit mode the administrator asked for that exact pair, so an unsafe
+    // pair refuses the whole plan instead of being silently dropped.
+    const exclude = (reason) => {
+      if (selection) {
+        throw new PairWitnessMigrationError(
+          PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_INELIGIBLE,
+          { localKey: pair.localKey, remoteKey: pair.remoteKey, reason }
+        );
+      }
+      excluded.push({ localKey: pair.localKey, remoteKey: pair.remoteKey, reason });
+    };
+
 
     if (!localIssueId || !remoteIssueId) {
       exclude('identity-unavailable');
@@ -275,7 +396,12 @@ export async function buildPairWitnessPlan(options = {}) {
   }
 
   // Sequence numbers are part of the digest, so they must be fixed before it is
-  // computed and never renumbered afterwards.
+  // computed and never renumbered afterwards. Items are also ordered canonically
+  // by local key so the same selection always yields the same digest and the
+  // same batch boundaries.
+  items.sort((left, right) => (
+    left.localKey.localeCompare(right.localKey) || left.remoteKey.localeCompare(right.remoteKey)
+  ));
   items.forEach((entry, index) => {
     entry.seq = index + 1;
   });
@@ -284,7 +410,14 @@ export async function buildPairWitnessPlan(options = {}) {
   const writesRequired = writableItems.reduce((total, entry) => (
     total + (entry.action === PAIR_WITNESS_ITEM_ACTIONS.BOTH ? 2 : 1)
   ), 0);
-  const digest = planDigestOf({ orgId, installationId: identity.installationId, items });
+  const selectionMode = selection ? 'explicit' : 'organization';
+  const digest = planDigestOf({
+    orgId,
+    installationId: identity.installationId,
+    items,
+    selection,
+    selectionMode
+  });
 
   return {
     version: PAIR_WITNESS_PLAN_VERSION,
@@ -293,6 +426,8 @@ export async function buildPairWitnessPlan(options = {}) {
     appId: identity.appId,
     localSite,
     remoteSite,
+    selectionMode,
+    selection,
     items,
     excluded,
     digest,
@@ -398,7 +533,12 @@ export async function approvePairWitnessMigration(options = {}) {
   const orgId = options.orgId;
   await assertMaintenancePreconditions(deps);
 
-  const plan = await buildPairWitnessPlan({ orgId, deps: options.deps, previewDeps: options.previewDeps });
+  const plan = await buildPairWitnessPlan({
+    orgId,
+    pairs: options.pairs,
+    deps: options.deps,
+    previewDeps: options.previewDeps
+  });
   if (plan.counts.writablePairs === 0) {
     throw new PairWitnessMigrationError(PAIR_WITNESS_MIGRATION_ERRORS.PLAN_EMPTY, {
       verifyOnlyPairs: plan.counts.verifyOnlyPairs,
@@ -459,10 +599,13 @@ export async function approvePairWitnessMigration(options = {}) {
     orgId,
     digest: plan.digest,
     status: approved.status,
+    selectionMode: plan.selectionMode,
+    selection: plan.selection,
     counts: plan.counts,
     excluded: plan.excluded,
     permitIssued: Boolean(permit),
     permitExpiresAt: permit ? new Date(permit.expiresAt).toISOString() : null,
+    permitEntries: permit ? permit.entries.length : 0,
     jiraWritesPerformed: 0
   };
 }
@@ -1048,6 +1191,8 @@ export async function getPairWitnessMigrationStatus(options = {}) {
     plan: {
       digest: stored.digest,
       status: stored.status,
+      selectionMode: stored.selectionMode || 'organization',
+      selection: stored.selection || null,
       approvedAt: stored.approvedAt || null,
       approvedBy: stored.approvedBy || null,
       expiresAt: Number(stored.expiresAt) > now ? new Date(stored.expiresAt).toISOString() : null,

@@ -67,7 +67,15 @@ export function definePairWitnessResolvers(resolver) {
     let orgId = null;
     try {
       orgId = fixedOrganization(payload);
-      return { success: true, plan: await buildPairWitnessPlan({ orgId }) };
+      return {
+        success: true,
+        plan: await buildPairWitnessPlan({
+          orgId,
+          // Omitted means the whole organization; an explicit list (including an
+          // empty one, which is refused) is passed through untouched.
+          pairs: payload?.pairs
+        })
+      };
     } catch (error) {
       const code = failureCode(error);
       logger.warn('Pairing witness plan failed', { code, orgId });
@@ -82,6 +90,7 @@ export function definePairWitnessResolvers(resolver) {
       const result = await approvePairWitnessMigration({
         orgId,
         confirmation: payload?.confirmation,
+        pairs: payload?.pairs,
         accountId: typeof context?.accountId === 'string' ? context.accountId : null
       });
       logger.info('Pairing witness plan approved', { orgId, forges: result.counts.writablePairs });

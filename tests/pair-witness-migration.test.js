@@ -15,13 +15,16 @@ import {
   approvePairWitnessMigration,
   buildPairWitnessPlan,
   cancelPairWitnessMigration,
-  getPairWitnessMigrationStatus
+  getPairWitnessMigrationStatus,
+  normalizePairSelection
 } from '../src/services/sync/pair-witness-migration.js';
 import {
   PAIR_WITNESS_PERMIT_KEY,
   PAIR_WITNESS_PLAN_KEY,
-  PAIR_WITNESS_WRITE_MARKER_KEY
+  PAIR_WITNESS_WRITE_MARKER_KEY,
+  evaluatePairWitnessPermit
 } from '../src/services/sync/pair-witness-permit.js';
+import { buildWitnessBody } from '../src/services/sync/pair-witness-write.js';
 import { deterministicPairId } from '../src/services/sync/pair-witness.js';
 
 jest.mock('../src/services/storage/kvs.js', () => require('./helpers/pair-witness-store.js').kvsModule);
@@ -931,6 +934,275 @@ describe('partial completion recovers without duplicate work', () => {
 
     expect(again.writesPerformed).toBe(0);
     expect(h.state.writes).toHaveLength(writesSoFar);
+  });
+});
+
+
+describe('explicit pair selection', () => {
+  const select = (...entries) => entries.map((n) => ({ localKey: `MOB-${n}`, remoteKey: `VMOB-${n}` }));
+
+  async function approveSelected(h, pairs, orgId = ORG_A) {
+    const plan = await buildPairWitnessPlan({ orgId, pairs, deps: h.deps });
+    const approved = await approvePairWitnessMigration({
+      orgId,
+      pairs,
+      confirmation: plan.approvalPhrase,
+      accountId: 'admin',
+      deps: h.deps
+    });
+    return { plan, approved };
+  }
+
+  test('a single selected pair yields one item and exactly two property writes', async () => {
+    const h = harness({ pairs: [pair(8), pair(9), pair(10)] });
+    const { plan, approved } = await approveSelected(h, select(8));
+
+    expect(plan.selectionMode).toBe('explicit');
+    expect(plan.selection).toEqual([{ localKey: 'MOB-8', remoteKey: 'VMOB-8' }]);
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0]).toMatchObject({ localKey: 'MOB-8', remoteKey: 'VMOB-8', action: 'both' });
+    expect(plan.counts).toMatchObject({ pairs: 1, writablePairs: 1, writesRequired: 2 });
+
+    expect(approved.permitEntries).toBe(2);
+    const permit = await store.get(PAIR_WITNESS_PERMIT_KEY);
+    expect(permit.entries.map((entry) => entry.issueId).sort())
+      .toEqual([pair(8).localIssueId, pair(8).remoteIssueId].sort());
+
+    const result = await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+    expect(result.writesPerformed).toBe(2);
+    expect(h.state.writes.map((entry) => `${entry.side}:${entry.issueId}`).sort())
+      .toEqual([`local:${pair(8).localIssueId}`, `remote:${pair(8).remoteIssueId}`].sort());
+    expect(result.states[PAIR_WITNESS_ITEM_STATES.VERIFIED]).toBe(1);
+  });
+
+  test('selection cannot expand between planning and approval', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, pairs: select(8), deps: h.deps });
+
+    await expect(approvePairWitnessMigration({
+      orgId: ORG_A,
+      pairs: select(8, 9),
+      confirmation: plan.approvalPhrase,
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.CONFIRMATION_REQUIRED });
+
+    expect(await store.get(PAIR_WITNESS_PLAN_KEY(ORG_A))).toBeNull();
+    expect(await store.get(PAIR_WITNESS_PERMIT_KEY)).toBeNull();
+  });
+
+  test('an explicitly empty selection is refused and never read as all pairs', async () => {
+    const h = harness({ pairs: [pair(8)] });
+
+    await expect(buildPairWitnessPlan({ orgId: ORG_A, pairs: [], deps: h.deps }))
+      .rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_EMPTY });
+    await expect(approvePairWitnessMigration({
+      orgId: ORG_A,
+      pairs: [],
+      confirmation: 'APPROVE WITNESS x y 0',
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_EMPTY });
+    expect(await store.get(PAIR_WITNESS_PLAN_KEY(ORG_A))).toBeNull();
+  });
+
+  test('unknown, mismatched, duplicate and other-organization pairs are refused', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+
+    await expect(buildPairWitnessPlan({
+      orgId: ORG_A,
+      pairs: [{ localKey: 'MOB-99', remoteKey: 'VMOB-99' }],
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_UNKNOWN });
+
+    await expect(buildPairWitnessPlan({
+      orgId: ORG_A,
+      pairs: [{ localKey: 'MOB-8', remoteKey: 'VMOB-9' }],
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_MISMATCH });
+
+    await expect(buildPairWitnessPlan({
+      orgId: ORG_A,
+      pairs: select(8, 8),
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_DUPLICATE });
+
+    await expect(buildPairWitnessPlan({
+      orgId: ORG_A,
+      pairs: [{ localKey: 'MOB-8', remoteKey: 'VMOB-8' }, { localKey: 'MOB-8', remoteKey: 'VMOB-9' }],
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_DUPLICATE });
+
+    await expect(buildPairWitnessPlan({
+      orgId: ORG_A,
+      pairs: [{ localKey: 'DEV-2', remoteKey: 'SAM1-16' }],
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_UNKNOWN });
+  });
+});
+
+
+describe('explicit selection: scope, digest and permit containment', () => {
+  const select = (...entries) => entries.map((n) => ({ localKey: `MOB-${n}`, remoteKey: `VMOB-${n}` }));
+
+  test('a selected pair that cannot be witnessed refuses the whole plan', async () => {
+    const h = harness({
+      pairs: [pair(8), { ...pair(9), pairClass: 'witness-conflict' }]
+    });
+
+    await expect(buildPairWitnessPlan({ orgId: ORG_A, pairs: select(9), deps: h.deps }))
+      .rejects.toMatchObject({
+        code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_INELIGIBLE,
+        details: { reason: 'witness-conflict' }
+      });
+
+    await expect(buildPairWitnessPlan({ orgId: ORG_A, pairs: select(8, 9), deps: h.deps }))
+      .rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.SELECTION_PAIR_INELIGIBLE });
+
+    expect(await store.get(PAIR_WITNESS_PLAN_KEY(ORG_A))).toBeNull();
+  });
+
+  test('omitting the selection keeps the whole-organization behaviour', async () => {
+    const h = harness({
+      pairs: [pair(8), pair(9), { ...pair(10), pairClass: 'pair-ended' }]
+    });
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+
+    expect(plan.selectionMode).toBe('organization');
+    expect(plan.selection).toBeNull();
+    expect(plan.items.map((entry) => entry.localKey)).toEqual(['MOB-8', 'MOB-9']);
+    expect(plan.excluded).toEqual([
+      { localKey: 'MOB-10', remoteKey: 'VMOB-10', reason: 'pair-ended' }
+    ]);
+  });
+
+  test('a one-pair digest differs from the whole-organization digest', async () => {
+    const pairs = Array.from({ length: 20 }, (_, index) => pair(index + 1));
+    const h = harness({ pairs });
+
+    const full = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+    const single = await buildPairWitnessPlan({ orgId: ORG_A, pairs: select(8), deps: h.deps });
+
+    expect(full.counts.pairs).toBe(20);
+    expect(single.counts.pairs).toBe(1);
+    expect(single.digest).not.toBe(full.digest);
+    expect(single.approvalPhrase).not.toBe(full.approvalPhrase);
+  });
+
+  test('the whole-organization phrase cannot approve a one-pair plan and vice versa', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+    const full = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+    const single = await buildPairWitnessPlan({ orgId: ORG_A, pairs: select(8), deps: h.deps });
+
+    await expect(approvePairWitnessMigration({
+      orgId: ORG_A,
+      pairs: select(8),
+      confirmation: full.approvalPhrase,
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.CONFIRMATION_REQUIRED });
+
+    await expect(approvePairWitnessMigration({
+      orgId: ORG_A,
+      confirmation: single.approvalPhrase,
+      deps: h.deps
+    })).rejects.toMatchObject({ code: PAIR_WITNESS_MIGRATION_ERRORS.CONFIRMATION_REQUIRED });
+  });
+
+  test('the selection is normalized into canonical order', () => {
+    const normalized = normalizePairSelection([
+      { localKey: 'MOB-9', remoteKey: 'VMOB-9' },
+      { localKey: 'MOB-10', remoteKey: 'VMOB-10' },
+      { localKey: 'MOB-8', remoteKey: 'VMOB-8' }
+    ]);
+    expect(normalized.map((entry) => entry.localKey)).toEqual(['MOB-10', 'MOB-8', 'MOB-9']);
+    expect(normalizePairSelection(undefined)).toBeNull();
+    expect(() => normalizePairSelection('MOB-8')).toThrow();
+  });
+});
+
+
+describe('explicit selection: permit containment and idempotence', () => {
+  const select = (n) => [{ localKey: `MOB-${n}`, remoteKey: `VMOB-${n}` }];
+
+  async function approveOne(h, n) {
+    const pairs = select(n);
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, pairs, deps: h.deps });
+    await approvePairWitnessMigration({
+      orgId: ORG_A,
+      pairs,
+      confirmation: plan.approvalPhrase,
+      deps: h.deps
+    });
+    return plan;
+  }
+
+  test('a second batch on a one-pair plan is a no-op and leaves the other pair alone', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+    await approveOne(h, 8);
+
+    const first = await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+    expect(first.writesPerformed).toBe(2);
+
+    const second = await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+    expect(second.writesPerformed).toBe(0);
+    expect(h.state.writes).toHaveLength(2);
+    expect(h.state.witnesses.get(`local:${pair(9).localIssueId}`)).toBeUndefined();
+  });
+
+  test('the selected permit authorizes no other issue', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+    await approveOne(h, 8);
+    seed('pilotPause', {
+      paused: true,
+      pausedAt: new Date().toISOString(),
+      reasonCode: 'emergency_stop'
+    });
+
+    const permit = await store.get(PAIR_WITNESS_PERMIT_KEY);
+    const localEntry = permit.entries.find((entry) => entry.site === 'local');
+    const path = (issueId) => `/rest/api/3/issue/${issueId}/properties/sync-connector-pair`;
+    const bodyFor = (issueId, localKey) => JSON.stringify(buildWitnessBody({
+      pairId: localEntry.pairId,
+      installationId: INSTALLATION_ID,
+      appId: APP_ID,
+      orgId: ORG_A,
+      localSite: LOCAL_SITE,
+      remoteSite: REMOTE_HOST,
+      localIssueId: issueId,
+      localKey,
+      remoteIssueId: pair(8).remoteIssueId,
+      remoteKey: pair(8).remoteKey,
+      direction: 'local-to-remote',
+      writtenAt: new Date().toISOString()
+    }));
+
+    const allowed = await evaluatePairWitnessPermit({
+      method: 'PUT',
+      raw: path(localEntry.issueId),
+      pathname: path(localEntry.issueId),
+      body: bodyFor(pair(8).localIssueId, 'MOB-8')
+    });
+    expect(allowed.allowed).toBe(true);
+
+    const refused = await evaluatePairWitnessPermit({
+      method: 'PUT',
+      raw: path(pair(9).localIssueId),
+      pathname: path(pair(9).localIssueId),
+      body: bodyFor(pair(9).localIssueId, 'MOB-9')
+    });
+    expect(refused).toMatchObject({
+      allowed: false,
+      refusal: 'PERMIT_INVALID',
+      reason: 'PAIR_WITNESS_PERMIT_ISSUE_NOT_APPROVED'
+    });
+  });
+
+  test('a selected plan status reports the explicit scope', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+    await approveOne(h, 8);
+
+    const status = await getPairWitnessMigrationStatus({ orgId: ORG_A, deps: h.deps });
+    expect(status.plan.selectionMode).toBe('explicit');
+    expect(status.plan.selection).toEqual([{ localKey: 'MOB-8', remoteKey: 'VMOB-8' }]);
+    expect(status.plan.items).toHaveLength(1);
   });
 });
 

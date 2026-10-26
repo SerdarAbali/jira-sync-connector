@@ -38,6 +38,12 @@ const cellStyle = {
   verticalAlign: 'top'
 };
 
+const monoStyle = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: '12px',
+  wordBreak: 'break-all'
+};
+
 export const PAIR_WITNESS_READ_ONLY_TEXT =
   'Read-only preview. It writes no issue property, creates no issue and changes no mapping, ledger row or pause state.';
 
@@ -286,10 +292,50 @@ export const WITNESS_APPROVAL_TEXT =
 export const WITNESS_APPLY_TEXT =
   'Each run writes at most ten pairs, reads both properties back, and only then records progress. A failed pair is reported and never rolled back or deleted.';
 
+export const WITNESS_SELECTION_TEXT =
+  'Enter one pair per line as LOCAL-KEY REMOTE-KEY. Only those pairs are planned; an empty or malformed entry cannot build a plan.';
+
+export const WITNESS_SELECTION_REQUIRED_TEXT =
+  'At least one pair is required in this scope. Build plan stays disabled until a valid pair is entered.';
+
+export const WITNESS_ORGANIZATION_WARNING =
+  'Every eligible pair in this organization will be included in the plan, and each pair needs two property writes. Choose this deliberately; to limit the migration, use Selected pairs.';
+
+/**
+ * Parses the pair-selection box.
+ *
+ * Blank means "not supplied" (whole organization). Anything else must resolve to
+ * complete `localKey remoteKey` pairs; a malformed line is reported rather than
+ * guessed, and the server refuses an empty list outright.
+ */
+export function parsePairSelection(text) {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  if (raw === '') return { pairs: undefined, error: null, blank: true };
+
+  const pairs = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    const parts = trimmed.split(/[,=]|->|→|\s+/).map((part) => part.trim()).filter(Boolean);
+    if (parts.length !== 2) {
+      return {
+        pairs: null,
+        error: `Could not read "${trimmed}". Use one pair per line as LOCAL-1 REMOTE-1.`,
+        blank: false
+      };
+    }
+    pairs.push({ localKey: parts[0], remoteKey: parts[1] });
+  }
+  if (pairs.length === 0) return { pairs: undefined, error: null, blank: true };
+  return { pairs, error: null, blank: false };
+}
+
 export function WitnessMigrationControls({ orgId, showMessage }) {
   const [status, setStatus] = useState(null);
   const [plan, setPlan] = useState(null);
   const [confirmation, setConfirmation] = useState('');
+  const [selectionText, setSelectionText] = useState('');
+  const [scopeMode, setScopeMode] = useState('selected');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -338,17 +384,51 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
   }, [busy, fail, orgId, refresh]);
 
   const buildPlan = useCallback(async () => {
+    const selection = parsePairSelection(selectionText);
+    if (scopeMode === 'selected') {
+      if (selection.error) {
+        fail(selection.error);
+        return;
+      }
+      if (!selection.pairs || selection.pairs.length === 0) {
+        fail('Select at least one pair, or switch the scope to Entire organization.');
+        return;
+      }
+      const response = await run('planPairWitnessMigration', { pairs: selection.pairs });
+      if (response?.plan) setPlan(response.plan);
+      return;
+    }
+    // Entire organization is only reachable through the explicit mode choice:
+    // the selection is omitted, which is the backend's whole-organization call.
     const response = await run('planPairWitnessMigration', {});
     if (response?.plan) setPlan(response.plan);
-  }, [run]);
+  }, [fail, run, scopeMode, selectionText]);
 
   const approve = useCallback(async () => {
-    const response = await run('approvePairWitnessMigration', { confirmation });
+    const selection = parsePairSelection(selectionText);
+    if (scopeMode === 'selected') {
+      if (selection.error) {
+        fail(selection.error);
+        return;
+      }
+      if (!selection.pairs || selection.pairs.length === 0) {
+        fail('Select at least one pair, or switch the scope to Entire organization.');
+        return;
+      }
+    }
+    // Approval rebuilds the plan server-side with the same scope, so the phrase
+    // can only match the exact set the administrator is looking at.
+    const response = await run(
+      'approvePairWitnessMigration',
+      scopeMode === 'selected'
+        ? { confirmation, pairs: selection.pairs }
+        : { confirmation }
+    );
     if (response) {
       setConfirmation('');
       setPlan(null);
     }
-  }, [confirmation, run]);
+  }, [confirmation, fail, run, scopeMode, selectionText]);
 
   const applyBatch = useCallback(async () => {
     const response = await run('applyPairWitnessMigration', {});
@@ -369,6 +449,14 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
   const planStatus = status?.plan?.status || null;
   const remaining = status?.plan?.remaining ?? 0;
   const canApply = planStatus === 'approved' || planStatus === 'running';
+
+  const parsed = parsePairSelection(selectionText);
+  const hasPairs = Boolean(parsed.pairs && parsed.pairs.length > 0);
+  // Selected-pairs mode never falls back to the whole organization: a blank or
+  // malformed selection simply cannot build a plan.
+  const canBuild = Boolean(orgId) && !busy
+    && (scopeMode === 'organization' || (parsed.error === null && hasPairs));
+  const canApprove = phraseMatches && !busy && canBuild;
 
   return (
     <div
@@ -399,10 +487,68 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
         <Field label="Batches run" value={status?.plan?.batches ?? 0} />
         <Field label="Plan expires" value={status?.plan?.expiresAt || 'Not approved'} />
         <Field label="Permit" value={status?.permit ? status.permit.permitId : 'None'} />
+        <Field
+          label="Plan scope"
+          value={status?.plan
+            ? (status.plan.selectionMode === 'explicit' ? 'Selected pairs' : 'Whole organization')
+            : 'None'}
+        />
+      </div>
+
+      <div style={{ marginBottom: token('space.200', '16px') }}>
+        <div style={labelStyle}>Scope</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.100', '8px'), margin: '6px 0 8px 0' }}>
+          <Button
+            appearance={scopeMode === 'selected' ? 'primary' : 'default'}
+            aria-pressed={scopeMode === 'selected'}
+            isDisabled={busy}
+            onClick={() => setScopeMode('selected')}
+          >
+            Selected pairs
+          </Button>
+          <Button
+            appearance={scopeMode === 'organization' ? 'primary' : 'default'}
+            aria-pressed={scopeMode === 'organization'}
+            isDisabled={busy}
+            onClick={() => setScopeMode('organization')}
+          >
+            Entire organization
+          </Button>
+        </div>
+
+        {scopeMode === 'organization' ? (
+          <SectionMessage appearance="warning" title="Entire organization selected">
+            <p style={{ margin: 0 }}>{WITNESS_ORGANIZATION_WARNING}</p>
+          </SectionMessage>
+        ) : (
+          <div>
+            <p style={{ margin: '0 0 8px 0', fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
+              {WITNESS_SELECTION_TEXT}
+            </p>
+            <div style={{ maxWidth: '520px', marginBottom: token('space.100', '8px') }}>
+              <Textfield
+                aria-label="Witness migration pair selection"
+                value={selectionText}
+                onChange={(event) => setSelectionText(event.target.value)}
+                isDisabled={busy}
+                placeholder={'MOB-8 VMOB-13'}
+              />
+            </div>
+            {parsed.error ? (
+              <p style={{ margin: 0, fontSize: '12px', color: token('color.text.danger', '#DE350B') }}>
+                {parsed.error}
+              </p>
+            ) : (hasPairs ? null : (
+              <p style={{ margin: 0, fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
+                {WITNESS_SELECTION_REQUIRED_TEXT}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.150', '12px'), marginBottom: token('space.200', '16px') }}>
-        <Button appearance="default" isDisabled={!orgId || busy} onClick={buildPlan}>
+        <Button appearance="default" isDisabled={!canBuild} onClick={buildPlan}>
           Build plan
         </Button>
         <Button appearance="default" isDisabled={!orgId || busy || !canApply} onClick={applyBatch}>
@@ -420,7 +566,57 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
             <Field label="Verify only" value={plan.counts?.verifyOnlyPairs ?? 0} />
             <Field label="Excluded" value={plan.counts?.excludedPairs ?? 0} />
             <Field label="Writes required" value={plan.counts?.writesRequired ?? 0} />
+            <Field
+              label="Plan scope"
+              value={plan.selectionMode === 'explicit'
+                ? `Selected pairs (${(plan.selection || []).length})`
+                : 'Entire organization'}
+            />
           </div>
+
+          <div style={{ marginBottom: token('space.150', '12px') }}>
+            <div style={labelStyle}>Plan digest</div>
+            <div style={monoStyle}>{plan.digest}</div>
+          </div>
+
+          {Array.isArray(plan.items) && plan.items.length > 0 && (
+            <div style={{ marginBottom: token('space.150', '12px') }}>
+              <div style={labelStyle}>Planned pairs</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...cellStyle, textAlign: 'left' }}>Local key / id</th>
+                    <th style={{ ...cellStyle, textAlign: 'left' }}>Remote key / id</th>
+                    <th style={{ ...cellStyle, textAlign: 'left' }}>Pair UUID</th>
+                    <th style={{ ...cellStyle, textAlign: 'left' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {plan.items.map((entry) => (
+                    <tr key={entry.pairId}>
+                      <td style={cellStyle}>{`${entry.localKey} / ${entry.localIssueId}`}</td>
+                      <td style={cellStyle}>{`${entry.remoteKey} / ${entry.remoteIssueId}`}</td>
+                      <td style={{ ...cellStyle, ...monoStyle }}>{entry.pairId}</td>
+                      <td style={cellStyle}>{entry.action}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {Array.isArray(plan.excluded) && plan.excluded.length > 0 && (
+            <div style={{ marginBottom: token('space.150', '12px') }}>
+              <div style={labelStyle}>Excluded pairs</div>
+              <ul style={{ margin: 0, paddingLeft: token('space.200', '16px'), fontSize: '12px' }}>
+                {plan.excluded.map((entry) => (
+                  <li key={`${entry.localKey}-${entry.remoteKey}`}>
+                    {`${entry.localKey} ↔ ${entry.remoteKey}: ${entry.reason}`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <p style={{ marginTop: 0, marginBottom: token('space.100', '8px'), fontSize: '13px' }}>
             Type the exact phrase to approve this plan.
           </p>
@@ -433,7 +629,7 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
               isDisabled={busy}
             />
           </div>
-          <Button appearance="primary" isDisabled={!phraseMatches || busy} onClick={approve}>
+          <Button appearance="primary" isDisabled={!canApprove} onClick={approve}>
             Approve witness plan
           </Button>
         </div>
