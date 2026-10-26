@@ -133,7 +133,15 @@ describe('acquireRunnerLock', () => {
 
 describe('assertWorkingDirectory', () => {
   test('accepts the expected directory', () => {
-    expect(assertWorkingDirectory(workdir, workdir)).toBe(path.resolve(workdir));
+    expect(assertWorkingDirectory(workdir, workdir)).toBe(fs.realpathSync(workdir));
+  });
+
+  test('accepts a symlinked path that resolves to the expected directory', () => {
+    const link = path.join(workdir, 'link');
+    fs.symlinkSync(workdir, link);
+    // macOS resolves /tmp to /private/tmp, which is exactly this case.
+    expect(() => assertWorkingDirectory(link, workdir)).not.toThrow();
+    expect(() => assertWorkingDirectory(workdir, link)).not.toThrow();
   });
 
   test('refuses a different directory', () => {

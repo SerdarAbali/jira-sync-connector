@@ -139,10 +139,22 @@ function acquireRunnerLock(lockPath, options = {}) {
  * Refuses to continue unless the process runs from the expected directory.
  * Orchestration scripts resolve paths from the repository root, so a different
  * cwd silently changes what they read and write.
+ *
+ * Paths are canonicalized through the filesystem first: on macOS `/tmp` is a
+ * symlink to `/private/tmp`, so a plain string compare rejects a correct cwd.
  */
+function canonicalDirectory(directory) {
+  const resolved = path.resolve(directory);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function assertWorkingDirectory(expectedDirectory, actualDirectory = process.cwd()) {
-  const expected = path.resolve(expectedDirectory);
-  const actual = path.resolve(actualDirectory);
+  const expected = canonicalDirectory(expectedDirectory);
+  const actual = canonicalDirectory(actualDirectory);
   if (expected !== actual) {
     const error = new Error(`Refusing to run outside ${expected} (cwd is ${actual})`);
     error.code = 'RUNNER_WRONG_CWD';

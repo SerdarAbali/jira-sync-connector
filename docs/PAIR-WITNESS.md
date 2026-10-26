@@ -402,6 +402,24 @@ phrase no longer matches.
 | `applyPairWitnessMigration` | ADMIN_WRITE | one bounded batch of property PUTs |
 | `cancelPairWitnessMigration` | ADMIN_WRITE | revokes the permit and deletes the plan; zero Jira requests, zero property deletions |
 
+### Local runner discipline
+
+Batches are driven from an operator machine, so the runner itself is part of the
+safety story. Every maintenance or inspection runner must:
+
+- hold `scripts/staging/lib/single-runner.js`'s exclusive lock
+  (`acquireRunnerLock('/tmp/stg-session/.rehearsal-runner.lock')`) for the whole
+  run, releasing it in a `finally` block;
+- validate its working directory with `assertWorkingDirectory(RUNNER_DIR)` and
+  write only absolute paths — a runner started from the wrong directory or twice
+  by accident must fail before it opens a browser;
+- never be replaced by an ad-hoc, untracked script that skips the lock.
+
+This is local hygiene only. The server-side permit, the single-flight batch lock
+and the digest-bound approval phrase remain the authoritative protection; the
+local lock exists because two overlapping runners once made the second one act on
+permit state the first had just created.
+
 ### What this phase still does not do
 
 - It does not run itself: approval and every batch are explicit administrator
