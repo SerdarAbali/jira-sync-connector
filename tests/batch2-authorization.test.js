@@ -341,7 +341,7 @@ describe('Batch 2 resolver inventory and actual handler', () => {
 
     expect(typeof handler).toBe('function');
     expect(Object.keys(handler)).toHaveLength(0);
-    expect(registered).toHaveLength(86);
+    expect(registered).toHaveLength(91);
     expect(registered).toEqual(classified);
     expect(RESOLVER_POLICIES.getIssueCreateOperationStatus).toBe('ADMIN_READ');
     expect(RESOLVER_POLICIES.getConnectorReadiness).toBe('ADMIN_READ');

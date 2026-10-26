@@ -131,8 +131,18 @@ export const RESOLVER_POLICIES = Object.freeze({
 
   // Read-only pairing-witness migration preview. It reads mapping metadata,
   // both directions, the create ledger and the issue property on both Jira
-  // sites, and writes nothing anywhere. No approval or apply resolver exists.
-  previewPairWitnessMigration: 'ADMIN_READ'
+  // sites, and writes nothing anywhere.
+  previewPairWitnessMigration: 'ADMIN_READ',
+
+  // Pairing-witness migration. Planning only recomputes the plan and writes
+  // nothing. Approval writes the plan and one short-lived maintenance permit.
+  // A batch writes only the sync-connector-pair property on approved issues.
+  // Cancellation revokes the permit and never touches a Jira property.
+  planPairWitnessMigration: 'ADMIN_READ',
+  getPairWitnessMigrationStatus: 'ADMIN_READ',
+  approvePairWitnessMigration: 'ADMIN_WRITE',
+  applyPairWitnessMigration: 'ADMIN_WRITE',
+  cancelPairWitnessMigration: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {

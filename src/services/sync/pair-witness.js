@@ -2,6 +2,19 @@ import { createHash } from 'crypto';
 import api, { route, fetch } from '../jira/guarded-api.js';
 import { stableStringify } from './recovery-snapshot.js';
 import { isValidIssueKey } from '../storage/mappings.js';
+import {
+  PAIR_WITNESS_MAX_KEY_BYTES,
+  PAIR_WITNESS_MAX_VALUE_BYTES,
+  PAIR_WITNESS_PROPERTY_KEY,
+  PAIR_WITNESS_VERSION
+} from './pair-witness-constants.js';
+
+export {
+  PAIR_WITNESS_MAX_KEY_BYTES,
+  PAIR_WITNESS_MAX_VALUE_BYTES,
+  PAIR_WITNESS_PROPERTY_KEY,
+  PAIR_WITNESS_VERSION
+};
 
 /**
  * Jira issue-property pairing witness: schema, canonical form and read access.
@@ -26,10 +39,6 @@ import { isValidIssueKey } from '../storage/mappings.js';
  *     mismatch, an issue mismatch or a malformed value is a conflict.
  */
 
-export const PAIR_WITNESS_PROPERTY_KEY = 'sync-connector-pair';
-export const PAIR_WITNESS_VERSION = 1;
-export const PAIR_WITNESS_MAX_VALUE_BYTES = 32768;
-export const PAIR_WITNESS_MAX_KEY_BYTES = 255;
 
 export const PAIR_WITNESS_STATES = Object.freeze({
   PENDING_CREATE: 'pending-create',
@@ -166,6 +175,76 @@ function isTimestamp(value) {
 function sha256Hex(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
+/**
+ * Digest of the security-relevant payload of a witness: identity, organization,
+ * sites, both issue ids, both keys, state and direction.
+ *
+ * `writtenAt` and `digest` are excluded so a re-issued permit still matches a
+ * body written a moment later, while the pair id, both issues, the organization
+ * and the state are all bound. A permit authorizes one exact payload, not
+ * "whatever this issue might send".
+ */
+export const PAIR_WITNESS_PAYLOAD_FIELDS = Object.freeze([
+  'v',
+  'pairId',
+  'state',
+  'installationId',
+  'appId',
+  'orgId',
+  'localSite',
+  'remoteSite',
+  'localIssueId',
+  'localKey',
+  'remoteIssueId',
+  'remoteKey',
+  'direction'
+]);
+
+export function pairWitnessPayloadDigest(record) {
+  const source = isPlainObject(record) ? record : {};
+  const payload = {};
+  for (const field of PAIR_WITNESS_PAYLOAD_FIELDS) {
+    payload[field] = source[field] === undefined ? null : source[field];
+  }
+  return `sha256:${sha256Hex(stableStringify(payload))}`;
+}
+
+/** True when two stored/intended witnesses describe the same pair identically. */
+export function samePairWitness(left, right) {
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  return serializePairWitness(left) === serializePairWitness(right);
+}
+
+/** Fixed namespace for derived pair ids. Never change it: pair identity depends on it. */
+export const PAIR_WITNESS_NAMESPACE = '6f2b3c1e-7a5d-5e4f-9b8a-1c2d3e4f5a6b';
+
+/**
+ * Deterministic pair identity (RFC 4122 v5 over the stable identity tuple).
+ *
+ * A random id per attempt would create two different witnesses for one pair
+ * after an interrupted run. Deriving the id from installation, organization and
+ * both stable issue ids makes it identical on every retry, in every process and
+ * after losing every plan record — while a different org or issue yields a
+ * different id.
+ */
+export function deterministicPairId({ installationId, orgId, localIssueId, remoteIssueId } = {}) {
+  if (!isInstallationId(installationId) || !isOrganizationId(orgId)
+    || !isIssueId(localIssueId) || !isIssueId(remoteIssueId)) {
+    throw new PairWitnessError(PAIR_WITNESS_CODES.INVALID_INPUT, { field: 'pairIdSource' });
+  }
+  const namespace = Buffer.from(PAIR_WITNESS_NAMESPACE.replace(/-/g, ''), 'hex');
+  const name = Buffer.from(
+    `${installationId}:${orgId}:${localIssueId}:${remoteIssueId}`,
+    'utf8'
+  );
+  const digest = createHash('sha1').update(Buffer.concat([namespace, name])).digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Canonical serialization; the digest is computed over exactly these bytes. */
 export function serializePairWitness(record) {
   const { digest, ...rest } = record || {};

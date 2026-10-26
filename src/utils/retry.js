@@ -30,7 +30,11 @@ const NON_RETRYABLE_CODES = new Set([
   'RATE_LIMITED_WRITE_OUTCOME',
   'AMBIGUOUS_WRITE_OUTCOME',
   'COMMENT_VERIFICATION_DEFERRED',
-  'COMMENT_RECONCILIATION_REQUIRED'
+  'COMMENT_RECONCILIATION_REQUIRED',
+  // The maintenance permit refused this exact write. Retrying the same body
+  // cannot succeed, and the reason (expired permit versus a foreign payload) has
+  // to reach the caller unchanged so it can tell recoverable from terminal.
+  'PAIR_WITNESS_PERMIT_REFUSED'
 ]);
 
 export function isNonRetryableError(error) {

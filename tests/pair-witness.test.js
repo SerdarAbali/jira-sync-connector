@@ -445,10 +445,18 @@ describe('read-only wiring', () => {
     expect(previewSource).not.toContain('storeMapping');
   });
 
-  test('the resolver defines exactly one read-only action', () => {
+  test('the resolver exposes only witness-preview and witness-migration actions', () => {
     const definitions = [...resolverSource.matchAll(/resolver\.define\('([^']+)'/g)].map((m) => m[1]);
-    expect(definitions).toEqual(['previewPairWitnessMigration']);
-    expect(resolverSource).not.toMatch(/resolver\.define\('(approve|apply|migrate|restore)/i);
+    expect(definitions).toEqual([
+      'previewPairWitnessMigration',
+      'planPairWitnessMigration',
+      'approvePairWitnessMigration',
+      'applyPairWitnessMigration',
+      'cancelPairWitnessMigration',
+      'getPairWitnessMigrationStatus'
+    ]);
+    // No resolver may resume synchronization, create an issue or restore anything.
+    expect(resolverSource).not.toMatch(/resolver\.define\('(restore|resume|create|update|delete)/i);
   });
 
   test('both modules read the issue property key instead of inventing paths', () => {

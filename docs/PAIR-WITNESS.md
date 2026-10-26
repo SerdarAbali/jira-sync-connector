@@ -190,3 +190,146 @@ current set.
   reported as inaccessible and will block a future write.
 - Description-based evidence is not read here at all.
 
+
+## Controlled migration (implemented, not yet run)
+
+The migration writes the witness for existing pairs while the connector stays
+paused and synchronization authorization stays blocked. It never resumes,
+never creates an issue, never updates a field or description, and never writes a
+mapping or create-ledger record.
+
+### The one authorized request
+
+```
+PUT /rest/api/3/issue/{stableIssueId}/properties/sync-connector-pair
+```
+
+`assertJiraSubmissionAllowed` evaluates the maintenance permit **before** the
+ordinary chain. A request that is not exactly this shape is not permit-shaped: it
+falls through to the unchanged chain and is still refused by the pause and the
+authorization gate. A request that *is* permit-shaped but fails any condition is
+refused outright — never downgraded to "the pause would have blocked it anyway".
+
+Every condition is independent and enforced server-side:
+
+| Condition | Where |
+| --- | --- |
+| method is `PUT` | boundary predicate |
+| path is exactly the property path with a numeric stable id | boundary predicate |
+| site is `local` (relative call) or an approved remote host | boundary predicate |
+| issue id is in the permit's approved set for that site | permit record |
+| permit exists, parses, is unexpired, belongs to this installation and app | permit record |
+| plan exists, matches the permit digest, is approved/running, unexpired | plan record |
+| body is a valid witness whose `pairId` and payload digest match the entry | permit entry |
+| the witness `orgId` equals the permit organization | payload |
+| the emergency pause is explicitly ON | `getPilotPause()` — a missing record is *not* ON |
+| no restore is in progress | authorization record |
+| no earlier write marker exists for this issue | `witnessWritten:*` |
+
+### Permit and plan records
+
+| Record | Key | TTL | Purpose |
+| --- | --- | --- | --- |
+| Plan | `pairWitnessPlan:{orgId}` | 24 h | Immutable item list, digest, per-item state, approval metadata |
+| Permit | `pairWitnessPermit` | 10 min | One installation, one org, one batch, one payload per approved issue |
+| Write marker | `witnessWritten:{orgId}:{site}:{issueId}` | 30 d | Proves one write per issue, so a second permit cannot repeat it |
+| Batch lock | `pairWitnessBatchLock` | 2 min | Single-flight ownership via atomic create-if-absent |
+
+The permit is a single global key, so only one organization can migrate at a time.
+That is stronger isolation than a per-organization key: an Org A permit cannot
+name an Org B issue, and approving Org B while an Org A permit is live is refused.
+
+### Pair identity
+
+`pairId = uuidv5(namespace, installationId:orgId:localIssueId:remoteIssueId)`.
+It is derived, never randomly generated, so a retry, a new process, an expired
+permit or a lost plan all produce the same identifier for the same pair. A
+different organization or issue always produces a different identifier.
+
+### Batch algorithm
+
+1. acquire the batch lock (atomic, TTL-bounded)
+2. read the plan, verify its digest still describes its items, verify it has not expired
+3. take up to 10 pairs still `pending` / `partial` / `deferred`
+4. mint a fresh permit for exactly those sides and payloads
+5. per pair: revalidate both directions, the ledger, ended/repair records and both
+   issue ids; read both witnesses; refuse to touch a conflict, an ended witness or
+   anything unverifiable
+6. write **local** property, read it back and compare
+7. write **remote** property, read it back and compare
+8. only after both verifications: write the per-issue markers and persist progress
+9. revoke the permit (one batch, one permit) and release the lock
+
+### Failure handling
+
+| Outcome | Classification | Behaviour |
+
+### Concurrency: one writer per batch
+
+A lock with only a fixed TTL would let a slow batch outlive its own lock and run
+alongside a new invocation. Ownership is therefore re-asserted **immediately
+before every property PUT**, not once per batch:
+
+| Check | Effect |
+| --- | --- |
+| lock record missing, unreadable, or a different token | `PAIR_WITNESS_BATCH_LOCK_LOST`, the batch stops before the next PUT |
+| stored `expiresAt` already passed | same refusal, even if the token still matches |
+| less than half the TTL left | the lock is extended for the same token before the write |
+
+On loss the invocation stops and the remaining pairs stay `pending`: no write is
+attempted, no progress is fabricated, and the newly owning invocation simply
+continues. Releasing a lock that a different token now holds is refused, so an
+old invocation cannot delete its successor's claim.
+
+The only residual overlap is the few milliseconds between the ownership check and
+the transport call. Both writers would send the same canonical payload for the
+same pair (the pair id is derived, not random), so the property converges; the
+loser's read-back sees the winner's `writtenAt` and reports the pair for review
+rather than overwriting anything.
+
+### Recovery: interruption leaves repeatable evidence
+
+| Interrupted after | Re-run behaviour |
+| --- | --- |
+| local PUT, before progress is stored | local witness already matches → skipped, only the remote side is written |
+| both PUTs, before markers | both match → `verified`, zero writes; markers are only a write-time guard, not a prerequisite for verification |
+| marker stored, plan progress stale | pair verifies from the properties themselves; a marker never blocks verifying an already-correct pair |
+| permit expired after the first property | the refusal is `PERMIT_EXPIRED`, which is *recoverable*: the pair is `deferred`, the local witness stays, the next run mints a fresh permit and writes only the missing side |
+| a terminal permit refusal (payload, pair, marker, pause, restore) | the pair is `conflict` and the plan reports `needs-attention`; a refused write is never retried blindly |
+
+A permit refusal is non-retryable by design: retrying the same body cannot
+succeed, and the reason must reach the caller so it can distinguish "no authority
+right now" (defer) from "this payload will never be allowed" (conflict).
+
+| --- | --- | --- |
+| 2xx | applied | read back before any progress is recorded |
+| 4xx | definitive | pair marked `conflict`, no retry |
+| 429 | not applied | `Retry-After` honoured inside the budget; otherwise deferred |
+| 5xx / timeout | ambiguous | read back: identical → verified, absent → one retry with the same pair id, different → conflict |
+| local fails | nothing written remotely | pair `conflict` (or `partial` when evidence exists) |
+| remote fails after local | local witness kept | pair `partial`, reported, never deleted |
+
+A plan with no remaining work reports `completed` when everything verified and
+`needs-attention` when a conflict remains. Expiry stops writes but never discards
+the plan, the markers or the recorded states; continuation revalidates the stored
+plan before minting any new permit.
+
+### Administration
+
+| Resolver | Policy | Effect |
+| --- | --- | --- |
+| `planPairWitnessMigration` | ADMIN_READ | recomputes the plan, writes nothing |
+| `getPairWitnessMigrationStatus` | ADMIN_READ | reads plan, states and permit |
+| `approvePairWitnessMigration` | ADMIN_WRITE | exact phrase `APPROVE WITNESS <orgId> <digest[0..12]> <pairs>`; writes plan + first permit; zero Jira writes |
+| `applyPairWitnessMigration` | ADMIN_WRITE | one bounded batch of property PUTs |
+| `cancelPairWitnessMigration` | ADMIN_WRITE | revokes the permit and deletes the plan; zero Jira requests, zero property deletions |
+
+### What this phase still does not do
+
+- It does not run itself: approval and every batch are explicit administrator
+  actions, and the connector stays paused throughout.
+- It writes only `state: "active"`. Witnesses for pairs that end later are
+  transitioned by the sync paths (Phase 3); nothing here deletes one.
+- Ended, conflicting, duplicated, unverifiable and in-doubt pairs are excluded
+  from the plan with their reason and are never approximated.
+

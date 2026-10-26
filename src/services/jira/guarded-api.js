@@ -4,15 +4,51 @@ import { assertPilotWritesAllowed } from '../sync/pilot-pause.js';
 import { assertSyncAuthorized } from '../sync/sync-authorization.js';
 import { assertIssueLeaseMigrationReady } from '../sync/lease-migration.js';
 import { assertCurrentIssueLeases } from '../sync/issue-lease-context.js';
+import {
+  evaluatePairWitnessPermit,
+  pairWitnessPermitMessage,
+  PAIR_WITNESS_PERMIT_REASONS
+} from '../sync/pair-witness-permit.js';
 export { route } from '@forge/api';
+
+/**
+ * A permit-shaped request that fails its own checks is refused outright. It is
+ * never retried through the ordinary chain, because "the pause would have
+ * blocked it anyway" is not the same statement as "this exact payload is
+ * approved", and only the second one is acceptable for a maintenance write.
+ */
+function permitRefusal(decision) {
+  const error = new Error(
+    decision.message || pairWitnessPermitMessage(decision.reason)
+    || 'The maintenance permit does not authorize this write'
+  );
+  error.name = 'PairWitnessPermitError';
+  error.code = 'PAIR_WITNESS_PERMIT_REFUSED';
+  error.reason = decision.reason || PAIR_WITNESS_PERMIT_REASONS.PERMIT_MISSING;
+  return error;
+}
 
 export async function assertJiraSubmissionAllowed(path, options) {
   const method = String(options?.method || 'GET').toUpperCase();
   if (method === 'GET' || method === 'HEAD') return;
   // Jira enhanced search uses POST for a read. Keep previews/search usable
   // while rollout is blocked, without exempting any mutation endpoint.
-  const pathname = new URL(path?.value ?? path, 'https://jira.invalid').pathname;
+  const raw = path?.value ?? path;
+  const pathname = new URL(raw, 'https://jira.invalid').pathname;
   if (method === 'POST' && pathname === '/rest/api/3/search/jql') return;
+
+  // Narrow maintenance branch: evaluated first, and only for the exact approved
+  // PUT shape. Anything that is not permit-shaped falls through to the ordinary
+  // fail-closed chain below, unchanged and in the same order.
+  const permit = await evaluatePairWitnessPermit({
+    method,
+    raw,
+    pathname,
+    body: options?.body
+  });
+  if (permit.allowed) return;
+  if (permit.refusal === 'PERMIT_INVALID') throw permitRefusal(permit);
+
   await assertIssueLeaseMigrationReady();
   try {
     await assertPilotWritesAllowed('jira_submission');

@@ -128,10 +128,19 @@ describe('pairing-witness UI wiring', () => {
     expect(APP_SOURCE).toContain('selectedOrg={selectedOrg}');
   });
 
-  test('the panel calls exactly one resolver and it is the read-only preview', () => {
-    const invocations = [...COMPONENT_SOURCE.matchAll(/invoke\('([^']+)'/g)].map((match) => match[1]);
-    expect(invocations).toEqual(['previewPairWitnessMigration']);
-    expect(COMPONENT_SOURCE).not.toMatch(/invoke\('(approve|apply|migrate|restore)/i);
+  test('the panel calls only witness-preview and witness-migration resolvers', () => {
+    const invocations = [...new Set([...COMPONENT_SOURCE.matchAll(/'(preview|plan|approve|apply|cancel|get)PairWitness[A-Za-z]+'/g)]
+      .map((match) => match[0].replace(/'/g, '')))];
+    expect(invocations.sort()).toEqual([
+      'applyPairWitnessMigration',
+      'approvePairWitnessMigration',
+      'cancelPairWitnessMigration',
+      'getPairWitnessMigrationStatus',
+      'planPairWitnessMigration',
+      'previewPairWitnessMigration'
+    ]);
+    // Nothing here can resume synchronization, create an issue or restore.
+    expect(COMPONENT_SOURCE).not.toMatch(/'(resumePilot|resume|forceSyncIssue|importIssues|restore)[A-Za-z]*'/);
   });
 
   test('the read-only promise is stated in the surface text', () => {
@@ -140,12 +149,12 @@ describe('pairing-witness UI wiring', () => {
     expect(PAIR_WITNESS_NO_APPLY_TEXT).toContain('No migration action is available');
     expect(PAIR_WITNESS_PAUSE_TEXT).toContain('never changes the pause state');
     expect(PAIR_WITNESS_SCOPE_TEXT).toContain('Jira issue property');
-    // The panel offers one control and it cannot write anything.
-    const buttonBlocks = [...COMPONENT_SOURCE.matchAll(/<Button[\s\S]*?<\/Button>/g)]
+    // The preview card keeps exactly one control: it cannot write anything.
+    const previewCard = COMPONENT_SOURCE.slice(0, COMPONENT_SOURCE.indexOf('WitnessMigrationControls'));
+    const previewButtons = [...previewCard.matchAll(/<Button[\s\S]*?<\/Button>/g)]
       .map((match) => match[0]);
-    expect(buttonBlocks).toHaveLength(1);
-    expect(buttonBlocks[0]).toContain('Run read-only preview');
-    expect(buttonBlocks[0]).not.toMatch(/apply|approve|migrate/i);
+    expect(previewButtons).toHaveLength(1);
+    expect(previewButtons[0]).toContain('Run read-only preview');
   });
 
   test('renders the read-only notice and disables the preview until an organization is selected', async () => {

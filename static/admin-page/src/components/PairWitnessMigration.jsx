@@ -4,6 +4,7 @@ import Button from '@atlaskit/button';
 import SectionMessage from '@atlaskit/section-message';
 import Spinner from '@atlaskit/spinner';
 import Lozenge from '@atlaskit/lozenge';
+import Textfield from '@atlaskit/textfield';
 import { token } from '@atlaskit/tokens';
 
 /**
@@ -264,9 +265,191 @@ const PairWitnessMigration = ({ selectedOrg, showMessage }) => {
       <p style={{ marginTop: token('space.200', '16px'), marginBottom: 0, fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
         {PAIR_WITNESS_PAUSE_TEXT}
       </p>
+
+      <WitnessMigrationControls orgId={orgId} showMessage={showMessage} />
     </div>
   );
 };
+
+/**
+ * Plan, approve and run the witness migration.
+ *
+ * Every control here is a request, not an authority: the server recomputes the
+ * plan, requires the exact phrase, enforces the maintenance permit at the Jira
+ * transport for every single property write, and refuses everything while the
+ * connector is not paused. Disabling a button here changes nothing about what the
+ * backend permits.
+ */
+export const WITNESS_APPROVAL_TEXT =
+  'Approval freezes a plan the server recomputed from live storage and Jira. Typing the phrase authorizes exactly that plan; the server rejects anything else.';
+
+export const WITNESS_APPLY_TEXT =
+  'Each run writes at most ten pairs, reads both properties back, and only then records progress. A failed pair is reported and never rolled back or deleted.';
+
+export function WitnessMigrationControls({ orgId, showMessage }) {
+  const [status, setStatus] = useState(null);
+  const [plan, setPlan] = useState(null);
+  const [confirmation, setConfirmation] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const fail = useCallback((message) => {
+    setError(message || 'The request was refused.');
+    if (typeof showMessage === 'function') {
+      showMessage('error', message || 'Witness migration refused');
+    }
+  }, [showMessage]);
+
+  const refresh = useCallback(async () => {
+    if (!orgId) return;
+    try {
+      const response = await invoke('getPairWitnessMigrationStatus', { orgId });
+      if (response?.success) setStatus(response);
+    } catch {
+      setStatus(null);
+    }
+  }, [orgId]);
+
+  useEffect(() => {
+    setPlan(null);
+    setConfirmation('');
+    setError(null);
+    refresh();
+  }, [orgId, refresh]);
+
+  const run = useCallback(async (action, payload) => {
+    if (!orgId || busy) return null;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await invoke(action, { orgId, ...payload });
+      if (!response?.success) {
+        fail(response?.error);
+        return null;
+      }
+      await refresh();
+      return response;
+    } catch {
+      fail('The request could not be completed.');
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, fail, orgId, refresh]);
+
+  const buildPlan = useCallback(async () => {
+    const response = await run('planPairWitnessMigration', {});
+    if (response?.plan) setPlan(response.plan);
+  }, [run]);
+
+  const approve = useCallback(async () => {
+    const response = await run('approvePairWitnessMigration', { confirmation });
+    if (response) {
+      setConfirmation('');
+      setPlan(null);
+    }
+  }, [confirmation, run]);
+
+  const applyBatch = useCallback(async () => {
+    const response = await run('applyPairWitnessMigration', {});
+    if (response && typeof showMessage === 'function') {
+      showMessage(
+        response.remaining > 0 ? 'info' : 'success',
+        `Witness batch: ${response.writesPerformed} write(s), ${response.remaining} pair(s) remaining`
+      );
+    }
+  }, [run, showMessage]);
+
+  const cancel = useCallback(async () => {
+    await run('cancelPairWitnessMigration', {});
+  }, [run]);
+
+  const expectedPhrase = plan?.approvalPhrase || '';
+  const phraseMatches = expectedPhrase !== '' && confirmation === expectedPhrase;
+  const planStatus = status?.plan?.status || null;
+  const remaining = status?.plan?.remaining ?? 0;
+  const canApply = planStatus === 'approved' || planStatus === 'running';
+
+  return (
+    <div
+      style={{ ...surfaceCard(), marginTop: token('space.200', '16px') }}
+      data-testid="pair-witness-migration"
+    >
+      <h3 style={{ margin: 0, fontSize: '16px' }}>Witness migration</h3>
+      <p style={{
+        marginTop: token('space.100', '8px'),
+        marginBottom: token('space.200', '16px'),
+        fontSize: '13px',
+        color: token('color.text.subtle', '#6B778C')
+      }}>
+        {WITNESS_APPROVAL_TEXT}
+      </p>
+
+      {error && (
+        <div style={{ marginBottom: token('space.200', '16px') }}>
+          <SectionMessage appearance="error" title="Refused">
+            <p style={{ margin: 0 }}>{error}</p>
+          </SectionMessage>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px'), marginBottom: token('space.200', '16px') }}>
+        <Field label="Plan status" value={planStatus || 'None'} />
+        <Field label="Pairs remaining" value={remaining} />
+        <Field label="Batches run" value={status?.plan?.batches ?? 0} />
+        <Field label="Plan expires" value={status?.plan?.expiresAt || 'Not approved'} />
+        <Field label="Permit" value={status?.permit ? status.permit.permitId : 'None'} />
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.150', '12px'), marginBottom: token('space.200', '16px') }}>
+        <Button appearance="default" isDisabled={!orgId || busy} onClick={buildPlan}>
+          Build plan
+        </Button>
+        <Button appearance="default" isDisabled={!orgId || busy || !canApply} onClick={applyBatch}>
+          Run next batch
+        </Button>
+        <Button appearance="subtle" isDisabled={!orgId || busy || !planStatus} onClick={cancel}>
+          Cancel migration
+        </Button>
+      </div>
+
+      {plan && (
+        <div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px'), marginBottom: token('space.150', '12px') }}>
+            <Field label="Writable pairs" value={plan.counts?.writablePairs ?? 0} />
+            <Field label="Verify only" value={plan.counts?.verifyOnlyPairs ?? 0} />
+            <Field label="Excluded" value={plan.counts?.excludedPairs ?? 0} />
+            <Field label="Writes required" value={plan.counts?.writesRequired ?? 0} />
+          </div>
+          <p style={{ marginTop: 0, marginBottom: token('space.100', '8px'), fontSize: '13px' }}>
+            Type the exact phrase to approve this plan.
+          </p>
+          <div style={{ ...monoStyle, marginBottom: token('space.150', '12px') }}>{expectedPhrase}</div>
+          <div style={{ maxWidth: '520px', marginBottom: token('space.150', '12px') }}>
+            <Textfield
+              aria-label="Witness migration confirmation"
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              isDisabled={busy}
+            />
+          </div>
+          <Button appearance="primary" isDisabled={!phraseMatches || busy} onClick={approve}>
+            Approve witness plan
+          </Button>
+        </div>
+      )}
+
+      <p style={{
+        marginTop: token('space.200', '16px'),
+        marginBottom: 0,
+        fontSize: '12px',
+        color: token('color.text.subtle', '#6B778C')
+      }}>
+        {WITNESS_APPLY_TEXT}
+      </p>
+    </div>
+  );
+}
 
 export default PairWitnessMigration;
 

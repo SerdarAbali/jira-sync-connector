@@ -178,16 +178,16 @@ function ledgerKeys(orgId, localKey, remoteKey) {
   };
 }
 
-function endedKey(orgId, localKey, remoteKey) {
+export function endedKey(orgId, localKey, remoteKey) {
   return `mapping-ended:${orgId}:${localKey}:${remoteKey}`;
 }
 
-function repairKey(orgId, localKey, remoteKey) {
+export function repairKey(orgId, localKey, remoteKey) {
   return `mapping-repair:${orgId}:${localKey}:${remoteKey}`;
 }
 
 /** Reads one named record; a read failure is reported, never silently treated as absent. */
-async function readFlagged(key, deps) {
+export async function readFlagged(key, deps) {
   try {
     const value = await deps.getStored(key);
     return { present: value !== null && value !== undefined, unreadable: false };
@@ -196,7 +196,7 @@ async function readFlagged(key, deps) {
   }
 }
 
-async function readLedger(orgId, localKey, remoteKey, deps) {
+export async function readLedger(orgId, localKey, remoteKey, deps) {
   const keys = ledgerKeys(orgId, localKey, remoteKey);
   try {
     const [forward, reverse] = await Promise.all([
@@ -214,7 +214,7 @@ async function readLedger(orgId, localKey, remoteKey, deps) {
   }
 }
 
-async function readDirections(orgId, localKey, remoteKey, deps) {
+export async function readDirections(orgId, localKey, remoteKey, deps) {
   const keys = directionKeys(orgId, localKey, remoteKey);
   try {
     const [forward, reverse] = await Promise.all([
