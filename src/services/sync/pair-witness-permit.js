@@ -1,5 +1,6 @@
 import { getAppContext } from '@forge/api';
 import * as kvsStore from '../storage/kvs.js';
+import { logAuditEntry } from '../storage/stats.js';
 import { getPilotPause } from './pilot-pause.js';
 import { PAIR_WITNESS_PROPERTY_KEY } from './pair-witness-constants.js';
 import { parsePairWitnessValue, pairWitnessPayloadDigest } from './pair-witness.js';
@@ -114,6 +115,58 @@ export class PairWitnessPermitError extends Error {
 export function pairWitnessPermitMessage(reason) {
   return REASON_TEXT[reason] || 'The maintenance permit does not authorize this write.';
 }
+export const PAIR_WITNESS_AUDIT_ACTION = 'pair_witness_property_write';
+
+/**
+ * One audit record for one maintenance property write.
+ *
+ * Only identifiers a decision needs are recorded: organization, site, stable
+ * issue id, pair id, permit id, outcome and the HTTP status. The request body,
+ * headers, tokens, issue keys, descriptions and comments are never included.
+ */
+export function pairWitnessAuditEntry({
+  outcome,
+  permit = null,
+  entry = null,
+  site = null,
+  issueId = null,
+  reason = null,
+  statusCode = null
+} = {}) {
+  const numericStatus = statusCode === null || statusCode === undefined
+    ? null
+    : Number(statusCode);
+  return {
+    action: PAIR_WITNESS_AUDIT_ACTION,
+    outcome,
+    source: 'jira_transport',
+    orgId: typeof permit?.orgId === 'string' ? permit.orgId : null,
+    site: site || entry?.site || null,
+    issueId: issueId || entry?.issueId || null,
+    pairId: entry?.pairId || null,
+    permitId: permit?.permitId || null,
+    reason: typeof reason === 'string' ? reason : null,
+    statusCode: Number.isInteger(numericStatus) ? numericStatus : null
+  };
+}
+
+/**
+ * Writes one audit record through the existing audit log. Returns whether the
+ * record was written and never throws: authorization has already been decided,
+ * and an audit failure must never change the outcome of a request.
+ */
+export async function recordPairWitnessAudit(event, deps = {}) {
+  const merged = { ...defaultDeps, ...deps };
+  if (typeof merged.audit !== 'function') return false;
+  try {
+    await merged.audit(pairWitnessAuditEntry(event));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -217,7 +270,7 @@ const defaultDeps = {
   readPause: getPilotPause,
   getContext: getAppContext,
   now: () => Date.now(),
-  audit: null
+  audit: logAuditEntry
 };
 
 /**
@@ -240,11 +293,26 @@ export async function evaluatePairWitnessPermit(options = {}) {
   if (!match) return { allowed: false, refusal: null, reason: null };
   const issueId = match[1];
 
+  // Site and issue id are derived from the request itself, so a refusal can be
+  // audited without a readable permit.
+  const raw = String(options.raw ?? '');
+  const absolute = /^https?:\/\//i.test(raw);
+  let site = 'local';
+  if (absolute) {
+    try {
+      site = new URL(raw).hostname.toLowerCase();
+    } catch {
+      site = null;
+    }
+  }
+
   const refuse = (reason, details = {}) => ({
     allowed: false,
     refusal: 'PERMIT_INVALID',
     reason,
     message: pairWitnessPermitMessage(reason),
+    issueId,
+    site,
     details
   });
 
@@ -269,19 +337,6 @@ export async function evaluatePairWitnessPermit(options = {}) {
   const now = Number(deps.now());
   if (!(permit.expiresAt > now)) {
     return refuse(PAIR_WITNESS_PERMIT_REASONS.PERMIT_EXPIRED);
-  }
-
-  const raw = String(options.raw ?? '');
-  const absolute = /^https?:\/\//i.test(raw);
-  let site;
-  if (absolute) {
-    try {
-      site = new URL(raw).hostname.toLowerCase();
-    } catch {
-      return refuse(PAIR_WITNESS_PERMIT_REASONS.PERMIT_SITE_NOT_APPROVED);
-    }
-  } else {
-    site = 'local';
   }
 
   if (!permit.entries.some((entry) => entry.issueId === issueId)) {
@@ -357,23 +412,17 @@ export async function evaluatePairWitnessPermit(options = {}) {
   }
 
   if (typeof deps.audit === 'function') {
-    try {
-      await deps.audit({
-        action: 'pair_witness_property_write',
-        outcome: 'permitted',
-        orgId: permit.orgId,
-        site,
-        issueId,
-        permitId: permit.permitId,
-        pairId: entry.pairId,
-        batchIndex: permit.batchIndex
-      });
-    } catch {
-      // Audit must not decide whether a permitted write proceeds.
-    }
+    // "attempted", not "succeeded": the transport has not run yet.
+    await recordPairWitnessAudit({
+      outcome: 'attempted',
+      permit,
+      entry,
+      site,
+      issueId
+    }, deps);
   }
 
-  return { allowed: true, refusal: null, reason: null, permit, entry, plan, site };
+  return { allowed: true, refusal: null, reason: null, permit, entry, plan, site, issueId };
 }
 
 

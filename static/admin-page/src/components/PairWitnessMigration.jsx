@@ -292,6 +292,9 @@ export const WITNESS_APPROVAL_TEXT =
 export const WITNESS_APPLY_TEXT =
   'Each run writes at most ten pairs, reads both properties back, and only then records progress. A failed pair is reported and never rolled back or deleted.';
 
+export const WITNESS_TIMING_NOTE =
+  'Measured inside the Forge invocation. These are not browser round-trip times, and they contain no issue content.';
+
 export const WITNESS_SELECTION_TEXT =
   'Enter one pair per line as LOCAL-KEY REMOTE-KEY. Only those pairs are planned; an empty or malformed entry cannot build a plan.';
 
@@ -336,6 +339,7 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
   const [confirmation, setConfirmation] = useState('');
   const [selectionText, setSelectionText] = useState('');
   const [scopeMode, setScopeMode] = useState('selected');
+  const [lastBatch, setLastBatch] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -432,10 +436,16 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
 
   const applyBatch = useCallback(async () => {
     const response = await run('applyPairWitnessMigration', {});
-    if (response && typeof showMessage === 'function') {
+    if (!response) return;
+    setLastBatch(response);
+    if (typeof showMessage === 'function') {
+      const timings = response.timings;
+      const detail = timings
+        ? ` · ${Math.round(timings.batchMs)} ms (local PUT ${Math.round(timings.totals?.localPutMs ?? 0)} ms, remote PUT ${Math.round(timings.totals?.remotePutMs ?? 0)} ms)`
+        : '';
       showMessage(
         response.remaining > 0 ? 'info' : 'success',
-        `Witness batch: ${response.writesPerformed} write(s), ${response.remaining} pair(s) remaining`
+        `Witness batch: ${response.writesPerformed} write(s), ${response.remaining} pair(s) remaining${detail}`
       );
     }
   }, [run, showMessage]);
@@ -643,6 +653,39 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
       }}>
         {WITNESS_APPLY_TEXT}
       </p>
+
+      {lastBatch?.timings && (
+        <div style={{ marginTop: token('space.200', '16px') }}>
+          <div style={labelStyle}>
+            {`Last batch timings (${Math.round(lastBatch.timings.batchMs)} ms total, invocation-side)`}
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...cellStyle, textAlign: 'left' }}>Pair</th>
+                <th style={{ ...cellStyle, textAlign: 'left' }}>State</th>
+                <th style={{ ...cellStyle, textAlign: 'left' }}>Local PUT / verify</th>
+                <th style={{ ...cellStyle, textAlign: 'left' }}>Remote PUT / verify</th>
+                <th style={{ ...cellStyle, textAlign: 'left' }}>Pair total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(lastBatch.timings.pairs || []).map((pair) => (
+                <tr key={pair.seq}>
+                  <td style={cellStyle}>{`#${pair.seq}`}</td>
+                  <td style={cellStyle}>{pair.state}</td>
+                  <td style={cellStyle}>{`${pair.localPutMs} / ${pair.localVerifyMs} ms`}</td>
+                  <td style={cellStyle}>{`${pair.remotePutMs} / ${pair.remoteVerifyMs} ms`}</td>
+                  <td style={cellStyle}>{`${pair.totalMs} ms`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ margin: '4px 0 0 0', fontSize: '11px', color: token('color.text.subtle', '#6B778C') }}>
+            {WITNESS_TIMING_NOTE}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

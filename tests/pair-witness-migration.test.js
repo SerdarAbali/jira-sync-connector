@@ -1206,3 +1206,143 @@ describe('explicit selection: permit containment and idempotence', () => {
   });
 });
 
+
+describe('batch timing diagnostics', () => {
+  /** A clock that advances 25 ms on every read, so durations are deterministic. */
+  function steppingClock(start = 1_700_000_000_000) {
+    let current = start;
+    return () => {
+      current += 25;
+      return current;
+    };
+  }
+
+  test('the batch reports per-pair and per-step durations', async () => {
+    const h = harness({ pairs: [pair(8), pair(9)] });
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+    await approvePairWitnessMigration({
+      orgId: ORG_A,
+      confirmation: plan.approvalPhrase,
+      deps: h.deps
+    });
+    h.deps.now = steppingClock();
+
+    const result = await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+
+    expect(result.timings).toBeTruthy();
+    expect(result.timings.batchMs).toBeGreaterThan(0);
+    expect(result.timings.pairs).toHaveLength(2);
+
+    for (const entry of result.timings.pairs) {
+      expect(entry.state).toBe(PAIR_WITNESS_ITEM_STATES.VERIFIED);
+      expect(entry.localPutMs).toBeGreaterThan(0);
+      expect(entry.localVerifyMs).toBeGreaterThan(0);
+      expect(entry.remotePutMs).toBeGreaterThan(0);
+      expect(entry.remoteVerifyMs).toBeGreaterThan(0);
+      expect(entry.totalMs).toBeGreaterThanOrEqual(
+        entry.localPutMs + entry.localVerifyMs + entry.remotePutMs + entry.remoteVerifyMs
+      );
+    }
+
+    const totals = result.timings.totals;
+    expect(totals.localPutMs).toBe(
+      result.timings.pairs.reduce((sum, entry) => sum + entry.localPutMs, 0)
+    );
+    expect(totals.remoteVerifyMs).toBe(
+      result.timings.pairs.reduce((sum, entry) => sum + entry.remoteVerifyMs, 0)
+    );
+  });
+
+  test('timings contain counts and durations only, never keys or content', async () => {
+    const h = harness({ pairs: [pair(8)] });
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+    await approvePairWitnessMigration({
+      orgId: ORG_A,
+      confirmation: plan.approvalPhrase,
+      deps: h.deps
+    });
+
+    const result = await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+    const serialized = JSON.stringify(result.timings);
+
+    expect(serialized).not.toContain('MOB-');
+    expect(serialized).not.toContain('VMOB-');
+    expect(serialized).not.toContain('Basic');
+    expect(Object.keys(result.timings.pairs[0]).sort()).toEqual([
+      'localPutMs',
+      'localVerifyMs',
+      'remotePutMs',
+      'remoteVerifyMs',
+      'seq',
+      'state',
+      'totalMs'
+    ]);
+  });
+
+  test('a pair that needs no write reports zero write and verify time', async () => {
+    const h = harness({ pairs: [pair(8)] });
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+    await approvePairWitnessMigration({
+      orgId: ORG_A,
+      confirmation: plan.approvalPhrase,
+      deps: h.deps
+    });
+    // The pair is already correct: nothing to write.
+    const body = {
+      v: 1,
+      pairId: plan.items[0].pairId,
+      state: 'active',
+      installationId: INSTALLATION_ID,
+      appId: APP_ID,
+      orgId: ORG_A,
+      localSite: LOCAL_SITE,
+      remoteSite: REMOTE_HOST,
+      localIssueId: pair(8).localIssueId,
+      localKey: 'MOB-8',
+      remoteIssueId: pair(8).remoteIssueId,
+      remoteKey: 'VMOB-8',
+      direction: 'local-to-remote',
+      writtenAt: new Date().toISOString(),
+      digest: 'sha256:placeholder'
+    };
+    h.state.witnesses.set(`local:${pair(8).localIssueId}`, body);
+    h.state.witnesses.set(`remote:${pair(8).remoteIssueId}`, body);
+
+    const result = await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+
+    expect(result.writesPerformed).toBe(0);
+    expect(result.timings.pairs[0]).toMatchObject({
+      localPutMs: 0,
+      localVerifyMs: 0,
+      remotePutMs: 0,
+      remoteVerifyMs: 0
+    });
+  });
+
+  test('the timing log line contains no secrets or issue keys', async () => {
+    const h = harness({ pairs: [pair(8)] });
+    const plan = await buildPairWitnessPlan({ orgId: ORG_A, deps: h.deps });
+    await approvePairWitnessMigration({
+      orgId: ORG_A,
+      confirmation: plan.approvalPhrase,
+      deps: h.deps
+    });
+    const logged = [];
+    const original = console.log;
+    console.log = (...args) => logged.push(args.join(' '));
+    try {
+      await applyPairWitnessMigration({ orgId: ORG_A, deps: h.deps });
+    } finally {
+      console.log = original;
+    }
+
+    const timingLine = logged.find((line) => line.includes('pair-witness batch'));
+    expect(timingLine).toBeTruthy();
+    expect(timingLine).toContain('batchMs=');
+    expect(timingLine).not.toContain('MOB-');
+    expect(timingLine).not.toContain('VMOB-');
+    expect(timingLine).not.toContain('Basic');
+    expect(timingLine).not.toContain('ATATT');
+  });
+});
+

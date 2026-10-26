@@ -7,6 +7,7 @@ import { assertCurrentIssueLeases } from '../sync/issue-lease-context.js';
 import {
   evaluatePairWitnessPermit,
   pairWitnessPermitMessage,
+  recordPairWitnessAudit,
   PAIR_WITNESS_PERMIT_REASONS
 } from '../sync/pair-witness-permit.js';
 export { route } from '@forge/api';
@@ -28,14 +29,51 @@ function permitRefusal(decision) {
   return error;
 }
 
+/**
+ * Runs a permitted maintenance submission and records what actually happened.
+ *
+ * The attempt is already audited by the permit decision; this adds the outcome,
+ * which is only known once the transport answers. A failed audit never changes
+ * the response or the error the caller sees.
+ */
+async function submitMaintenanceWrite(decision, submit) {
+  let response;
+  try {
+    response = await submit();
+  } catch (error) {
+    await recordPairWitnessAudit({
+      outcome: 'failed',
+      permit: decision.permit,
+      entry: decision.entry,
+      site: decision.site,
+      issueId: decision.issueId,
+      reason: 'transport-error'
+    });
+    throw error;
+  }
+
+  const status = Number(response?.status);
+  const succeeded = Number.isFinite(status) && status >= 200 && status < 300;
+  await recordPairWitnessAudit({
+    outcome: succeeded ? 'succeeded' : 'failed',
+    permit: decision.permit,
+    entry: decision.entry,
+    site: decision.site,
+    issueId: decision.issueId,
+    statusCode: Number.isFinite(status) ? status : null,
+    reason: succeeded ? null : 'http-status'
+  });
+  return response;
+}
+
 export async function assertJiraSubmissionAllowed(path, options) {
   const method = String(options?.method || 'GET').toUpperCase();
-  if (method === 'GET' || method === 'HEAD') return;
+  if (method === 'GET' || method === 'HEAD') return null;
   // Jira enhanced search uses POST for a read. Keep previews/search usable
   // while rollout is blocked, without exempting any mutation endpoint.
   const raw = path?.value ?? path;
   const pathname = new URL(raw, 'https://jira.invalid').pathname;
-  if (method === 'POST' && pathname === '/rest/api/3/search/jql') return;
+  if (method === 'POST' && pathname === '/rest/api/3/search/jql') return null;
 
   // Narrow maintenance branch: evaluated first, and only for the exact approved
   // PUT shape. Anything that is not permit-shaped falls through to the ordinary
@@ -46,8 +84,16 @@ export async function assertJiraSubmissionAllowed(path, options) {
     pathname,
     body: options?.body
   });
-  if (permit.allowed) return;
-  if (permit.refusal === 'PERMIT_INVALID') throw permitRefusal(permit);
+  if (permit.allowed) return permit;
+  if (permit.refusal === 'PERMIT_INVALID') {
+    await recordPairWitnessAudit({
+      outcome: 'refused',
+      site: permit.site,
+      issueId: permit.issueId,
+      reason: permit.reason
+    });
+    throw permitRefusal(permit);
+  }
 
   await assertIssueLeaseMigrationReady();
   try {
@@ -63,23 +109,26 @@ export async function assertJiraSubmissionAllowed(path, options) {
   // request is never handed to the SDK transport.
   await assertSyncAuthorized();
   await assertCurrentIssueLeases();
+  return null;
 }
 
 export async function fetch(url, options, beforeSend) {
-  await assertJiraSubmissionAllowed(url, options);
+  const decision = await assertJiraSubmissionAllowed(url, options);
   // Runs after every submission guard has passed and immediately before the SDK
   // transport receives the request. A throw here aborts the request unsent, so
   // callers may treat it as proof that no submission attempt was made.
   if (typeof beforeSend === 'function') await beforeSend();
-  return forgeFetch(url, options);
+  if (!decision) return forgeFetch(url, options);
+  return submitMaintenanceWrite(decision, () => forgeFetch(url, options));
 }
 
 function guardedClient(client) {
   return {
     ...client,
     requestJira: async (...args) => {
-      await assertJiraSubmissionAllowed(args[0], args[1]);
-      return client.requestJira(...args);
+      const decision = await assertJiraSubmissionAllowed(args[0], args[1]);
+      if (!decision) return client.requestJira(...args);
+      return submitMaintenanceWrite(decision, () => client.requestJira(...args));
     }
   };
 }

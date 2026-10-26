@@ -47,6 +47,7 @@ jest.mock('../src/services/storage/stats.js', () => ({
   trackWebhookSync: jest.fn(),
   trackApiCall: jest.fn()
 }));
+import { logAuditEntry } from '../src/services/storage/stats.js';
 jest.mock('../src/services/sync/lease-migration.js', () => ({
   assertIssueLeaseMigrationReady: jest.fn(async () => true)
 }));
@@ -713,6 +714,139 @@ describe('batch ownership cannot silently expire', () => {
     const { assertPairWitnessBatchLockOwner } = require('../src/services/sync/pair-witness-permit.js');
     await expect(assertPairWitnessBatchLockOwner({ lock: null }))
       .rejects.toMatchObject({ details: { reason: 'no-local-lock' } });
+  });
+});
+
+
+describe('maintenance write audit trail through the real transport', () => {
+  const auditEntries = () => logAuditEntry.mock.calls.map((call) => call[0]);
+
+  function approvedWrite() {
+    const plan = seedPlan();
+    const record = witnessFor();
+    seedPermit({ entry: entryFor(record, 'local') }, plan);
+    return record;
+  }
+
+  test('records the attempt before transport and the outcome after it', async () => {
+    const record = approvedWrite();
+    forgeFetch.mockResolvedValue({ ok: true, status: 200 });
+
+    await guardedFetch(localPath(record.localIssueId), {
+      method: 'PUT',
+      body: JSON.stringify(record)
+    });
+
+    const entries = auditEntries();
+    expect(entries.map((entry) => entry.outcome)).toEqual(['attempted', 'succeeded']);
+    expect(entries[0]).toMatchObject({
+      action: 'pair_witness_property_write',
+      source: 'jira_transport',
+      orgId: ORG_A,
+      site: 'local',
+      issueId: record.localIssueId,
+      pairId: record.pairId,
+      permitId: 'pw_test_0001'
+    });
+    expect(entries[1]).toMatchObject({ outcome: 'succeeded', statusCode: 200 });
+    // The attempt is logged before the transport is called, so it can never
+    // claim more than "this was submitted".
+    expect(logAuditEntry.mock.invocationCallOrder[0])
+      .toBeLessThan(forgeFetch.mock.invocationCallOrder[0]);
+    expect(logAuditEntry.mock.invocationCallOrder[1])
+      .toBeGreaterThan(forgeFetch.mock.invocationCallOrder[0]);
+  });
+
+  test('a non-2xx answer is recorded as failed, never as succeeded', async () => {
+    const record = approvedWrite();
+    forgeFetch.mockResolvedValue({ ok: false, status: 500 });
+
+    await guardedFetch(localPath(record.localIssueId), {
+      method: 'PUT',
+      body: JSON.stringify(record)
+    });
+
+    const entries = auditEntries();
+    expect(entries.map((entry) => entry.outcome)).toEqual(['attempted', 'failed']);
+    expect(entries[1]).toMatchObject({ outcome: 'failed', statusCode: 500, reason: 'http-status' });
+  });
+
+  test('a transport error is recorded as failed and still propagated', async () => {
+    const record = approvedWrite();
+    forgeFetch.mockRejectedValue(new Error('socket hang up'));
+
+    await expect(guardedFetch(localPath(record.localIssueId), {
+      method: 'PUT',
+      body: JSON.stringify(record)
+    })).rejects.toThrow('socket hang up');
+
+    const entries = auditEntries();
+    expect(entries.map((entry) => entry.outcome)).toEqual(['attempted', 'failed']);
+    expect(entries[1]).toMatchObject({ outcome: 'failed', reason: 'transport-error', statusCode: null });
+  });
+
+  test('a refused permit is recorded as refused and nothing is submitted', async () => {
+    const record = approvedWrite();
+    await store.del('pilotPause');
+
+    await expect(guardedFetch(localPath(record.localIssueId), {
+      method: 'PUT',
+      body: JSON.stringify(record)
+    })).rejects.toMatchObject({ code: 'PAIR_WITNESS_PERMIT_REFUSED' });
+
+    const entries = auditEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      outcome: 'refused',
+      reason: PAIR_WITNESS_PERMIT_REASONS.PAUSE_NOT_CONFIRMED,
+      site: 'local',
+      issueId: record.localIssueId
+    });
+    expect(forgeFetch).not.toHaveBeenCalled();
+  });
+
+  test('an audit failure never blocks or alters the write', async () => {
+    const record = approvedWrite();
+    logAuditEntry.mockRejectedValue(new Error('audit storage down'));
+    forgeFetch.mockResolvedValue({ ok: true, status: 200 });
+
+    await expect(guardedFetch(localPath(record.localIssueId), {
+      method: 'PUT',
+      body: JSON.stringify(record)
+    })).resolves.toMatchObject({ status: 200 });
+    expect(forgeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('the audit record carries identifiers only, never content or credentials', async () => {
+    const record = approvedWrite();
+    forgeFetch.mockResolvedValue({ ok: true, status: 200 });
+
+    await guardedFetch(localPath(record.localIssueId), {
+      method: 'PUT',
+      body: JSON.stringify(record)
+    });
+
+    for (const entry of auditEntries()) {
+      expect(Object.keys(entry).sort()).toEqual([
+        'action',
+        'issueId',
+        'orgId',
+        'outcome',
+        'pairId',
+        'permitId',
+        'reason',
+        'site',
+        'source',
+        'statusCode'
+      ]);
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain('Basic');
+      expect(serialized).not.toContain('Bearer');
+      expect(serialized).not.toContain('token');
+      expect(serialized).not.toContain(record.localKey);
+      expect(serialized).not.toContain(record.remoteKey);
+      expect(serialized).not.toContain('doc');
+    }
   });
 });
 

@@ -166,6 +166,23 @@ function sha256(value) {
 }
 
 /**
+ * Monotonic-ish millisecond clock for diagnostics only. It can never influence a
+ * decision: a missing or broken clock degrades to `Date.now()`.
+ */
+function nowMs(deps) {
+  const clock = deps && typeof deps.now === 'function' ? deps.now : Date.now;
+  const value = Number(clock());
+  return Number.isFinite(value) ? value : Date.now();
+}
+
+/** Runs `fn` and returns `[value, elapsedMs]` so timings never leak into results. */
+async function timedValue(deps, fn) {
+  const started = nowMs(deps);
+  const value = await fn();
+  return [value, Math.max(0, nowMs(deps) - started)];
+}
+
+/**
  * Normalizes an explicit pair selection.
  *
  * `undefined` means "not supplied" and keeps the full-organization behaviour.
@@ -668,6 +685,12 @@ function expectedFor(entry, plan, side, issueId) {
  * is retried exactly once with the same pair, and anything else is a conflict.
  */
 export async function writeAndVerifySide({ side, issueId, org, record, deps, lock }) {
+  const timings = { putMs: 0, verifyMs: 0 };
+  const result = await runSideWrite({ side, issueId, org, record, deps, lock }, timings);
+  return { ...result, timings };
+}
+
+async function runSideWrite({ side, issueId, org, record, deps, lock }, timings) {
   // Ownership is re-asserted for every single submission, so a lock that expired
   // or was taken by another invocation stops this one before it writes.
   if (lock) {
@@ -683,7 +706,12 @@ export async function writeAndVerifySide({ side, issueId, org, record, deps, loc
   }
 
   const body = witnessBodyText(record);
-  let result = await putWitnessProperty({ side, issueId, org, body, deps });
+  const [firstPut, firstPutMs] = await timedValue(
+    deps,
+    () => putWitnessProperty({ side, issueId, org, body, deps })
+  );
+  timings.putMs += firstPutMs;
+  let result = firstPut;
 
   if (result.outcome === PAIR_WITNESS_WRITE_OUTCOMES.DEFERRED) {
     return { status: PAIR_WITNESS_ITEM_STATES.DEFERRED, retryAfterMs: result.retryAfterMs };
@@ -697,13 +725,23 @@ export async function writeAndVerifySide({ side, issueId, org, record, deps, loc
     };
   }
 
-  let verification = await verifyWitnessWrite({ side, issueId, org, record, deps });
+  const [firstVerification, firstVerifyMs] = await timedValue(
+    deps,
+    () => verifyWitnessWrite({ side, issueId, org, record, deps })
+  );
+  timings.verifyMs += firstVerifyMs;
+  let verification = firstVerification;
   if (verification.verified) {
     return { status: 'verified', verified: true, statusCode: result.statusCode ?? null };
   }
 
   if (result.ambiguous && verification.absent) {
-    result = await putWitnessProperty({ side, issueId, org, body, deps });
+    const [retryPut, retryPutMs] = await timedValue(
+      deps,
+      () => putWitnessProperty({ side, issueId, org, body, deps })
+    );
+    timings.putMs += retryPutMs;
+    result = retryPut;
     if (result.outcome === PAIR_WITNESS_WRITE_OUTCOMES.DEFERRED) {
       return { status: PAIR_WITNESS_ITEM_STATES.DEFERRED, retryAfterMs: result.retryAfterMs };
     }
@@ -715,7 +753,12 @@ export async function writeAndVerifySide({ side, issueId, org, record, deps, loc
         detail: result.code || null
       };
     }
-    verification = await verifyWitnessWrite({ side, issueId, org, record, deps });
+    const [retryVerification, retryVerifyMs] = await timedValue(
+      deps,
+      () => verifyWitnessWrite({ side, issueId, org, record, deps })
+    );
+    timings.verifyMs += retryVerifyMs;
+    verification = retryVerification;
     if (verification.verified) {
       return { status: 'verified', verified: true, retried: true };
     }
@@ -736,7 +779,21 @@ export async function writeAndVerifySide({ side, issueId, org, record, deps, loc
  * is missing, verify both, and report a state. It never deletes, never
  * overwrites a different witness, and never touches a mapping or ledger record.
  */
-export async function processPairWitnessItem({ entry, plan, org, deps, lock }) {
+export async function processPairWitnessItem(input = {}) {
+  const timings = {
+    localPutMs: 0,
+    localVerifyMs: 0,
+    remotePutMs: 0,
+    remoteVerifyMs: 0,
+    totalMs: 0
+  };
+  const started = nowMs(input.deps);
+  const result = await runPairItem(input, timings);
+  timings.totalMs = Math.max(0, nowMs(input.deps) - started);
+  return { ...result, timings };
+}
+
+async function runPairItem({ entry, plan, org, deps, lock }, timings) {
   const revalidated = await revalidatePairItem({ entry, orgId: plan.orgId, org, deps });
   if (!revalidated.ok) {
     return {
@@ -827,6 +884,8 @@ export async function processPairWitnessItem({ entry, plan, org, deps, lock }) {
       deps,
       lock
     });
+    timings.localPutMs += localWrite.timings?.putMs || 0;
+    timings.localVerifyMs += localWrite.timings?.verifyMs || 0;
     if (localWrite.status === PAIR_WITNESS_ITEM_STATES.DEFERRED) {
       return {
         state: PAIR_WITNESS_ITEM_STATES.DEFERRED,
@@ -861,6 +920,8 @@ export async function processPairWitnessItem({ entry, plan, org, deps, lock }) {
       deps,
       lock
     });
+    timings.remotePutMs += remoteWrite.timings?.putMs || 0;
+    timings.remoteVerifyMs += remoteWrite.timings?.verifyMs || 0;
     if (remoteWrite.status === PAIR_WITNESS_ITEM_STATES.DEFERRED) {
       return {
         state: PAIR_WITNESS_ITEM_STATES.DEFERRED,
@@ -1071,11 +1132,24 @@ export async function applyPairWitnessMigration(options = {}) {
     let writesPerformed = 0;
     let processed = 0;
     let stopReason = null;
+    const batchStartedAt = nowMs(deps);
+    const pairTimings = [];
 
     for (const entry of slice) {
       const outcome = await processPairWitnessItem({ entry, plan, org, deps, lock });
       processed += 1;
       writesPerformed += outcome.writesPerformed || 0;
+      if (outcome.timings) {
+        pairTimings.push({
+          seq: entry.seq,
+          state: outcome.state,
+          totalMs: outcome.timings.totalMs,
+          localPutMs: outcome.timings.localPutMs,
+          localVerifyMs: outcome.timings.localVerifyMs,
+          remotePutMs: outcome.timings.remotePutMs,
+          remoteVerifyMs: outcome.timings.remoteVerifyMs
+        });
+      }
       const index = plan.items.findIndex((candidate) => candidate.seq === entry.seq);
       if (index >= 0) {
         plan.items[index] = {
@@ -1108,6 +1182,28 @@ export async function applyPairWitnessMigration(options = {}) {
     }
     await persistPlan(plan, deps);
 
+    // Diagnostics only: bounded numbers, no keys, no content, no secrets. They
+    // are returned to the caller and written to the invocation log, never stored.
+    const batchMs = Math.max(0, nowMs(deps) - batchStartedAt);
+    const sum = (field) => pairTimings.reduce((total, item) => total + (item[field] || 0), 0);
+    const timings = {
+      batchMs,
+      pairs: pairTimings,
+      totals: {
+        localPutMs: sum('localPutMs'),
+        localVerifyMs: sum('localVerifyMs'),
+        remotePutMs: sum('remotePutMs'),
+        remoteVerifyMs: sum('remoteVerifyMs')
+      }
+    };
+    if (pairTimings.length > 0) {
+      console.log(`⏱️ pair-witness batch org=${orgId} pairs=${pairTimings.length} `
+        + `batchMs=${batchMs} localPutMs=${timings.totals.localPutMs} `
+        + `localVerifyMs=${timings.totals.localVerifyMs} `
+        + `remotePutMs=${timings.totals.remotePutMs} `
+        + `remoteVerifyMs=${timings.totals.remoteVerifyMs}`);
+    }
+
     return summarize(plan, {
       processed,
       writesPerformed,
@@ -1115,7 +1211,8 @@ export async function applyPairWitnessMigration(options = {}) {
       batchSize: slice.length,
       permitId: permit.permitId,
       permitExpiresAt: new Date(permit.expiresAt).toISOString(),
-      stopReason
+      stopReason,
+      timings
     });
   } finally {
     await releasePairWitnessBatchLock(lock, deps);

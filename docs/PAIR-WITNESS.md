@@ -264,6 +264,34 @@ different organization or issue always produces a different identifier.
 
 | Outcome | Classification | Behaviour |
 
+### Audit trail for maintenance writes
+
+Every permit-shaped request produces audit entries through the existing audit log
+(`auditLog`, bounded, already used by the rest of the connector). Four outcomes:
+
+| Outcome | When | Notes |
+| --- | --- | --- |
+| `attempted` | permit satisfied, before the transport | never claims the write happened |
+| `succeeded` | transport answered 2xx | records the HTTP status |
+| `failed` | transport answered non-2xx or threw | records the status, or `transport-error` |
+| `refused` | permit-shaped but not authorized | records the refusal reason, nothing is submitted |
+
+Each entry carries only `orgId`, `site`, stable `issueId`, `pairId`, `permitId`,
+`outcome`, `reason` and `statusCode`. Bodies, headers, tokens, credentials, issue
+keys, descriptions and comments are never recorded. Auditing is best-effort and
+independent of authorization: a failed audit write cannot block a permitted
+write, and it cannot turn a refused one into an allowed one.
+
+### Timing diagnostics
+
+A batch returns bounded timings measured inside the Forge invocation:
+`batchMs`, per-pair `totalMs` and, for each side, the PUT and read-back time. The
+same numbers are written as one invocation log line
+(`⏱️ pair-witness batch org=… pairs=… batchMs=… …`). Timings are returned and
+logged only — never stored — and contain numbers, sequence numbers and states,
+never issue keys or content. They are not browser round-trip times.
+
+
 ### Concurrency: one writer per batch
 
 A lock with only a fixed TTL would let a slow batch outlive its own lock and run
