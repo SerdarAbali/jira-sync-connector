@@ -178,3 +178,10 @@ who needs a recovery-capable backup must export a version 2 file.
 - The direction section is written from the live lookup prefixes, so a pair that
   exists only in those lookups is exported as directional evidence and reported
   as incomplete. The export never repairs that divergence.
+
+## Related evidence
+
+The file is the Forge-side backup. Jira-side per-issue evidence for the same
+pairs — the read-only `sync-connector-pair` issue property and its inspection
+preview — is described in [PAIR-WITNESS.md](./PAIR-WITNESS.md). The snapshot is
+the baseline of record; the witness is the part that survives losing it.

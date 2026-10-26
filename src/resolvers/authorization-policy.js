@@ -127,7 +127,12 @@ export const RESOLVER_POLICIES = Object.freeze({
   // read-only; granting it is an explicit ADMIN_WRITE that writes one storage
   // record and performs no Jira request of any kind.
   getSyncAuthorizationStatus: 'ADMIN_READ',
-  authorizeSynchronization: 'ADMIN_WRITE'
+  authorizeSynchronization: 'ADMIN_WRITE',
+
+  // Read-only pairing-witness migration preview. It reads mapping metadata,
+  // both directions, the create ledger and the issue property on both Jira
+  // sites, and writes nothing anywhere. No approval or apply resolver exists.
+  previewPairWitnessMigration: 'ADMIN_READ'
 });
 
 export function getResolverPolicy(resolverName) {

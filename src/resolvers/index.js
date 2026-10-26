@@ -12,6 +12,7 @@ import { defineReadinessResolvers } from './readiness.js';
 import { defineLeaseMigrationResolvers } from './lease-migration.js';
 import { defineRecoverySnapshotResolvers } from './recovery-snapshot.js';
 import { defineSyncAuthorizationResolvers } from './sync-authorization.js';
+import { definePairWitnessResolvers } from './pair-witness.js';
 import { createAuthorizedResolver } from './authorization.js';
 
 const resolver = createAuthorizedResolver();
@@ -32,6 +33,7 @@ defineReadinessResolvers(resolver);
 defineLeaseMigrationResolvers(resolver);
 defineRecoverySnapshotResolvers(resolver);
 defineSyncAuthorizationResolvers(resolver);
+definePairWitnessResolvers(resolver);
 
 export const registeredResolverNames = resolver.getRegisteredNames();
 
