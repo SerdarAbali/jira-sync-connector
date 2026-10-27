@@ -72,7 +72,7 @@ The app is installed only on the local site. Do not install it on remote sites u
 
 ## First-time setup
 
-1. Open **Jira Settings > Apps > Sync Connector**.
+1. Open **Jira Settings > Apps > SyncApp**.
 2. Start the guided setup wizard.
 3. Add the remote connection details:
    - display name

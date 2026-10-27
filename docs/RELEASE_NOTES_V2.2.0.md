@@ -1,8 +1,10 @@
-# Jira Sync Connector v2.2.0
+# SyncApp v2.2.0
 
 Released 2026-10-27.
 
 ## Highlights
+
+- Unified SyncApp branding across the Forge administration title and sidebar, dashboard, document title, and generated notices. Legacy notice markers remain recognized without rewriting existing Jira data.
 
 - Redesigned administration into seven sections: Overview, Organizations, Analytics, Activity, Diagnostics, Recovery, and About & Security, with horizontal navigation, a compact organization selector, and responsive layouts.
 - Consolidated organization configuration, connections, mappings, and Guided Setup while preserving validation, confirmations, disabled states, and administrator permissions. Organization switching clears pending forms, approvals, and previews.
@@ -21,7 +23,7 @@ Released 2026-10-27.
 
 ## Validation
 
-- 94 Jest suites / 2,025 tests passed under Node 22.
+- 95 Jest suites / 2,028 tests passed under Node 22.
 - ESLint, secret scan, repository neutrality, offline Forge validation, and authenticated Forge lint passed.
 - Admin production build and release whitespace checks passed.
 - Root production dependency audit failed its gate with one high advisory (`undici`) and one moderate advisory (`fast-uri`). The admin production audit passed its high-severity threshold but reports one moderate advisory (`yaml`). These pre-existing findings are not fixed by this release.

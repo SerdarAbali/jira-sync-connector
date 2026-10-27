@@ -4,7 +4,7 @@ modules:
       resource: admin-ui
       resolver:
         function: resolver
-      title: Sync Connector Configuration
+      title: SyncApp
 
   trigger:
     - key: issue-created

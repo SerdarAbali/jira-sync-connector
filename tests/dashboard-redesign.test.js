@@ -367,6 +367,7 @@ test('application version comes from the product package and is explicitly label
   const { version } = require('../package.json');
   expect(ADMIN_UI_VERSION).toBe(`v${version}`);
   await mount();
+  expect(container.querySelector('.brand strong').textContent).toBe('SyncApp');
   expect(container.querySelector('.brand').textContent).toContain(`Application v${version}`);
   await click('About & Security');
   expect(container.textContent).toContain(`Application versionv${version}`);

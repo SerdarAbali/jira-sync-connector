@@ -1,4 +1,4 @@
-// Configuration Constants for Jira Sync Connector
+// Configuration Constants for SyncApp
 
 // File Upload Limits
 export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10MB in bytes

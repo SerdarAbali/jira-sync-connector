@@ -399,3 +399,38 @@ Files changed for this correction: `static/admin-page/src/dashboard/navigation.j
 `tests/guided-setup-ui.test.js` and this document. No informational page content,
 links, resolver, backend, dependency, manifest or safety workflow was changed.
 No commit, push, deployment or live mutation was performed.
+
+## SyncApp v2.2.0 branding correction
+
+The customer-facing product name is SyncApp. The Forge admin-page module title,
+Jira sidebar and page heading, embedded header, document title, About & Security,
+and current release documentation use that name. The application version remains
+2.2.0, derived from the root package. Forge deployment versions remain separate.
+
+New generated review comments and protected-counterpart notices use SyncApp.
+Legacy text markers remain recognized for existing Jira content, including
+comment-copy exclusion and preservation of user descriptions. No stored content
+is rewritten. The Forge app ID, module key, installation identities, storage and
+resolver identifiers, repository names and authorization phrases stay unchanged.
+
+Acceptance requires full regression and quality checks, inspection of the built
+bundle, and independent live STAGING and DEV verification of both Jira chrome
+and all seven dashboard pages. The published v2.2.0 tag currently targets
+146aa50046438297fba3fe2b5edfeefd25a7a551; moving it requires explicit release
+approval. A build or deployment alone does not establish live acceptance.
+
+The title property supplies both the Jira administration heading and sidebar
+entry: [Jira admin page](https://developer.atlassian.com/platform/forge/manifest-reference/modules/jira-admin-page/).
+The only manifest change is that display title; scopes, external permissions,
+storage schema, module keys and app identity are unchanged. Under
+[Forge versioning](https://developer.atlassian.com/platform/forge/versions/),
+changes that do not require a major version apply as minor updates. A required
+installation upgrade or permission change remains a separate approval gate.
+
+Branding validation: 95 Jest suites / 2,028 tests pass, including three focused
+branding and legacy-marker compatibility regressions. ESLint, secret scanning,
+neutrality, offline Forge validation, authenticated STAGING and DEV Forge lint,
+and the admin production build pass. The built HTML and JavaScript are checked
+for SyncApp, the root application version, and absence of retired UI branding.
+Existing dependency advisories remain unchanged. Live rollout and release-tag
+approval are recorded separately from these local results.

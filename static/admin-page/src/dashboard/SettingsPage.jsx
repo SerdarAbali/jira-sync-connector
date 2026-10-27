@@ -33,7 +33,7 @@ const securityTopics = [
 
 export default function SettingsPage() {
   return <div className="settings-content" style={surfaceCard()}>
-    <h2>Security & Architecture</h2>
+    <h2>SyncApp Security & Architecture</h2>
     <SectionMessage appearance="information" title="Application architecture and platform responsibilities">
       <p>The backend uses Atlassian Forge. The descriptions below distinguish this application’s request flow from platform controls and deployment-dependent policies.</p>
     </SectionMessage>

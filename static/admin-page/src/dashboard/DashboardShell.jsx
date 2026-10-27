@@ -21,7 +21,7 @@ export default function DashboardShell({ controller: c, route, navigate, version
   const selectedOrg = c.selectedOrg;
   return <div className="admin-dashboard">
     <header className="dashboard-header">
-      <div className="brand"><span className="brand-mark" aria-hidden="true">⇄</span><div><strong>Sync Connector</strong><small>Administration · Application {version}</small></div></div>
+      <div className="brand"><span className="brand-mark" aria-hidden="true">⇄</span><div><strong>SyncApp</strong><small>Administration · Application {version}</small></div></div>
       <div className="organization-picker">
         <label htmlFor="admin-organization-select">Organization scope</label>
         <Select inputId="admin-organization-select" placeholder="Select organization" isClearable={false}

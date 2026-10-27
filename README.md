@@ -100,7 +100,7 @@ Recurring reconciliation maintains a stable attention record for each organizati
 - **Acknowledge Notifications** only mutes further administrator notifications. The technical record remains open and visible.
 - A resolved record reopens as a new episode if the issue fails again.
 
-When configured, SyncApp adds one marker-tagged review comment to the local issue after the failure threshold is reached. The marker text starts with `Jira Sync Connector recurring reconciliation review required.` The comment is never copied to the remote site.
+When configured, SyncApp adds one marker-tagged review comment to the local issue after the failure threshold is reached. The marker text starts with `SyncApp recurring reconciliation review required.` The comment is never copied to the remote site.
 
 `SYNC-123`-style keys are ordinary issue keys in a target project. They are not connector database identifiers. The connector mapping and attention record reference those Jira keys but are stored separately in Forge Storage.
 
@@ -166,7 +166,7 @@ forge deploy
 forge install
 ```
 
-Then open **Jira Settings > Apps > Sync Connector** and use the guided setup wizard. Detailed instructions are in [Installation](docs/INSTALLATION.md) and [Configuration](docs/CONFIGURATION.md).
+Then open **Jira Settings > Apps > SyncApp** and use the guided setup wizard. Detailed instructions are in [Installation](docs/INSTALLATION.md) and [Configuration](docs/CONFIGURATION.md).
 
 ## Operate and troubleshoot
 

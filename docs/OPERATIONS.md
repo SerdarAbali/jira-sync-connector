@@ -107,10 +107,10 @@ A synchronized pair consists of a local issue key, a remote issue key, and both 
 Generated review comments start with:
 
 ```text
-Jira Sync Connector recurring reconciliation review required.
+SyncApp recurring reconciliation review required.
 ```
 
-The marker prevents the comment from being copied to the remote site and provides a second guard in comment-copy paths. The comment tells the reader to review the attention record in **Sync Connector > Sync Activity**. It is generated only when the configured failure threshold is reached and review comments are enabled.
+The marker prevents the comment from being copied to the remote site and provides a second guard in comment-copy paths. The comment tells the reader to review the attention record in **SyncApp > Organizations > Synchronization**. It is generated only when the configured failure threshold is reached and review comments are enabled.
 
 Mapping checks:
 

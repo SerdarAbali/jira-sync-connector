@@ -2,6 +2,8 @@
 
 ### Administration and recovery
 
+- Unified SyncApp branding across Jira administration, the embedded dashboard, current documentation and generated notices, while retaining legacy marker recognition.
+
 - Redesigned the seven-page administration console with responsive navigation, scoped organization controls, and recorded analytics.
 - Added read-only recovery snapshots and restore preview, pairing-witness inspection and approved migration tooling, and maintenance-write audit records.
 - Preserved administrator confirmations and strengthened installation-wide pause and synchronization-authorization safeguards.
