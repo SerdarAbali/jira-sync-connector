@@ -1,4 +1,5 @@
 import { surfaceCard } from '../dashboard/presentation';
+import Field, { fieldLabelStyle } from '../dashboard/Field.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -13,13 +14,6 @@ import { token } from '@atlaskit/tokens';
  * displays what the file contains. It never restores, adopts mappings or
  * changes the pause state.
  */
-
-const summaryLabelStyle = {
-  fontSize: '11px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  color: token('color.text.subtle', '#6B778C')
-};
 
 const monoStyle = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -110,13 +104,6 @@ function downloadSnapshot(result) {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
-
-const SummaryItem = ({ label, value }) => (
-  <div>
-    <div style={summaryLabelStyle}>{label}</div>
-    <div style={{ fontSize: '13px' }}>{value}</div>
-  </div>
-);
 
 const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
   const orgId = selectedOrg?.id || null;
@@ -263,9 +250,9 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
       </p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px'), marginBottom: token('space.200', '16px') }}>
-        <SummaryItem label="Organization" value={selectedOrg?.name || 'Not selected'} />
-        <SummaryItem label="Organization id" value={orgId || 'Not selected'} />
-        <SummaryItem label="Remote host" value={result?.organization?.remoteHost || 'Shown after export'} />
+        <Field label="Organization" value={selectedOrg?.name || 'Not selected'} />
+        <Field label="Organization id" value={orgId || 'Not selected'} />
+        <Field label="Remote host" value={result?.organization?.remoteHost || 'Shown after export'} />
       </div>
 
       {!orgId && (
@@ -307,21 +294,21 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
       {result && (
         <div style={{ marginTop: token('space.200', '16px'), display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
-            <SummaryItem label="Issue pairs" value={result.counts?.pairs ?? 0} />
-            <SummaryItem label="Create ledger records" value={result.counts?.ledger ?? 0} />
-            <SummaryItem label="Total records" value={result.counts?.total ?? 0} />
-            <SummaryItem label="File size" value={formatBytes(result.bytes)} />
+            <Field label="Issue pairs" value={result.counts?.pairs ?? 0} />
+            <Field label="Create ledger records" value={result.counts?.ledger ?? 0} />
+            <Field label="Total records" value={result.counts?.total ?? 0} />
+            <Field label="File size" value={formatBytes(result.bytes)} />
           </div>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
-            <SummaryItem label="App id" value={result.identity?.appId || 'unavailable'} />
-            <SummaryItem label="Environment" value={result.identity?.environmentType || 'unavailable'} />
-            <SummaryItem label="Installation id" value={result.identity?.installationId || 'unavailable'} />
-            <SummaryItem label="Site" value={result.identity?.siteHost || 'unavailable'} />
+            <Field label="App id" value={result.identity?.appId || 'unavailable'} />
+            <Field label="Environment" value={result.identity?.environmentType || 'unavailable'} />
+            <Field label="Installation id" value={result.identity?.installationId || 'unavailable'} />
+            <Field label="Site" value={result.identity?.siteHost || 'unavailable'} />
           </div>
 
           <div>
-            <div style={summaryLabelStyle}>
+            <div style={fieldLabelStyle}>
               Checksum (sha256, detects corruption only — not a signature)
             </div>
             <div style={monoStyle}>{result.checksum}</div>
@@ -388,36 +375,36 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
         {preview && (
           <div style={{ marginTop: token('space.200', '16px'), display: 'flex', flexDirection: 'column', gap: token('space.150', '12px') }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
-              <SummaryItem
+              <Field
                 label="Installation identity"
                 value={previewIdentityText(preview.identity?.classification)}
               />
-              <SummaryItem
+              <Field
                 label="Organization routing"
                 value={preview.organization?.match
                   ? 'Matches the selected organization'
                   : `Differs: ${(preview.organization?.differences || []).join(', ')}`}
               />
-              <SummaryItem
+              <Field
                 label="File checksum"
                 value={preview.checksum?.verified ? 'Verified (sha256)' : 'Not verified'}
               />
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
-              <SummaryItem label="Pairs already present" value={pairCounts['already-present-consistent'] ?? 0} />
-              <SummaryItem label="Pairs missing" value={pairCounts['missing-potentially-restorable'] ?? 0} />
-              <SummaryItem label="Pairs conflicting" value={pairCounts.conflicting ?? 0} />
-              <SummaryItem label="Pairs blocked" value={pairCounts['blocked-by-existing-record'] ?? 0} />
-              <SummaryItem label="Pairs incomplete directional" value={pairCounts['incomplete-directional'] ?? 0} />
-              <SummaryItem label="Pairs restorable here" value={preview.counts?.restorablePairs ?? 0} />
+              <Field label="Pairs already present" value={pairCounts['already-present-consistent'] ?? 0} />
+              <Field label="Pairs missing" value={pairCounts['missing-potentially-restorable'] ?? 0} />
+              <Field label="Pairs conflicting" value={pairCounts.conflicting ?? 0} />
+              <Field label="Pairs blocked" value={pairCounts['blocked-by-existing-record'] ?? 0} />
+              <Field label="Pairs incomplete directional" value={pairCounts['incomplete-directional'] ?? 0} />
+              <Field label="Pairs restorable here" value={preview.counts?.restorablePairs ?? 0} />
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
-              <SummaryItem label="Ended mappings in file" value={preview.evidence?.ended ?? 0} />
-              <SummaryItem label="Repair markers in file" value={preview.evidence?.repaired ?? 0} />
-              <SummaryItem label="Deleted counterparts in file" value={preview.evidence?.counterpartBlocking ?? 0} />
-              <SummaryItem label="Archived counterparts in file" value={preview.evidence?.counterpartArchived ?? 0} />
+              <Field label="Ended mappings in file" value={preview.evidence?.ended ?? 0} />
+              <Field label="Repair markers in file" value={preview.evidence?.repaired ?? 0} />
+              <Field label="Deleted counterparts in file" value={preview.evidence?.counterpartBlocking ?? 0} />
+              <Field label="Archived counterparts in file" value={preview.evidence?.counterpartArchived ?? 0} />
             </div>
 
             {preview.recoverability && !preview.recoverability.recoverable && (
@@ -431,9 +418,9 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
             )}
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.300', '24px') }}>
-              <SummaryItem label="Ledger rows already present" value={ledgerCounts['already-present-consistent'] ?? 0} />
-              <SummaryItem label="Ledger rows missing" value={ledgerCounts.missing ?? 0} />
-              <SummaryItem label="Ledger rows conflicting" value={ledgerCounts.conflicting ?? 0} />
+              <Field label="Ledger rows already present" value={ledgerCounts['already-present-consistent'] ?? 0} />
+              <Field label="Ledger rows missing" value={ledgerCounts.missing ?? 0} />
+              <Field label="Ledger rows conflicting" value={ledgerCounts.conflicting ?? 0} />
             </div>
 
             {preview.identity?.crossInstallation && (
@@ -447,7 +434,7 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
 
             {conflictSamples.length > 0 && (
               <div>
-                <div style={summaryLabelStyle}>Conflicts and blocks (sample)</div>
+                <div style={fieldLabelStyle}>Conflicts and blocks (sample)</div>
                 <ul style={{ margin: 0, paddingLeft: token('space.300', '24px'), ...monoStyle }}>
                   {conflictSamples.map((line) => <li key={line}>{line}</li>)}
                 </ul>

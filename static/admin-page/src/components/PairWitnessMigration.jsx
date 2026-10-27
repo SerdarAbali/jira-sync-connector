@@ -1,4 +1,5 @@
 import { surfaceCard } from '../dashboard/presentation';
+import Field, { fieldLabelStyle } from '../dashboard/Field.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -15,13 +16,6 @@ import { token } from '@atlaskit/tokens';
  * apply, approve or migrate control: Phase 1 ships the inspection only, and the
  * preview never writes a Jira property, creates an issue or changes the pause.
  */
-
-const labelStyle = {
-  fontSize: '11px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  color: token('color.text.subtle', '#6B778C')
-};
 
 const cellStyle = {
   padding: token('space.075', '6px'),
@@ -77,13 +71,6 @@ export function pairWitnessFindingText(finding) {
   const detail = finding.detail ? ` (${finding.detail})` : '';
   return `${pairClassText(finding.code)}${pair ? `: ${pair}` : ''}${detail}`;
 }
-
-const Field = ({ label, value }) => (
-  <div>
-    <div style={labelStyle}>{label}</div>
-    <div style={{ fontSize: '13px' }}>{value}</div>
-  </div>
-);
 
 const PairWitnessMigration = ({ selectedOrg, showMessage }) => {
   const orgId = selectedOrg?.id || null;
@@ -220,7 +207,7 @@ const PairWitnessMigration = ({ selectedOrg, showMessage }) => {
           )}
 
           <div style={{ marginBottom: token('space.200', '16px') }}>
-            <div style={labelStyle}>Findings</div>
+            <div style={fieldLabelStyle}>Findings</div>
             {(result.findings || []).length === 0
               ? (
                 <p style={{ margin: 0, fontSize: '13px' }}>
@@ -251,7 +238,7 @@ const PairWitnessMigration = ({ selectedOrg, showMessage }) => {
           </div>
 
           <div>
-            <div style={labelStyle}>Limitations</div>
+            <div style={fieldLabelStyle}>Limitations</div>
             <ul style={{ margin: 0, paddingLeft: token('space.200', '16px'), fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
               {(result.limitations || []).map((line) => <li key={line}>{line}</li>)}
             </ul>
@@ -497,7 +484,7 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
       </div>
 
       <div style={{ marginBottom: token('space.200', '16px') }}>
-        <div style={labelStyle}>Scope</div>
+        <div style={fieldLabelStyle}>Scope</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.100', '8px'), margin: '6px 0 8px 0' }}>
           <Button
             appearance={scopeMode === 'selected' ? 'primary' : 'default'}
@@ -587,13 +574,13 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
           </div>
 
           <div style={{ marginBottom: token('space.150', '12px') }}>
-            <div style={labelStyle}>Plan digest</div>
+            <div style={fieldLabelStyle}>Plan digest</div>
             <div style={monoStyle}>{plan.digest}</div>
           </div>
 
           {Array.isArray(plan.items) && plan.items.length > 0 && (
             <div style={{ marginBottom: token('space.150', '12px') }}>
-              <div style={labelStyle}>Planned pairs</div>
+              <div style={fieldLabelStyle}>Planned pairs</div>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr>
@@ -619,7 +606,7 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
 
           {Array.isArray(plan.excluded) && plan.excluded.length > 0 && (
             <div style={{ marginBottom: token('space.150', '12px') }}>
-              <div style={labelStyle}>Excluded pairs</div>
+              <div style={fieldLabelStyle}>Excluded pairs</div>
               <ul style={{ margin: 0, paddingLeft: token('space.200', '16px'), fontSize: '12px' }}>
                 {plan.excluded.map((entry) => (
                   <li key={`${entry.localKey}-${entry.remoteKey}`}>
@@ -658,7 +645,7 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
 
       {lastBatch?.timings && (
         <div style={{ marginTop: token('space.200', '16px') }}>
-          <div style={labelStyle}>
+          <div style={fieldLabelStyle}>
             {`Last batch timings (${Math.round(lastBatch.timings.batchMs)} ms total, invocation-side)`}
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>

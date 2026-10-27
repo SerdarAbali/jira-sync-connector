@@ -6,6 +6,7 @@ import Spinner from '@atlaskit/spinner';
 import Textfield from '@atlaskit/textfield';
 import { token } from '@atlaskit/tokens';
 import { surfaceCard } from '../dashboard/presentation';
+import Field, { fieldLabelStyle } from '../dashboard/Field.jsx';
 
 /**
  * Witnessed Pair Adoption.
@@ -25,13 +26,6 @@ export const ADOPTION_PAUSE_TEXT =
 export const ADOPTION_STALE_TEXT =
   'Organization or issue keys changed. Verify the pair again before adopting.';
 
-const labelStyle = {
-  fontSize: '11px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  color: token('color.text.subtle', '#6B778C')
-};
-
 const monoStyle = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
   fontSize: '12px',
@@ -41,13 +35,6 @@ const monoStyle = {
 export function pairAdoptionFingerprint({ orgId, localKey, remoteKey } = {}) {
   return [orgId || '', localKey || '', remoteKey || ''].join('|');
 }
-
-const Field = ({ label, value }) => (
-  <div>
-    <div style={labelStyle}>{label}</div>
-    <div style={{ fontSize: '13px' }}>{value}</div>
-  </div>
-);
 
 const WitnessedPairAdoption = ({ selectedOrg, showMessage }) => {
   const orgId = selectedOrg?.id || null;
@@ -189,7 +176,7 @@ const WitnessedPairAdoption = ({ selectedOrg, showMessage }) => {
       <p style={{ maxWidth: 760, color: token('color.text.subtle', '#6B778C') }}>{ADOPTION_PAUSE_TEXT}</p>
 
       <div style={{ display: 'grid', gap: token('space.100', '8px'), maxWidth: 520 }}>
-        <label style={labelStyle} htmlFor="witness-adoption-local">Local issue key</label>
+        <label style={fieldLabelStyle} htmlFor="witness-adoption-local">Local issue key</label>
         <Textfield
           id="witness-adoption-local"
           aria-label="Witness adoption local issue key"
@@ -197,7 +184,7 @@ const WitnessedPairAdoption = ({ selectedOrg, showMessage }) => {
           isDisabled={busy}
           onChange={(event) => changeLocal(event.target.value)}
         />
-        <label style={labelStyle} htmlFor="witness-adoption-remote">Remote issue key</label>
+        <label style={fieldLabelStyle} htmlFor="witness-adoption-remote">Remote issue key</label>
         <Textfield
           id="witness-adoption-remote"
           aria-label="Witness adoption remote issue key"
@@ -259,7 +246,7 @@ const WitnessedPairAdoption = ({ selectedOrg, showMessage }) => {
 
           {preview.mapping?.state !== 'conflict' && !preview.alreadyMapped ? (
             <div style={{ display: 'grid', gap: token('space.100', '8px'), maxWidth: 760 }}>
-              <div style={labelStyle}>Required confirmation phrase</div>
+              <div style={fieldLabelStyle}>Required confirmation phrase</div>
               <code style={monoStyle} aria-label="Witness adoption confirmation phrase">
                 {preview.confirmationPhrase}
               </code>

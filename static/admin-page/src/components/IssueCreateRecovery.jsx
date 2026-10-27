@@ -1,4 +1,5 @@
 import { surfaceCard } from '../dashboard/presentation';
+import { fieldLabelStyle } from '../dashboard/Field.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -12,13 +13,6 @@ import ModalDialog, { ModalTransition, ModalHeader, ModalTitle, ModalBody, Modal
 import { token } from '@atlaskit/tokens';
 
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
-
-const summaryLabelStyle = {
-  fontSize: '11px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  color: token('color.text.subtle', '#6B778C')
-};
 
 export const CREATE_DIRECTION_OPTIONS = [
   { label: 'Local → remote (local issue was created remotely)', value: 'local-to-remote' },
@@ -278,7 +272,7 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
           <>
             <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.150', '12px') }}>
               <div>
-                <div style={summaryLabelStyle}>Operation state</div>
+                <div style={fieldLabelStyle}>Operation state</div>
                 <div style={{ marginTop: '4px' }}>
                   <Lozenge appearance={STATE_APPEARANCE[operation.state] || 'default'}>
                     {STATE_LABEL[operation.state] || operation.state}
@@ -286,11 +280,11 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
                 </div>
               </div>
               <div>
-                <div style={summaryLabelStyle}>Attempt</div>
+                <div style={fieldLabelStyle}>Attempt</div>
                 <div style={{ marginTop: '4px' }}>{operation.attempt ?? '—'}</div>
               </div>
               <div>
-                <div style={summaryLabelStyle}>Create submission marker</div>
+                <div style={fieldLabelStyle}>Create submission marker</div>
                 <div style={{ marginTop: '4px' }}>{operation.submissionStarted ? 'Present' : 'Absent'}</div>
                 {operation.state === 'unknown' && (
                   <div style={{ marginTop: '4px', fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
@@ -299,11 +293,11 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
                 )}
               </div>
               <div>
-                <div style={summaryLabelStyle}>Recorded destination key</div>
+                <div style={fieldLabelStyle}>Recorded destination key</div>
                 <div style={{ marginTop: '4px' }}>{operation.targetKey || '—'}</div>
               </div>
               <div>
-                <div style={summaryLabelStyle}>Source mapping</div>
+                <div style={fieldLabelStyle}>Source mapping</div>
                 <div style={{ marginTop: '4px' }}>
                   {result.mapping?.sourceMappedKey
                     ? `Mapped to ${result.mapping.sourceMappedKey}`
@@ -311,7 +305,7 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
                 </div>
               </div>
               <div>
-                <div style={summaryLabelStyle}>Reconciliation applicable</div>
+                <div style={fieldLabelStyle}>Reconciliation applicable</div>
                 <div style={{ marginTop: '4px' }}>{reconciliation.applicable ? 'Yes' : 'No'}</div>
               </div>
             </div>

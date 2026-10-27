@@ -31,13 +31,6 @@ export const WITNESS_AUDIT_UNAVAILABLE_TEXT =
 export const WITNESS_AUDIT_READ_FAILED_TEXT =
   'The audit log could not be read. Nothing was changed.';
 
-const labelStyle = {
-  fontSize: '11px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  color: token('color.text.subtle', '#6B778C')
-};
-
 const cellStyle = {
   padding: token('space.075', '6px'),
   borderBottom: `1px solid ${token('color.border', '#DFE1E6')}`,

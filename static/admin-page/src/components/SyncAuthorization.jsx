@@ -1,4 +1,5 @@
 import { surfaceCard } from '../dashboard/presentation';
+import Field, { fieldLabelStyle } from '../dashboard/Field.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -15,13 +16,6 @@ import { token } from '@atlaskit/tokens';
  * writes a single connector storage record and never touches Jira, so it cannot
  * create, update or delete an issue. It also never changes the emergency pause.
  */
-
-const labelStyle = {
-  fontSize: '11px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  color: token('color.text.subtle', '#6B778C')
-};
 
 const monoStyle = { fontFamily: 'monospace', fontSize: '12px', wordBreak: 'break-all' };
 
@@ -49,13 +43,6 @@ const REASON_TEXT = {
 export function authorizationReasonText(reason) {
   return REASON_TEXT[reason] || reason || 'Unknown reason';
 }
-
-const Field = ({ label, value }) => (
-  <div>
-    <div style={labelStyle}>{label}</div>
-    <div style={{ fontSize: '13px' }}>{value}</div>
-  </div>
-);
 
 const SyncAuthorization = ({ showMessage }) => {
   const [status, setStatus] = useState(null);
