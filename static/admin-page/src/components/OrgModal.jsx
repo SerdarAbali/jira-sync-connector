@@ -21,22 +21,22 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
       {({ formProps }) => (
         <form {...formProps} style={{ padding: token('space.200', '16px') }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: token('space.300', '24px') }}>
-            
+
             {/* Connection Details Section */}
             <div>
-              <h4 style={{ 
-                margin: `0 0 ${token('space.150', '12px')} 0`, 
-                fontSize: '11px', 
-                fontWeight: 600, 
-                textTransform: 'uppercase', 
+              <h4 style={{
+                margin: `0 0 ${token('space.150', '12px')} 0`,
+                fontSize: '11px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
                 letterSpacing: '0.5px',
-                color: token('color.text.subtlest', '#6B778C') 
+                color: token('color.text.subtlest', '#6B778C')
               }}>
                 Connection Details
               </h4>
-              <div className="workflow-grid" style={{ 
-                display: 'grid', 
-                gridTemplateColumns: '1fr 2fr', 
+              <div className="workflow-grid" style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 2fr',
                 gap: token('space.200', '16px'),
                 background: token('color.background.neutral', '#F4F5F7'),
                 padding: token('space.200', '16px'),
@@ -68,19 +68,19 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
 
             {/* Authentication Section */}
             <div>
-              <h4 style={{ 
-                margin: `0 0 ${token('space.150', '12px')} 0`, 
-                fontSize: '11px', 
-                fontWeight: 600, 
-                textTransform: 'uppercase', 
+              <h4 style={{
+                margin: `0 0 ${token('space.150', '12px')} 0`,
+                fontSize: '11px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
                 letterSpacing: '0.5px',
-                color: token('color.text.subtlest', '#6B778C') 
+                color: token('color.text.subtlest', '#6B778C')
               }}>
                 Authentication
               </h4>
-              <div className="workflow-grid" style={{ 
-                display: 'grid', 
-                gridTemplateColumns: '1fr 1fr', 
+              <div className="workflow-grid" style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
                 gap: token('space.200', '16px'),
                 background: token('color.background.neutral', '#F4F5F7'),
                 padding: token('space.200', '16px'),
@@ -133,19 +133,19 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
 
             {/* Sync Configuration Section */}
             <div>
-              <h4 style={{ 
-                margin: `0 0 ${token('space.150', '12px')} 0`, 
-                fontSize: '11px', 
-                fontWeight: 600, 
-                textTransform: 'uppercase', 
+              <h4 style={{
+                margin: `0 0 ${token('space.150', '12px')} 0`,
+                fontSize: '11px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
                 letterSpacing: '0.5px',
-                color: token('color.text.subtlest', '#6B778C') 
+                color: token('color.text.subtlest', '#6B778C')
               }}>
                 Sync Configuration
               </h4>
-              <div className="workflow-grid" style={{ 
-                display: 'grid', 
-                gridTemplateColumns: '1fr 2fr', 
+              <div className="workflow-grid" style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 2fr',
                 gap: token('space.200', '16px'),
                 background: token('color.background.neutral', '#F4F5F7'),
                 padding: token('space.200', '16px'),
@@ -181,17 +181,17 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
 
             {/* Sync Direction Section */}
             <div>
-              <h4 style={{ 
-                margin: `0 0 ${token('space.150', '12px')} 0`, 
-                fontSize: '11px', 
-                fontWeight: 600, 
-                textTransform: 'uppercase', 
+              <h4 style={{
+                margin: `0 0 ${token('space.150', '12px')} 0`,
+                fontSize: '11px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
                 letterSpacing: '0.5px',
-                color: token('color.text.subtlest', '#6B778C') 
+                color: token('color.text.subtlest', '#6B778C')
               }}>
                 Sync Direction
               </h4>
-              <div style={{ 
+              <div style={{
                 background: token('color.background.neutral', '#F4F5F7'),
                 padding: token('space.200', '16px'),
                 borderRadius: token('border.radius', '8px')
@@ -208,7 +208,7 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                         { label: 'One-Way (Push Only)', value: 'push' },
                         { label: 'Two-Way (Bidirectional)', value: 'bidirectional' }
                       ]}
-                      value={fieldProps.value === 'bidirectional' 
+                      value={fieldProps.value === 'bidirectional'
                         ? { label: 'Two-Way (Bidirectional)', value: 'bidirectional' }
                         : { label: 'One-Way (Push Only)', value: 'push' }
                       }
@@ -223,9 +223,9 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                 {syncDirection === 'bidirectional' && (
                   <div style={{ marginTop: '16px' }}>
                     {editingOrg?.incomingWebhookUrl ? (
-                      <div style={{ 
-                        background: token('color.background.accent.green.subtlest', '#E3FCEF'), 
-                        padding: '12px', 
+                      <div style={{
+                        background: token('color.background.accent.green.subtlest', '#E3FCEF'),
+                        padding: '12px',
                         borderRadius: '4px',
                         border: `1px solid ${token('color.border.accent.green', '#36B37E')}`
                       }}>
@@ -235,12 +235,12 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                         </p>
                         <div style={{ marginBottom: '8px' }}>
                           <div style={{ fontSize: '11px', fontWeight: 600, color: '#006644' }}>Base URL:</div>
-                          <code style={{ 
-                            display: 'block', 
-                            padding: '8px', 
-                            background: '#FFFFFF', 
-                            borderRadius: '4px', 
-                            fontSize: '11px', 
+                          <code style={{
+                            display: 'block',
+                            padding: '8px',
+                            background: '#FFFFFF',
+                            borderRadius: '4px',
+                            fontSize: '11px',
                             wordBreak: 'break-all',
                             border: '1px solid #A1BDD9'
                           }}>
@@ -257,12 +257,12 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
                           <div style={{ fontSize: '11px', color: '#172B4D', marginBottom: '4px' }}>
                             You MUST exclude the sync user to prevent loops!
                           </div>
-                          <code style={{ 
-                            display: 'block', 
-                            padding: '8px', 
-                            background: '#FFFFFF', 
-                            borderRadius: '4px', 
-                            fontSize: '11px', 
+                          <code style={{
+                            display: 'block',
+                            padding: '8px',
+                            background: '#FFFFFF',
+                            borderRadius: '4px',
+                            fontSize: '11px',
                             wordBreak: 'break-all',
                             border: '1px solid #A1BDD9'
                           }}>
@@ -293,10 +293,10 @@ const OrgModal = ({ editingOrg, onClose, onSave, saving }) => {
             )}
           </div>
 
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'flex-end', 
-            gap: token('space.100', '8px'), 
+          <div style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: token('space.100', '8px'),
             marginTop: token('space.300', '24px'),
             paddingTop: token('space.200', '16px'),
             borderTop: `1px solid ${token('color.border', '#DFE1E6')}`

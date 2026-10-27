@@ -108,25 +108,25 @@ const SyncOperations = ({
     }
 
     const conditions = [];
-    
+
     // Jira's /rest/api/3/search/jql endpoint REQUIRES a project restriction
     // It will not accept queries without a project, even with assignee or date restrictions
-    
+
     if (!selectedProject || !selectedProject.value) {
       // Project is required - return empty to disable the button
       return '';
     }
-    
+
     conditions.push(`project = "${selectedProject.value}"`);
-    
+
     if (selectedStatus && selectedStatus.value) {
       conditions.push(selectedStatus.value);
     }
-    
+
     if (selectedAssignee && selectedAssignee.value) {
       conditions.push(selectedAssignee.value);
     }
-    
+
     // Add a date restriction
     const dateRestriction = dayRange > 0 ? `updated >= -${dayRange}d` : 'updated >= -30d';
     conditions.push(dateRestriction);
@@ -140,20 +140,20 @@ const SyncOperations = ({
       event.preventDefault();
       event.stopPropagation();
     }
-    
-    
+
+
     // Generate JQL based on current selections
     const jqlQuery = generateJQL();
-    
+
     // Check if JQL is provided
     if (!jqlQuery || !jqlQuery.trim()) {
       return;
     }
-    
+
     if (!onExportIssues) {
       return;
     }
-    
+
     // Call the export function
     onExportIssues({
       jql: jqlQuery,

@@ -106,7 +106,7 @@ export default function useAdminController({ selection, onSelect, navigate }) {
   // Connection test
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(null);
-  
+
   // Last sync time
   const [lastSyncTime, setLastSyncTime] = useState(null);
 
@@ -485,7 +485,7 @@ export default function useAdminController({ selection, onSelect, navigate }) {
 
   const handleTestConnection = async () => {
     if (!selectedOrgId) return;
-    
+
     setTestingConnection(true);
     setConnectionStatus(null);
     try {
@@ -506,7 +506,7 @@ export default function useAdminController({ selection, onSelect, navigate }) {
 
   const handleAutoMatch = async (type, remoteItems, localItems, currentMappings, setMappings) => {
     if (!selectedOrgId) return;
-    
+
     try {
       const result = await invoke('autoMatchMappings', {
         orgId: selectedOrgId,
@@ -514,7 +514,7 @@ export default function useAdminController({ selection, onSelect, navigate }) {
         localItems,
         remoteItems
       });
-      
+
       if (result.success && result.matchCount > 0) {
         // Merge with existing mappings (don't overwrite)
         const merged = { ...currentMappings };
@@ -733,24 +733,24 @@ export default function useAdminController({ selection, onSelect, navigate }) {
   const handleScanForDeletedIssues = async (existingProgress = null, options = {}) => {
     setScanningDeleted(true);
     const { updateExisting = false, dryRun = false } = options;
-    
+
     // Initialize or continue progress tracking
-    const currentProgress = existingProgress || scanProgress || { 
-      totalCreated: 0, 
-      totalAlreadySynced: 0, 
+    const currentProgress = existingProgress || scanProgress || {
+      totalCreated: 0,
+      totalAlreadySynced: 0,
       totalScanned: 0,
-      runs: 0 
+      runs: 0
     };
-    
+
     try {
       showMessage(`⏳ Starting ${dryRun ? 'DRY RUN' : 'bulk sync'}${updateExisting ? ' (updating existing)' : ''}...`, 'info', true);
       const result = await invoke('scanForDeletedIssues', { orgId: selectedOrgId, updateExisting, dryRun });
-      
+
       if (result.success) {
         // New async queue approach - poll for status
         if (result.status === 'running' && result.jobId) {
           showMessage(`⏳ Bulk sync started in background. Checking status...`, 'info', true);
-          
+
           // Poll for completion
           const pollStatus = async (attempts = 0) => {
             if (attempts > 180) { // Max 3 minutes of polling (every 1 second)
@@ -758,16 +758,16 @@ export default function useAdminController({ selection, onSelect, navigate }) {
               setScanningDeleted(false);
               return;
             }
-            
+
             try {
               const statusResult = await invoke('getBulkSyncStatus');
               const status = statusResult.status || {};
-              
+
               if (status.status === 'complete') {
                 const results = status.results || {};
                 const parts = [];
                 const createdCount = (results.created || 0) + (results.recreated || 0);
-                
+
                 if (results.dryRun) {
                   parts.push(`[DRY RUN] Would create ${createdCount}, would update ${results.updated}`);
                 } else {
@@ -807,12 +807,12 @@ export default function useAdminController({ selection, onSelect, navigate }) {
               setTimeout(() => pollStatus(attempts + 1), 2000);
             }
           };
-          
+
           // Start polling after a brief delay
           setTimeout(() => pollStatus(0), 1000);
           return;
         }
-        
+
         // Legacy response format (shouldn't happen anymore but just in case)
         const newProgress = {
           totalCreated: currentProgress.totalCreated + (result.results?.created || 0),
@@ -821,7 +821,7 @@ export default function useAdminController({ selection, onSelect, navigate }) {
           runs: currentProgress.runs + 1
         };
         setScanProgress(newProgress);
-        
+
         if (result.partial) {
           showMessage(
             `⏳ Progress: ${newProgress.totalCreated} created, ${newProgress.totalAlreadySynced} already synced (${newProgress.runs} runs). Continuing...`,
@@ -885,13 +885,13 @@ export default function useAdminController({ selection, onSelect, navigate }) {
   };
 
   const handleExportIssues = async (options) => {
-    
+
     // Check if invoke function is available
     if (typeof invoke !== 'function') {
       showMessage('Error: Bridge function not available. Please refresh the page.', 'error');
       return;
     }
-    
+
     if (!options?.jql?.trim()) {
       showMessage('Enter a JQL query to export issues', 'error');
       return;

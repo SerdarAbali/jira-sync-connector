@@ -140,18 +140,18 @@ const ConfigurationPanel = ({
                 {selectedOrg.syncDirection === 'bidirectional' ? 'Two-Way' : 'One-Way'}
               </Lozenge>
             </dd>
-            
+
             {selectedOrg.syncDirection === 'bidirectional' && (
               <>
                 <dt style={{ fontWeight: 600, alignSelf: 'start', marginTop: '4px' }}>Incoming URL</dt>
                 <dd style={{ margin: 0 }}>
                   {selectedOrg.incomingWebhookUrl ? (
-                    <code style={{ 
-                      display: 'block', 
-                      padding: '4px 8px', 
-                      background: '#F4F5F7', 
-                      borderRadius: '4px', 
-                      fontSize: '11px', 
+                    <code style={{
+                      display: 'block',
+                      padding: '4px 8px',
+                      background: '#F4F5F7',
+                      borderRadius: '4px',
+                      fontSize: '11px',
                       wordBreak: 'break-all',
                       border: '1px solid #DFE1E6'
                     }}>

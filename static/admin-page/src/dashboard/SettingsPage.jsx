@@ -73,7 +73,7 @@ export default function SettingsPage() {
                             <polygon points="0 0, 10 3.5, 0 7" fill="#0052CC" />
                           </marker>
                         </defs>
-                        
+
                         {/* Arrow 1: Source -> Forge */}
                         <line x1="170" y1="100" x2="250" y2="100" stroke="#0052CC" strokeWidth="2" markerEnd="url(#arrowhead)" />
                         <text x="210" y="90" textAnchor="middle" fill="#0052CC" fontSize="10">Webhook</text>

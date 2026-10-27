@@ -47,7 +47,7 @@ const IssueExportImportSection = ({
           <div style={{ fontSize: '12px', color: '#DE350B', fontWeight: 500 }}>
             ⚠️ Project key is required for export.
           </div>
-          
+
           {/* Export Mode Toggle */}
           <div style={{ display: 'flex', gap: token('space.100', '8px'), alignItems: 'center' }}>
             <label style={{ fontSize: '14px', fontWeight: 500 }}>Export Mode:</label>
@@ -83,7 +83,7 @@ const IssueExportImportSection = ({
                 </div>
 
                 <div style={{ fontSize: '12px', fontWeight: 500, color: token('color.text'), margin: '8px 0 4px 0' }}>Build Your Query:</div>
-                
+
                 <div>
                   <label style={{ fontSize: '12px', fontWeight: 600, color: '#DE350B', marginBottom: '2px', display: 'block' }}>Project Key (REQUIRED):</label>
                   <TextField
