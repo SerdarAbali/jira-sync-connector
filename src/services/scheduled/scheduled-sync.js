@@ -504,6 +504,7 @@ export async function performScheduledSync() {
         syncComments: true,
         syncAttachments: false,
         syncLinks: true,
+        syncSprints: false,
         recreateDeletedIssues: false,
         propagateAttachmentDeletions: false
       };

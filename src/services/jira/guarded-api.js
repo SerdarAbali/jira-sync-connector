@@ -10,6 +10,10 @@ import {
   recordPairWitnessAudit,
   PAIR_WITNESS_PERMIT_REASONS
 } from '../sync/pair-witness-permit.js';
+import {
+  evaluateSprintPermit,
+  SPRINT_PERMIT_REASONS
+} from '../sync/sprint-permit.js';
 export { route } from '@forge/api';
 
 /**
@@ -75,6 +79,20 @@ export async function assertJiraSubmissionAllowed(path, options) {
   const pathname = new URL(raw, 'https://jira.invalid').pathname;
   if (method === 'POST' && pathname === '/rest/api/3/search/jql') return null;
 
+  // Narrow sprint-maintenance branch. It is evaluated before the ordinary
+  // pause/authorization chain, but only an exact POST shape and issue list from a
+  // short-lived permit can pass. The permit itself rechecks pause and
+  // authorization and is one-use per sprint entry.
+  const sprintPermit = await evaluateSprintPermit({ method, raw, pathname, body: options?.body });
+  if (sprintPermit.allowed) return sprintPermit;
+  if (sprintPermit.refused) {
+    const error = new Error('The sprint maintenance permit does not authorize this write');
+    error.name = 'SprintPermitError';
+    error.code = 'SPRINT_PERMIT_REFUSED';
+    error.reason = sprintPermit.reason || SPRINT_PERMIT_REASONS.PAYLOAD_MISMATCH;
+    throw error;
+  }
+
   // Narrow maintenance branch: evaluated first, and only for the exact approved
   // PUT shape. Anything that is not permit-shaped falls through to the ordinary
   // fail-closed chain below, unchanged and in the same order.
@@ -123,6 +141,7 @@ export async function fetch(url, options, beforeSend) {
   // callers may treat it as proof that no submission attempt was made.
   if (typeof beforeSend === 'function') await beforeSend();
   if (!decision) return forgeFetch(url, options);
+  if (decision.kind === 'sprint') return forgeFetch(url, options);
   return submitMaintenanceWrite(decision, () => forgeFetch(url, options));
 }
 
@@ -132,6 +151,7 @@ function guardedClient(client) {
     requestJira: async (...args) => {
       const decision = await assertJiraSubmissionAllowed(args[0], args[1]);
       if (!decision) return client.requestJira(...args);
+      if (decision.kind === 'sprint') return client.requestJira(...args);
       return submitMaintenanceWrite(decision, () => client.requestJira(...args));
     }
   };

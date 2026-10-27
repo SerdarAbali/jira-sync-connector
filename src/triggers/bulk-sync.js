@@ -94,6 +94,7 @@ async function runLegacyBulkSync(event, context) {
         syncComments: true,
         syncAttachments: false,
         syncLinks: true,
+        syncSprints: false,
         propagateAttachmentDeletions: false
       };
       

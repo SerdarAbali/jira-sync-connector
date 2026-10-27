@@ -5,6 +5,7 @@ import TextField from '@atlaskit/textfield';
 import Spinner from '@atlaskit/spinner';
 import SectionMessage from '@atlaskit/section-message';
 import Checkbox from '@atlaskit/checkbox';
+import SprintSyncPanel from './SprintSyncPanel.jsx';
 import Lozenge from '@atlaskit/lozenge';
 import { token } from '@atlaskit/tokens';
 import { surfaceCard, lozengeButtonStyle } from '../dashboard/presentation';
@@ -225,6 +226,7 @@ const ConfigurationPanel = ({
               { key: 'syncComments', label: 'Sync Comments' },
               { key: 'syncAttachments', label: 'Synchronize attachments' },
               { key: 'syncLinks', label: 'Sync Issue Links' },
+              { key: 'syncSprints', label: 'Sync Sprints (explicit, mapping-based; never creates sprints)' },
               { key: 'syncCrossReference', label: 'Add Cross-Reference in Description (show linked issue keys in both orgs)' },
               { key: 'recreateDeletedIssues', label: 'Recreate Deleted Issues (legacy setting; does not enable automatic counterpart replacement)' },
               { key: 'automaticReplacementAfterDeletion', label: 'Automatically recreate a confirmed deleted counterpart (explicit opt-in; push never recreates a deleted local issue)' }
@@ -278,6 +280,11 @@ const ConfigurationPanel = ({
                 </div>
               </div>
             )}
+            <SprintSyncPanel
+              orgId={selectedOrg?.id}
+              enabled={syncOptions.syncSprints === true}
+              showMessage={notify}
+            />
           </div>
           <Button
             appearance="subtle"

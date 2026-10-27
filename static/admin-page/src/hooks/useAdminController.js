@@ -84,6 +84,7 @@ export default function useAdminController({ selection, onSelect, navigate }) {
     maxAttachmentSizeBytes: null,
     syncLinks: true,
     syncCrossReference: true,
+    syncSprints: false,
     recreateDeletedIssues: false,
     automaticReplacementAfterDeletion: false
   });

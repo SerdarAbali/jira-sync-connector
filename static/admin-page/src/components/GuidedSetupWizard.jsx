@@ -38,6 +38,7 @@ const staticOptions = Object.freeze({
   syncComments: true,
   syncCrossReference: true,
   syncLinks: true,
+  syncSprints: false,
   syncAttachments: false,
   propagateAttachmentDeletions: false,
   maxAttachmentSizeBytes: null
@@ -633,6 +634,17 @@ function FeaturesStep({ org, saving, validation, onSaveStep, showMessage }) {
             isDisabled={saving}
           />
           <Checkbox
+            label="Sync Sprints (explicit, mapping-based; never creates sprints)"
+            isChecked={options.syncSprints === true}
+            onChange={event => update('syncSprints', event.target.checked)}
+            isDisabled={saving}
+          />
+          <div style={{ fontSize: '12px', color: token('color.text.subtle', '#6B778C') }}>
+            Sprint synchronization is opt-in and Off by default. It only adds mapped counterpart issues to
+            explicitly verified sprint mappings while synchronization is paused and authorized. It never
+            creates sprints, infers mappings from names, or removes existing sprint membership.
+          </div>
+          <Checkbox
             label="Automatic counterpart replacement after confirmed deletion (default Off)"
             isChecked={options.automaticReplacementAfterDeletion === true}
             onChange={event => update('automaticReplacementAfterDeletion', event.target.checked)}
@@ -1036,7 +1048,7 @@ function ReviewStep({ org, state, metadata, saving, onComplete, onOpenAdministra
         <SummaryRow label="Scope" value={`${(choices.scope?.allowedProjects || []).join(', ') || 'not recorded'}${choices.scope?.jqlFilter ? ` — JQL: ${choices.scope.jqlFilter}` : ''}`} />
         <SummaryRow label="Direction" value={choices.direction?.syncDirection || org?.syncDirection || 'push'} />
         <SummaryRow label="Mappings" value={`${validations.mappings?.summary?.projectMappings || 0} project, ${validations.mappings?.summary?.issueTypeMappings || 0} issue type, ${validations.mappings?.summary?.statusMappings || 0} status, ${validations.mappings?.summary?.userMappings || 0} user, ${validations.mappings?.summary?.fieldMappings || 0} field`} />
-        <SummaryRow label="Features" value={`Comments ${featureSummary.syncComments ? 'On' : 'Off'}; descriptions/cross-reference ${featureSummary.syncCrossReference ? 'On' : 'Off'}; links ${featureSummary.syncLinks ? 'On' : 'Off'}; attachments ${featureSummary.syncAttachments ? 'On' : 'Off'}; attachment deletion ${featureSummary.propagateAttachmentDeletions ? 'On' : 'Off'}; automatic counterpart replacement ${featureSummary.automaticReplacementAfterDeletion ? 'On' : 'Off'}`} />
+        <SummaryRow label="Features" value={`Comments ${featureSummary.syncComments ? 'On' : 'Off'}; descriptions/cross-reference ${featureSummary.syncCrossReference ? 'On' : 'Off'}; links ${featureSummary.syncLinks ? 'On' : 'Off'}; sprints ${featureSummary.syncSprints ? 'On' : 'Off'}; attachments ${featureSummary.syncAttachments ? 'On' : 'Off'}; attachment deletion ${featureSummary.propagateAttachmentDeletions ? 'On' : 'Off'}; automatic counterpart replacement ${featureSummary.automaticReplacementAfterDeletion ? 'On' : 'Off'}`} />
         <SummaryRow label="Webhook" value={validations.webhook?.status === 'skipped' ? 'Not required for push mode' : validations.webhook?.summary?.verified ? 'Authenticated event verified' : 'Not verified'} />
         <SummaryRow label="Communication preflight" value={`A→B readiness ${validations.communication?.summary?.aToB?.status || 'not run'}; B→A readiness ${validations.communication?.summary?.bToA?.status || 'not run'}. End-to-end synchronization not tested.`} />
         <SummaryRow label="Initial sync" value={`${choices.initialSync?.choice || 'previewed'} — eligible ${counts?.eligible || 0}, mapped ${counts?.alreadyMapped || 0}, blocked ${counts?.blockedByValidation || 0}, conflicts ${counts?.mappingConflicts || 0}`} />

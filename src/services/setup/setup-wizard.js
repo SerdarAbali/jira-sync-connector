@@ -241,6 +241,7 @@ function sanitizeSummary(stepKey, summary) {
         syncComments: summary.syncComments === true,
         syncCrossReference: summary.syncCrossReference === true,
         syncLinks: summary.syncLinks === true,
+        syncSprints: summary.syncSprints === true,
         syncAttachments: summary.syncAttachments === true,
         propagateAttachmentDeletions: summary.propagateAttachmentDeletions === true,
         maxAttachmentSizeBytes: Number.isSafeInteger(summary.maxAttachmentSizeBytes)
@@ -747,6 +748,7 @@ async function validateFeatures(orgId) {
     {
       syncComments: options.syncComments === true,
       syncCrossReference: options.syncCrossReference === true,
+      syncSprints: options.syncSprints === true,
       syncLinks: options.syncLinks === true,
       syncAttachments: options.syncAttachments === true,
       propagateAttachmentDeletions: options.propagateAttachmentDeletions === true,

@@ -198,6 +198,7 @@ function normalizeSyncOptions(stored) {
     syncAttachments: normalizeBoolean(input.syncAttachments, false),
     syncLinks: normalizeBoolean(input.syncLinks, true),
     syncCrossReference: normalizeBoolean(input.syncCrossReference, true),
+    syncSprints: normalizeBoolean(input.syncSprints, false),
     forceCheckAttachments: true,
     forceCheckLinks: true,
     recreateDeletedIssues: false,

@@ -401,6 +401,14 @@ button:focus-visible,a:focus-visible,select:focus-visible,summary:focus-visible 
   max-width: 100%;
   height: auto;
 }
+/* Atlaskit Checkbox renders a 24px SVG in a min-content grid column. The
+   generic max-width/height rule above collapses that SVG to 0x0 and leaves only
+   the label visible. Keep the control at its designed size. */
+.admin-dashboard label > svg[role="presentation"] {
+  width: 24px;
+  height: 24px;
+  max-width: none;
+}
 .dashboard-footer {
   display: flex;
   justify-content: space-between;

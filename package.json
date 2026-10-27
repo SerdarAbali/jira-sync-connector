@@ -27,7 +27,8 @@
     "staging:e2e:plan": "node scripts/staging/e2e.js --plan",
     "staging:e2e:dry-run": "node scripts/staging/e2e.js --dry-run",
     "staging:e2e": "node scripts/staging/e2e.js",
-    "check:neutrality": "node scripts/check-neutrality.js"
+    "check:neutrality": "node scripts/check-neutrality.js",
+    "check:checkbox": "node scripts/check-checkbox-visibility.js"
   },
   "engines": {
     "node": ">=22.0.0"

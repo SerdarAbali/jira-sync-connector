@@ -134,6 +134,14 @@ export const RESOLVER_POLICIES = Object.freeze({
   cancelRecoveryRestore: 'ADMIN_WRITE',
   getRecoveryRestoreStatus: 'ADMIN_READ',
 
+  // Optional mapping-based sprint synchronization. Status and preview are
+  // read-only against Jira; mapping verification writes one Forge record, and
+  // apply is paused, authorized and digest-bound. No sprint is ever created.
+  getSprintSyncStatus: 'ADMIN_READ',
+  saveSprintMapping: 'ADMIN_WRITE',
+  previewSprintSync: 'ADMIN_READ',
+  applySprintSync: 'ADMIN_WRITE',
+
   // Installation-wide synchronization authorization. Reading the state is
   // read-only; granting it is an explicit ADMIN_WRITE that writes one storage
   // record and performs no Jira request of any kind.

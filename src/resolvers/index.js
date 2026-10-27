@@ -12,6 +12,7 @@ import { defineReadinessResolvers } from './readiness.js';
 import { defineLeaseMigrationResolvers } from './lease-migration.js';
 import { defineRecoverySnapshotResolvers } from './recovery-snapshot.js';
 import { defineRecoveryRestoreResolvers } from './recovery-restore.js';
+import { defineSprintSyncResolvers } from './sprint-sync.js';
 import { defineSyncAuthorizationResolvers } from './sync-authorization.js';
 import { definePairWitnessResolvers } from './pair-witness.js';
 import { createAuthorizedResolver } from './authorization.js';
@@ -34,6 +35,7 @@ defineReadinessResolvers(resolver);
 defineLeaseMigrationResolvers(resolver);
 defineRecoverySnapshotResolvers(resolver);
 defineRecoveryRestoreResolvers(resolver);
+defineSprintSyncResolvers(resolver);
 defineSyncAuthorizationResolvers(resolver);
 definePairWitnessResolvers(resolver);
 
