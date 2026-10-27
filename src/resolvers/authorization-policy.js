@@ -123,6 +123,17 @@ export const RESOLVER_POLICIES = Object.freeze({
   // and writes nothing: no mapping, ledger row, manifest or restore plan.
   previewRecoverySnapshot: 'ADMIN_READ',
 
+  // Witness-aware restore workflow. Preview is read-only; planning stores a
+  // bounded pending plan; approval, batches and cancellation are ADMIN_WRITE.
+  // Approval requires the exact digest-bound phrase and puts synchronization
+  // authorization into restore-in-progress. No step writes a Jira issue.
+  previewRecoveryRestore: 'ADMIN_READ',
+  planRecoveryRestore: 'ADMIN_WRITE',
+  approveRecoveryRestore: 'ADMIN_WRITE',
+  applyRecoveryRestore: 'ADMIN_WRITE',
+  cancelRecoveryRestore: 'ADMIN_WRITE',
+  getRecoveryRestoreStatus: 'ADMIN_READ',
+
   // Installation-wide synchronization authorization. Reading the state is
   // read-only; granting it is an explicit ADMIN_WRITE that writes one storage
   // record and performs no Jira request of any kind.

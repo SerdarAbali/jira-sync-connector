@@ -92,10 +92,13 @@ multi-key read transaction, so a writer outside the pause could still interleave
 ## Restore preview (read-only)
 
 An administrator can upload a previously exported file in the Recovery tab and
-compare it with current storage. The preview never restores anything: it writes
-no mapping, create-ledger row, manifest or restore plan, changes no Jira issue,
-and never changes the pause state. The same emergency pause is required, so the
-records it reads are not moving while it compares them.
+compare it with current storage. The preview itself never restores anything: it
+writes no mapping, create-ledger row, manifest or restore plan, changes no Jira
+issue, and never changes the pause state. A separate, explicitly approved
+workflow can restore the validated candidates; it is described in
+[RECOVERY-RESTORE.md](./RECOVERY-RESTORE.md). The same emergency pause is
+required for the preview, so the records it reads are not moving while it
+compares them.
 
 The file is accepted only when all of the following hold:
 
@@ -172,9 +175,12 @@ who needs a recovery-capable backup must export a version 2 file.
 - 100 keys per page, at most 400 pages, 8000 records per section (16000 for the
   direction section, which holds two records per pair) and 3 MB of content.
   Exceeding a budget fails the export instead of truncating it.
-- No restore, adoption or integrity-state behaviour is implemented. The preview
-  classifies records and writes nothing; there is no restore button, no restore
-  resolver and no restore plan.
+- No automatic restore is implemented. The read-only preview classifies records
+  and writes nothing. The separate controlled restore workflow (see
+  [RECOVERY-RESTORE.md](./RECOVERY-RESTORE.md)) requires pause, a digest-bound
+  approval and bounded batches; it restores only missing mappings and succeeded
+  ledger rows, never Jira issues, and never resumes synchronization or restores
+  authorization.
 - The direction section is written from the live lookup prefixes, so a pair that
   exists only in those lookups is exported as directional evidence and reported
   as incomplete. The export never repairs that divergence.

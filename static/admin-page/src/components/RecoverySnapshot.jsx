@@ -1,5 +1,6 @@
 import { surfaceCard } from '../dashboard/presentation';
 import Field, { fieldLabelStyle } from '../dashboard/Field.jsx';
+import RecoveryRestore from './RecoveryRestore.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -446,6 +447,14 @@ const RecoverySnapshot = ({ selectedOrg, showMessage }) => {
             </p>
           </div>
         )}
+
+        <RecoveryRestore
+          orgId={orgId}
+          paused={paused}
+          previewContent={previewContent}
+          preview={preview}
+          showMessage={showMessage}
+        />
       </div>
     </div>
   );

@@ -74,6 +74,15 @@ export const PREVIEW_IDENTITY_CLASSES = Object.freeze({
 
 export const PREVIEW_SAMPLE_LIMIT = 5;
 
+/**
+ * A restore plan is deliberately bounded. A larger snapshot is restored over
+ * several plans: once the first candidates are present, a fresh preview selects
+ * the next slice. This keeps one KVS plan value and one approved batch set below
+ * the storage and invocation limits instead of pretending an 8,000-pair file can
+ * be approved atomically.
+ */
+export const RESTORE_CANDIDATE_LIMIT = 200;
+
 export const PREVIEW_BLOCKER_REASONS = Object.freeze({
   MAPPING_ENDED: 'mapping-ended',
   MAPPING_REPAIR: 'mapping-repair',
@@ -174,6 +183,17 @@ function sortedUniqueStrings(value) {
   return Array.isArray(value)
     ? Array.from(new Set(value.filter((entry) => typeof entry === 'string'))).sort()
     : [];
+}
+
+function ledgerRestorePair(record) {
+  if (!record || !record.targetKey) return null;
+  if (record.direction === ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE) {
+    return { localKey: record.sourceKey, remoteKey: record.targetKey };
+  }
+  if (record.direction === ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL) {
+    return { localKey: record.targetKey, remoteKey: record.sourceKey };
+  }
+  return null;
 }
 
 function pairKey(localKey, remoteKey) {
@@ -1070,6 +1090,8 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
     [PREVIEW_LEDGER_CLASSES.CONFLICTING]: 0
   };
   const samples = { missing: [], conflicting: [] };
+  const missingRecords = [];
+  const conflictingRecords = [];
   const liveByIdentity = new Map();
   const pairsByLocal = new Map();
   const pairsByRemote = new Map();
@@ -1095,6 +1117,7 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
     if (!live) {
       if (internal) {
         counts[PREVIEW_LEDGER_CLASSES.CONFLICTING] += 1;
+        conflictingRecords.push(record);
         pushSample(samples.conflicting, {
           ...summary,
           classification: PREVIEW_LEDGER_CLASSES.CONFLICTING,
@@ -1103,6 +1126,7 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
         });
       } else {
         counts[PREVIEW_LEDGER_CLASSES.MISSING] += 1;
+        missingRecords.push(record);
         pushSample(samples.missing, {
           ...summary,
           classification: PREVIEW_LEDGER_CLASSES.MISSING
@@ -1113,6 +1137,7 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
 
     if (stableStringify(live) !== stableStringify(record)) {
       counts[PREVIEW_LEDGER_CLASSES.CONFLICTING] += 1;
+      conflictingRecords.push(record);
       pushSample(samples.conflicting, {
         ...summary,
         classification: PREVIEW_LEDGER_CLASSES.CONFLICTING,
@@ -1124,6 +1149,7 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
 
     if (internal) {
       counts[PREVIEW_LEDGER_CLASSES.CONFLICTING] += 1;
+      conflictingRecords.push(record);
       pushSample(samples.conflicting, {
         ...summary,
         classification: PREVIEW_LEDGER_CLASSES.CONFLICTING,
@@ -1136,7 +1162,7 @@ function classifyLedger({ snapshotLedger, liveLedger, snapshotPairs }) {
     counts[PREVIEW_LEDGER_CLASSES.PRESENT] += 1;
   }
 
-  return { counts, samples };
+  return { counts, samples, missingRecords, conflictingRecords };
 }
 
 
@@ -1458,6 +1484,61 @@ export async function previewRestoreSnapshot(options = {}) {
       skippedRetryClaims: liveLedger.skippedRetryClaims
     };
 
+  const candidatePairKeys = new Set(
+    pairs.missingPairs.slice(0, RESTORE_CANDIDATE_LIMIT)
+      .map((pair) => pairKey(pair.localKey, pair.remoteKey))
+  );
+  const missingLedgerForCandidates = ledger.missingRecords.filter((record) => {
+    const pair = ledgerRestorePair(record);
+    return pair && candidatePairKeys.has(pairKey(pair.localKey, pair.remoteKey));
+  });
+  const conflictingLedgerForCandidates = ledger.conflictingRecords.filter((record) => {
+    const pair = ledgerRestorePair(record);
+    return pair && candidatePairKeys.has(pairKey(pair.localKey, pair.remoteKey));
+  });
+
+  const allPairCandidates = pairs.missingPairs.map((pair) => ({
+    localKey: pair.localKey,
+    remoteKey: pair.remoteKey
+  }));
+
+  const restoreCandidates = {
+    pairs: allPairCandidates.slice(0, RESTORE_CANDIDATE_LIMIT),
+    ledger: missingLedgerForCandidates.slice(0, RESTORE_CANDIDATE_LIMIT * 2).map((record) => ({
+      direction: record.direction,
+      sourceKey: record.sourceKey,
+      operationSuffix: record.operationSuffix,
+      state: record.state,
+      attempt: record.attempt,
+      targetKey: record.targetKey,
+      operationId: record.operationId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt,
+      unknownAt: record.unknownAt,
+      failedAt: record.failedAt,
+      failureReason: record.failureReason
+    })),
+    truncatedPairs: Math.max(0, pairs.missingPairs.length - RESTORE_CANDIDATE_LIMIT),
+    truncatedLedger: Math.max(0, ledger.missingRecords.length - RESTORE_CANDIDATE_LIMIT * 2),
+    conflictingLedger: conflictingLedgerForCandidates
+      .slice(0, RESTORE_CANDIDATE_LIMIT * 2)
+      .map((record) => ({
+        direction: record.direction,
+        sourceKey: record.sourceKey,
+        operationSuffix: record.operationSuffix,
+        state: record.state,
+        targetKey: record.targetKey
+      }))
+  };
+  if (pairs.missingPairs.length > RESTORE_CANDIDATE_LIMIT) {
+    // The visible candidate window stays bounded, but the restore planner may
+    // scan the complete ordered list so a window of excluded pairs cannot hide
+    // a later restorable pair. The planner stores at most its own 200 items.
+    restoreCandidates.allPairs = allPairCandidates;
+  }
+
   return {
     success: true,
     readOnly: true,
@@ -1533,6 +1614,12 @@ export async function previewRestoreSnapshot(options = {}) {
     samples: {
       pairs: pairs.samples,
       ledger: ledger.samples
+    },
+    restore: {
+      candidateLimit: RESTORE_CANDIDATE_LIMIT,
+      candidates: restoreCandidates,
+      availablePairs: pairs.missingPairs.length,
+      availableLedger: ledger.missingRecords.length
     },
     limitations
   };
