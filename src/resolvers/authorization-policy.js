@@ -88,6 +88,7 @@ export const RESOLVER_POLICIES = Object.freeze({
 
   // Read-only diagnostics and disabled Batch 1 operations (diagnostics.js)
   runHealthCheck: 'ADMIN_READ',
+  exportDiagnosticReport: 'ADMIN_READ',
   verifyIssueSync: 'ADMIN_READ',
   runSystemTest: 'SAFE_DISABLED',
 

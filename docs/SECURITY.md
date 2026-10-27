@@ -178,6 +178,10 @@ Jira writes are not blindly retried.
 - Pending links are retained until both issues are mapped.
 - Comment mappings and content markers prevent duplicate copying.
 - App-authored and connector-generated comments are skipped.
+- Customer diagnostic exports are read-only, organization-scoped, explicitly
+  administrator-triggered and assembled from an allowlist. They omit credentials,
+  personal identifiers, Jira content and issue records; see
+  `docs/DIAGNOSTIC-REPORT.md`.
 - Copied comments identify the source site and display name; email addresses,
   account IDs and integration-account identity are never substituted for a
   missing or deleted source user. A `Replying to ...` line is emitted only from

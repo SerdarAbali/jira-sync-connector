@@ -511,6 +511,34 @@ button:focus-visible,a:focus-visible,select:focus-visible,summary:focus-visible 
   font-weight: 600;
   margin-bottom: 4px;
 }
+.diagnostic-report-categories {
+  margin: 16px 0;
+  font-size: 13px;
+}
+.diagnostic-report-categories ul {
+  margin: 8px 0 0 20px;
+  padding: 0;
+}
+.diagnostic-report-preview {
+  margin-top: 16px;
+}
+.diagnostic-report-meta {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #44546F;
+}
+.diagnostic-report-preview pre {
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  margin: 0;
+  border: 1px solid #DFE1E6;
+  border-radius: 6px;
+  background: #F7F8F9;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 @media(max-width:620px) {
   .diagnostic-issue-input {
     flex-basis: 100%;

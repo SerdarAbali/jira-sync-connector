@@ -1,5 +1,6 @@
 import api, { route, fetch } from '@forge/api';
 import { getOrganizationsWithTokens } from '../services/storage/mappings.js';
+import { buildDiagnosticReport } from '../services/diagnostics/diagnostic-report.js';
 
 export function defineDiagnosticsResolvers(resolver) {
   
@@ -178,6 +179,21 @@ export function defineDiagnosticsResolvers(resolver) {
     }
 
     return results;
+  });
+
+  // Read-only, explicit administrator export. It builds from existing records
+  // and makes no Jira or storage write. The resolver is ADMIN_READ in the
+  // authorization policy; no report is generated on page load.
+  resolver.define('exportDiagnosticReport', async ({ payload }) => {
+    try {
+      const report = await buildDiagnosticReport({ orgId: payload?.orgId });
+      return { success: true, report };
+    } catch (error) {
+      const code = typeof error?.code === 'string' && /^DIAGNOSTIC_[A-Z0-9_]{1,80}$/.test(error.code)
+        ? error.code
+        : 'DIAGNOSTIC_REPORT_FAILED';
+      return { success: false, code, error: 'The diagnostic report could not be generated.' };
+    }
   });
 
   // The destructive system test is intentionally disabled for corporate pilot

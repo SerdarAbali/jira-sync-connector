@@ -108,7 +108,7 @@ describe('Forge resolver handler regression', () => {
     const registered = [...registeredResolverNames].sort();
     const classified = Object.keys(RESOLVER_POLICIES).sort();
 
-    expect(registered).toHaveLength(103);
+    expect(registered).toHaveLength(104);
     expect(registered).toEqual(classified);
     expect(registered).toContain('getIssueCreateOperationStatus');
     expect(registered).toContain('getConnectorReadiness');

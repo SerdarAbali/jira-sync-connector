@@ -8,6 +8,7 @@ import { token } from '@atlaskit/tokens';
 import CheckCircleIcon from '@atlaskit/icon/glyph/check-circle';
 import ErrorIcon from '@atlaskit/icon/glyph/error';
 import WarningIcon from '@atlaskit/icon/glyph/warning';
+import DiagnosticReportPanel from './DiagnosticReportPanel';
 
 const Diagnostics = ({ selectedOrgId }) => {
   const [loading, setLoading] = useState(false);
@@ -139,6 +140,10 @@ const Diagnostics = ({ selectedOrgId }) => {
           ))}
         </div>
       )}
+
+      <div style={{ marginTop: '40px' }}>
+        <DiagnosticReportPanel selectedOrgId={selectedOrgId} />
+      </div>
 
       <div style={{ marginTop: '40px', borderTop: `1px solid ${token('color.border', '#eee')}`, paddingTop: '20px' }}>
         <h3>Issue Troubleshooting</h3>
