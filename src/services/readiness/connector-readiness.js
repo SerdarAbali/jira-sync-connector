@@ -460,6 +460,50 @@ export async function readForgeInstallationIdentity(options = {}) {
 }
 
 /**
+ * Context-only installation identity for the pairing-witness create guard.
+ *
+ * Unlike `readForgeInstallationIdentity` this performs no Jira request. Witness
+ * records use `cloudIds[0]` as `localSite` (the migration/preview modules derive
+ * it exactly that way), so the guard can attribute evidence without spending a
+ * `/serverInfo` read on every create attempt.
+ */
+export function readWitnessIdentity(options = {}) {
+  const deps = { getAppContext, ...(options.deps || {}) };
+
+  let context;
+  try {
+    context = deps.getAppContext();
+  } catch {
+    return {
+      readable: false,
+      code: 'WITNESS_IDENTITY_CONTEXT_UNAVAILABLE',
+      appId: null,
+      environmentId: null,
+      installationId: null,
+      cloudIds: [],
+      localSite: null
+    };
+  }
+
+  const { identity } = identityFromContext(context);
+  const cloudIds = Array.isArray(identity.cloudIds)
+    ? identity.cloudIds.filter((id) => typeof id === 'string' && id !== '')
+    : [];
+  const localSite = cloudIds[0] || null;
+  const readable = !!(identity.appId && identity.installationId && localSite);
+
+  return {
+    readable,
+    code: readable ? null : 'WITNESS_IDENTITY_INCOMPLETE',
+    appId: identity.appId,
+    environmentId: identity.environmentId,
+    installationId: identity.installationId,
+    cloudIds,
+    localSite
+  };
+}
+
+/**
  * Reads and evaluates connector readiness. Dependencies are injectable so the
  * authorization/identity boundary and every fail-closed path can be verified
  * without Forge.

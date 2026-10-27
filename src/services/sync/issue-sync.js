@@ -53,6 +53,16 @@ import {
 import { probeCounterpart } from './counterpart-probe.js';
 import { assertOutboundScope, assertOutboundScopes, isOutboundScopeError } from './outbound-scope.js';
 import { resolveTargetProjectKey } from './project-routing.js';
+import {
+  evaluatePairWitnessCreateGuard,
+  syncDecisionForGuardCode,
+  PAIR_WITNESS_GUARD_DECISIONS
+} from './pair-witness-guard.js';
+import {
+  establishPairWitness,
+  recordWitnessPersistenceFailure,
+  WITNESS_ESTABLISHMENT_OUTCOMES
+} from './pair-witness-establishment.js';
 
 // Cache for Epic Link field IDs
 let epicLinkFieldCache = {
@@ -856,6 +866,36 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
       await assertPilotWritesAllowed('issue_create_remote');
 
       await assertOutboundScopes({ orgId, issueKeys: sourceScopeKeys });
+
+      // Pairing-witness veto. This runs before the create claim, inside the
+      // issue lease. A witness that proves the pair (or that cannot be read)
+      // blocks the POST; only a confirmed 404 property plus absent mapping and
+      // ledger permits a first-time create.
+      const witnessGate = await evaluatePairWitnessCreateGuard({
+        orgId,
+        org,
+        direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+        sourceKey: issue.key,
+        sourceIssueId: issue.id,
+        operationSuffix: syncOptions?.operationSuffix || null,
+        replacementKey: syncOptions?.replacementOfRemoteKey || null
+      });
+      if (witnessGate.decision === PAIR_WITNESS_GUARD_DECISIONS.BLOCK) {
+        console.warn(`${LOG_EMOJI.WARNING} Issue create blocked by pairing witness for ${issue.key}: ${witnessGate.code}`);
+        if (syncResult) syncResult.addWarning(witnessGate.code);
+        await recordSyncDecision({
+          decision: syncDecisionForGuardCode(witnessGate.code),
+          orgId,
+          localKey: issue.key,
+          remoteKey: witnessGate.counterpartKey || null,
+          direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+          reason: witnessGate.code,
+          statusCode: witnessGate.statusCode
+        });
+        await clearSyncFlag(issue.key);
+        return null;
+      }
+
       const createClaim = await beginIssueCreateOperation({
         orgId,
         direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
@@ -923,28 +963,89 @@ async function createRemoteIssueForOrgUnlocked(issue, org, mappings, syncOptions
           throw error;
         }
 
-        const operationResolution = await markIssueCreateSucceeded({
-          operation: submission.operation,
-          targetKey: result.key
-        });
+        let operationResolution;
+        try {
+          operationResolution = await markIssueCreateSucceeded({
+            operation: submission.operation,
+            targetKey: result.key
+          });
+        } catch (error) {
+          await recordWitnessPersistenceFailure({
+            orgId,
+            localKey: issue.key,
+            remoteKey: result.key,
+            targetKey: result.key,
+            outcome: WITNESS_ESTABLISHMENT_OUTCOMES.LEDGER_PERSISTENCE_FAILED,
+            reason: error?.code || 'LEDGER_WRITE_FAILED'
+          });
+          throw error;
+        }
         if (!operationResolution.success) {
           if (syncResult) syncResult.addWarning(operationResolution.code);
+          await recordWitnessPersistenceFailure({
+            orgId,
+            localKey: issue.key,
+            remoteKey: result.key,
+            targetKey: result.key,
+            outcome: WITNESS_ESTABLISHMENT_OUTCOMES.LEDGER_PERSISTENCE_FAILED,
+            reason: operationResolution.code
+          });
           await clearSyncFlag(issue.key);
           return null;
         }
 
         console.log(`${LOG_EMOJI.SUCCESS} Created ${issue.key} → ${result.key}`);
 
-        if (syncOptions?.replacementOfRemoteKey) {
-          await replaceIssueMapping({
-            oldLocalKey: issue.key,
-            oldRemoteKey: syncOptions.replacementOfRemoteKey,
-            newLocalKey: issue.key,
-            newRemoteKey: result.key,
-            orgId
+        try {
+          if (syncOptions?.replacementOfRemoteKey) {
+            await replaceIssueMapping({
+              oldLocalKey: issue.key,
+              oldRemoteKey: syncOptions.replacementOfRemoteKey,
+              newLocalKey: issue.key,
+              newRemoteKey: result.key,
+              orgId
+            });
+          } else {
+            await storeMapping(issue.key, result.key, orgId);
+          }
+        } catch (error) {
+          // The issue exists and the ledger records it, but the primary mapping
+          // could not be written. Do not write a witness: an unbound issue stays
+          // an explicit recovery item instead of being legitimized by Jira-side
+          // evidence.
+          await recordWitnessPersistenceFailure({
+            orgId,
+            localKey: issue.key,
+            remoteKey: result.key,
+            targetKey: result.key,
+            outcome: WITNESS_ESTABLISHMENT_OUTCOMES.MAPPING_PERSISTENCE_FAILED,
+            reason: error?.code || 'MAPPING_WRITE_FAILED'
           });
-        } else {
-          await storeMapping(issue.key, result.key, orgId);
+          throw error;
+        }
+
+        // Mirror the pair into Jira. Failure here never retries the create and
+        // never changes the mapping/ledger outcome; it records attention.
+        try {
+          const witness = await establishPairWitness({
+            orgId,
+            org,
+            localKey: issue.key,
+            remoteKey: result.key,
+            localIssueId: issue.id,
+            remoteIssueId: result.id,
+            direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+            replacement: syncOptions?.replacementOfRemoteKey
+              ? {
+                localKey: issue.key,
+                remoteKey: syncOptions.replacementOfRemoteKey,
+                localIssueId: issue.id
+              }
+              : null
+          });
+          if (!witness.success && syncResult) syncResult.addWarning(witness.outcome);
+        } catch {
+          if (syncResult) syncResult.addWarning(WITNESS_ESTABLISHMENT_OUTCOMES.FAILED);
         }
 
       // Process any pending links that were waiting for this issue to be synced

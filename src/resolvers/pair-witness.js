@@ -13,6 +13,12 @@ import {
   pairWitnessMigrationMessage
 } from '../services/sync/pair-witness-migration.js';
 import { pairWitnessPermitMessage } from '../services/sync/pair-witness-permit.js';
+import {
+  adoptWitnessedPair,
+  previewWitnessedPairAdoption,
+  PAIR_WITNESS_ADOPTION_ERRORS,
+  PAIR_WITNESS_ADOPTION_MESSAGES
+} from '../services/sync/pair-witness-adoption.js';
 import logger from '../utils/logger.js';
 
 function failureCode(error) {
@@ -138,6 +144,65 @@ export function definePairWitnessResolvers(resolver) {
       const code = failureCode(error);
       logger.warn('Pairing witness status failed', { code, orgId });
       return { success: false, code, error: failureMessage(error) };
+    }
+  });
+
+  /**
+   * Read-only verification of one candidate pair for the Recovery adoption
+   * panel. It reads both issues and both witnesses, reports the pair identity,
+   * mapping status and pause state, and writes nothing.
+   */
+  resolver.define('previewWitnessedPairAdoption', async ({ payload }) => {
+    let orgId = null;
+    try {
+      orgId = fixedOrganization(payload);
+      return await previewWitnessedPairAdoption({
+        orgId,
+        localKey: payload?.localKey,
+        remoteKey: payload?.remoteKey
+      });
+    } catch (error) {
+      const code = typeof error?.code === 'string'
+        ? error.code
+        : PAIR_WITNESS_ADOPTION_ERRORS.ADOPTION_FAILED;
+      logger.warn('Witnessed pair preview failed', { code, orgId });
+      return {
+        success: false,
+        code,
+        message: PAIR_WITNESS_ADOPTION_MESSAGES[code]
+          || PAIR_WITNESS_ADOPTION_MESSAGES[PAIR_WITNESS_ADOPTION_ERRORS.ADOPTION_FAILED]
+      };
+    }
+  });
+
+  /**
+   * Narrow recovery action: restore one verified pair's missing Forge mapping.
+   * Requires pause, both witnesses, a deterministic pair id and the exact
+   * confirmation phrase. Performs no Jira write and never searches.
+   */
+  resolver.define('adoptWitnessedPair', async ({ payload, context }) => {
+    let orgId = null;
+    try {
+      orgId = fixedOrganization(payload);
+      return await adoptWitnessedPair({
+        orgId,
+        localKey: payload?.localKey,
+        remoteKey: payload?.remoteKey,
+        pairId: payload?.pairId,
+        confirmation: payload?.confirmation,
+        actorAccountId: typeof context?.accountId === 'string' ? context.accountId : null
+      });
+    } catch (error) {
+      const code = typeof error?.code === 'string'
+        ? error.code
+        : PAIR_WITNESS_ADOPTION_ERRORS.ADOPTION_FAILED;
+      logger.warn('Witnessed pair adoption failed', { code, orgId });
+      return {
+        success: false,
+        code,
+        message: PAIR_WITNESS_ADOPTION_MESSAGES[code]
+          || PAIR_WITNESS_ADOPTION_MESSAGES[PAIR_WITNESS_ADOPTION_ERRORS.ADOPTION_FAILED]
+      };
     }
   });
 }

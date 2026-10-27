@@ -17,6 +17,12 @@ import {
   ISSUE_CREATE_DIRECTIONS
 } from './issue-create-operation.js';
 import { getPilotPause } from './pilot-pause.js';
+import { readWitnessIdentity } from '../readiness/connector-readiness.js';
+import {
+  evaluatePairWitnessCreateGuard,
+  PAIR_WITNESS_GUARD_CODES,
+  PAIR_WITNESS_GUARD_DECISIONS
+} from './pair-witness-guard.js';
 import { formatHttpFailure } from '../../utils/http-error.js';
 import { isKeyConflictError } from '../../utils/storage-errors.js';
 import {
@@ -95,6 +101,11 @@ export const INITIAL_SYNC_REASONS = Object.freeze({
   CREATE_OUTCOME_UNKNOWN: 'CREATE_OUTCOME_UNKNOWN',
   CREATE_IN_PROGRESS: 'CREATE_IN_PROGRESS',
   CREATE_NOT_STARTED: 'CREATE_NOT_STARTED',
+  WITNESS_CONFIRMS_EXISTING_PAIR: 'WITNESS_CONFIRMS_EXISTING_PAIR',
+  WITNESS_CONFLICT: 'WITNESS_CONFLICT',
+  WITNESS_UNVERIFIABLE: 'WITNESS_UNVERIFIABLE',
+  WITNESS_IDENTITY_UNAVAILABLE: 'WITNESS_IDENTITY_UNAVAILABLE',
+  WITNESS_STORAGE_UNREADABLE: 'WITNESS_STORAGE_UNREADABLE',
   UPDATE_NOT_STARTED: 'UPDATE_NOT_STARTED',
   UPDATE_SKIPPED: 'UPDATE_SKIPPED',
   UPDATED: 'UPDATED',
@@ -533,7 +544,61 @@ async function createLedgerClassification(issueKey, orgId) {
   return null;
 }
 
-async function classifyBaseIssue(issue, orgId, configuration) {
+async function witnessClassification(issue, orgId, org, identity) {
+  if (!org || org.id === 'legacy') {
+    return null;
+  }
+  const gate = await evaluatePairWitnessCreateGuard({
+    orgId,
+    org,
+    direction: ISSUE_CREATE_DIRECTIONS.LOCAL_TO_REMOTE,
+    sourceKey: issue.key,
+    sourceIssueId: issue.id,
+    identity
+  });
+  if (gate.decision === PAIR_WITNESS_GUARD_DECISIONS.ALLOW) {
+    return null;
+  }
+
+  if (gate.code === PAIR_WITNESS_GUARD_CODES.PAIR_PROVEN) {
+    return {
+      category: INITIAL_SYNC_CATEGORIES.CONFLICT,
+      reasonCode: INITIAL_SYNC_REASONS.WITNESS_CONFIRMS_EXISTING_PAIR
+    };
+  }
+  if (gate.code === PAIR_WITNESS_GUARD_CODES.IDENTITY_UNAVAILABLE) {
+    return {
+      category: INITIAL_SYNC_CATEGORIES.BLOCKED,
+      reasonCode: INITIAL_SYNC_REASONS.WITNESS_IDENTITY_UNAVAILABLE
+    };
+  }
+  if (gate.code === PAIR_WITNESS_GUARD_CODES.STORAGE_UNREADABLE) {
+    return {
+      category: INITIAL_SYNC_CATEGORIES.BLOCKED,
+      reasonCode: INITIAL_SYNC_REASONS.WITNESS_STORAGE_UNREADABLE
+    };
+  }
+  if (gate.code === PAIR_WITNESS_GUARD_CODES.WITNESS_INACCESSIBLE
+      || gate.code === PAIR_WITNESS_GUARD_CODES.WITNESS_UNVERIFIABLE
+      || gate.code === PAIR_WITNESS_GUARD_CODES.SOURCE_INACCESSIBLE
+      || gate.code === PAIR_WITNESS_GUARD_CODES.SOURCE_UNVERIFIABLE
+      || gate.code === PAIR_WITNESS_GUARD_CODES.COUNTERPART_INACCESSIBLE
+      || gate.code === PAIR_WITNESS_GUARD_CODES.COUNTERPART_UNVERIFIABLE
+      || gate.code === PAIR_WITNESS_GUARD_CODES.ORGANIZATION_UNUSABLE) {
+    return {
+      category: INITIAL_SYNC_CATEGORIES.BLOCKED,
+      reasonCode: INITIAL_SYNC_REASONS.WITNESS_UNVERIFIABLE
+    };
+  }
+  // A proven-but-missing or one-sided counterpart is a conflict, not a
+  // permission to create. The existing create path would block it anyway.
+  return {
+    category: INITIAL_SYNC_CATEGORIES.CONFLICT,
+    reasonCode: INITIAL_SYNC_REASONS.WITNESS_CONFLICT
+  };
+}
+
+async function classifyBaseIssue(issue, orgId, configuration, org = null, identity = null) {
   const issueKey = issue.key;
   if (!isValidIssueKey(issueKey)) {
     return {
@@ -557,6 +622,19 @@ async function classifyBaseIssue(issue, orgId, configuration) {
   const ledger = await createLedgerClassification(issueKey, orgId);
   if (ledger) {
     return { issueKey, ...ledger, parentKey: issue.fields?.parent?.key || null };
+  }
+
+  // Only issues with no mapping and no in-doubt ledger reach this point. The
+  // witness is the last pre-create evidence: it either proves an existing pair,
+  // conflicts, or cannot be read. A confirmed 404 keeps the issue eligible.
+  const witness = await witnessClassification(issue, orgId, org, identity);
+  if (witness) {
+    return {
+      issueKey,
+      ...witness,
+      parentKey: issue.fields?.parent?.key || null,
+      localUpdated: typeof issue.fields?.updated === 'string' ? issue.fields.updated : null
+    };
   }
 
   const validationReason = validateIssueForCreate(issue, configuration);
@@ -791,8 +869,24 @@ async function buildPreview(orgId, { includeMappedReconciliation = false } = {})
   const issues = await searchScopedIssues(loaded.configuration);
   const records = [];
 
+  // One installation-identity read per preview. An unreadable identity makes
+  // every otherwise-eligible issue blocked, because its witness could not be
+  // attributed; no issue is silently treated as new.
+  let witnessIdentity = null;
+  try {
+    witnessIdentity = await readWitnessIdentity();
+  } catch {
+    witnessIdentity = null;
+  }
+
   for (const issue of issues) {
-    records.push(await classifyBaseIssue(issue, orgId, loaded.configuration));
+    records.push(await classifyBaseIssue(
+      issue,
+      orgId,
+      loaded.configuration,
+      loaded.org,
+      witnessIdentity
+    ));
   }
 
   const ordered = applyParentSafety(records);

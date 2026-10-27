@@ -3,6 +3,7 @@ import SectionMessage from '@atlaskit/section-message';
 import SyncAuthorization from '../components/SyncAuthorization.jsx';
 import RecoverySnapshot from '../components/RecoverySnapshot';
 import PairWitnessMigration from '../components/PairWitnessMigration.jsx';
+import WitnessedPairAdoption from '../components/WitnessedPairAdoption.jsx';
 import DeletedCounterpartRecovery from '../components/DeletedCounterpartRecovery';
 import IssueCreateRecovery from '../components/IssueCreateRecovery';
 import SyncOperations from '../components/SyncOperations';
@@ -25,7 +26,7 @@ export default function RecoveryPage({ controller: c, section, navigate }) {
         : !selectedOrg ? <Empty>Select an organization before using this recovery section.</Empty>
         : <>
           {section === 'snapshots' && <RecoverySnapshot selectedOrg={selectedOrg} showMessage={c.showMessage} />}
-          {section === 'witnesses' && <><PairWitnessMigration selectedOrg={selectedOrg} showMessage={c.showMessage} /><button className="text-button" onClick={() => navigate('activity')}>Open maintenance write audit</button></>}
+          {section === 'witnesses' && <><PairWitnessMigration selectedOrg={selectedOrg} showMessage={c.showMessage} /><WitnessedPairAdoption selectedOrg={selectedOrg} showMessage={c.showMessage} /><button className="text-button" onClick={() => navigate('activity')}>Open maintenance write audit</button></>}
           {section === 'creates' && <IssueCreateRecovery selectedOrg={selectedOrg} showMessage={c.showMessage} />}
           {section === 'counterparts' && <DeletedCounterpartRecovery selectedOrg={selectedOrg} showMessage={c.showMessage} />}
           {['repair', 'transfer'].includes(section) && operations}

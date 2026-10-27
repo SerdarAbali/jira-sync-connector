@@ -1,3 +1,5 @@
+jest.mock('../src/services/sync/pair-witness-guard.js', () => require('./helpers/pair-witness-create-mocks.js').guardModule);
+
 import fs from 'fs';
 import path from 'path';
 

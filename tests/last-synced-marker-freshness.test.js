@@ -1,5 +1,7 @@
 // The synchronization authorization gate has its own suite; this suite tests another behaviour.
 jest.mock('../src/services/sync/sync-authorization.js', () => require('./helpers/authorized-sync-authorization.js'));
+jest.mock('../src/services/sync/pair-witness-guard.js', () => require('./helpers/pair-witness-create-mocks.js').guardModule);
+jest.mock('../src/services/sync/pair-witness-establishment.js', () => require('./helpers/pair-witness-create-mocks.js').establishmentModule);
 
 import { createIssueForOrg, updateIssueForOrg } from '../src/services/sync/issue-sync.js';
 import { getFullIssue, getOrgName, updateLocalIssueDescription } from '../src/services/jira/local-client.js';

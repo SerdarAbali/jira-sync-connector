@@ -453,7 +453,9 @@ describe('read-only wiring', () => {
       'approvePairWitnessMigration',
       'applyPairWitnessMigration',
       'cancelPairWitnessMigration',
-      'getPairWitnessMigrationStatus'
+      'getPairWitnessMigrationStatus',
+      'previewWitnessedPairAdoption',
+      'adoptWitnessedPair'
     ]);
     // No resolver may resume synchronization, create an issue or restore anything.
     expect(resolverSource).not.toMatch(/resolver\.define\('(restore|resume|create|update|delete)/i);

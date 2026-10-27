@@ -215,6 +215,26 @@ export function samePairWitness(left, right) {
   return serializePairWitness(left) === serializePairWitness(right);
 }
 
+/**
+ * True when two witnesses describe the same pair identity, regardless of
+ * `writtenAt` or a re-issued digest. Identity is the pair id, both stable issue
+ * ids, the installation/app/organization and both sites. Keys are deliberately
+ * excluded: Jira keys change when an issue moves project, and the witness
+ * documents them as display-only.
+ */
+export function sameWitnessPairIdentity(left, right) {
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  return left.pairId === right.pairId
+    && left.localIssueId === right.localIssueId
+    && left.remoteIssueId === right.remoteIssueId
+    && left.installationId === right.installationId
+    && left.appId === right.appId
+    && left.orgId === right.orgId
+    && left.localSite === right.localSite
+    && left.remoteSite === right.remoteSite
+    && left.state === right.state;
+}
+
 /** Fixed namespace for derived pair ids. Never change it: pair identity depends on it. */
 export const PAIR_WITNESS_NAMESPACE = '6f2b3c1e-7a5d-5e4f-9b8a-1c2d3e4f5a6b';
 

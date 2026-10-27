@@ -323,7 +323,20 @@ export async function evaluatePairWitnessPermit(options = {}) {
     return refuse(PAIR_WITNESS_PERMIT_REASONS.PERMIT_MISSING);
   }
   if (stored === null || stored === undefined) {
-    return refuse(PAIR_WITNESS_PERMIT_REASONS.PERMIT_MISSING);
+    // No maintenance permit was ever minted. This is not a failed maintenance
+    // attempt: a normal, authorized property write (for example, establishing a
+    // witness after a successful create) falls through to the ordinary
+    // pause/authorization/lease chain below. A permit that exists but is
+    // expired, malformed, foreign or payload-mismatched is still refused
+    // outright above this point.
+    return {
+      allowed: false,
+      refusal: null,
+      absent: true,
+      reason: PAIR_WITNESS_PERMIT_REASONS.PERMIT_MISSING,
+      issueId,
+      site
+    };
   }
   const permit = normalizePermit(stored);
   if (!permit) return refuse(PAIR_WITNESS_PERMIT_REASONS.PERMIT_MALFORMED);

@@ -103,6 +103,16 @@ import {
   ISSUE_CREATE_CODES,
   ISSUE_CREATE_DIRECTIONS
 } from './issue-create-operation.js';
+import {
+  evaluatePairWitnessCreateGuard,
+  syncDecisionForGuardCode,
+  PAIR_WITNESS_GUARD_DECISIONS
+} from './pair-witness-guard.js';
+import {
+  establishPairWitness,
+  recordWitnessPersistenceFailure,
+  WITNESS_ESTABLISHMENT_OUTCOMES
+} from './pair-witness-establishment.js';
 
 const PARENT_MAPPING_RETRY_ATTEMPTS = 6;
 const PARENT_MAPPING_RETRY_DELAY_MS = 500;
@@ -563,6 +573,33 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
   const payload = await buildCreatePayload(resolvedRemoteIssue, targetProject, context);
 
   await assertInboundScope({ orgId, projectKey: targetProject, issueKeys: [replacementOfLocalKey, payload.fields.parent?.key].filter(Boolean) });
+
+  // Pairing-witness veto. The remote issue is the source, so its own property is
+  // the evidence that a local counterpart may already exist after Forge storage
+  // was lost. Runs inside the lease and before the create claim.
+  const witnessGate = await evaluatePairWitnessCreateGuard({
+    orgId,
+    org: context.org,
+    direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+    sourceKey: remoteIssue.key,
+    sourceIssueId: resolvedRemoteIssue.id,
+    operationSuffix: options.operationSuffix || null,
+    replacementKey: replacementOfLocalKey
+  });
+  if (witnessGate.decision === PAIR_WITNESS_GUARD_DECISIONS.BLOCK) {
+    console.warn(`${LOG_EMOJI.WARNING} Local create blocked by pairing witness for ${remoteIssue.key}: ${witnessGate.code}`);
+    await recordSyncDecision({
+      decision: syncDecisionForGuardCode(witnessGate.code),
+      orgId,
+      localKey: replacementOfLocalKey || null,
+      remoteKey: remoteIssue.key,
+      direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+      reason: witnessGate.code,
+      statusCode: witnessGate.statusCode
+    });
+    return { status: witnessGate.code, code: witnessGate.code };
+  }
+
   const createClaim = await beginIssueCreateOperation({
     orgId,
     direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
@@ -628,26 +665,98 @@ export async function handleRemoteIssueCreated(remoteIssue, context, options = {
     throw new Error('Create response did not include an issue key');
   }
 
-  const operationResolution = await markIssueCreateSucceeded({
-    operation: submission.operation,
-    targetKey: localKey
-  });
+  let operationResolution;
+  try {
+    operationResolution = await markIssueCreateSucceeded({
+      operation: submission.operation,
+      targetKey: localKey
+    });
+  } catch (error) {
+    await recordWitnessPersistenceFailure({
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      targetKey: localKey,
+      outcome: WITNESS_ESTABLISHMENT_OUTCOMES.LEDGER_PERSISTENCE_FAILED,
+      reason: error?.code || 'LEDGER_WRITE_FAILED'
+    });
+    throw error;
+  }
   if (!operationResolution.success) {
+    await recordWitnessPersistenceFailure({
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      targetKey: localKey,
+      outcome: WITNESS_ESTABLISHMENT_OUTCOMES.LEDGER_PERSISTENCE_FAILED,
+      reason: operationResolution.code
+    });
     throw new Error(operationResolution.code || 'CREATE_OPERATION_RESOLUTION_FAILED');
   }
 
   console.log(`${LOG_EMOJI.SUCCESS} Created local issue ${localKey} from remote ${remoteIssue.key}`);
 
-  if (replacementOfLocalKey) {
-    await replaceIssueMapping({
-      oldLocalKey: replacementOfLocalKey,
-      oldRemoteKey: remoteIssue.key,
-      newLocalKey: localKey,
-      newRemoteKey: remoteIssue.key,
-      orgId
+  try {
+    if (replacementOfLocalKey) {
+      await replaceIssueMapping({
+        oldLocalKey: replacementOfLocalKey,
+        oldRemoteKey: remoteIssue.key,
+        newLocalKey: localKey,
+        newRemoteKey: remoteIssue.key,
+        orgId
+      });
+    } else {
+      await storeMapping(localKey, remoteIssue.key, orgId);
+    }
+  } catch (error) {
+    await recordWitnessPersistenceFailure({
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      targetKey: localKey,
+      outcome: WITNESS_ESTABLISHMENT_OUTCOMES.MAPPING_PERSISTENCE_FAILED,
+      reason: error?.code || 'MAPPING_WRITE_FAILED'
     });
-  } else {
-    await storeMapping(localKey, remoteIssue.key, orgId);
+    throw error;
+  }
+
+  // Mirror the pair into Jira. A witness failure never retries this create and
+  // never changes the ledger/mapping outcome; it records attention.
+  try {
+    const witness = await establishPairWitness({
+      orgId,
+      org: context.org,
+      localKey,
+      remoteKey: remoteIssue.key,
+      localIssueId: data.id,
+      remoteIssueId: resolvedRemoteIssue.id,
+      direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+      replacement: replacementOfLocalKey
+        ? {
+          localKey: replacementOfLocalKey,
+          remoteKey: remoteIssue.key
+        }
+        : null
+    });
+    if (!witness.success) {
+      await recordSyncDecision({
+        decision: SYNC_DECISIONS.FAILED,
+        orgId,
+        localKey,
+        remoteKey: remoteIssue.key,
+        direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+        reason: witness.outcome
+      });
+    }
+  } catch {
+    await recordSyncDecision({
+      decision: SYNC_DECISIONS.FAILED,
+      orgId,
+      localKey,
+      remoteKey: remoteIssue.key,
+      direction: ISSUE_CREATE_DIRECTIONS.REMOTE_TO_LOCAL,
+      reason: WITNESS_ESTABLISHMENT_OUTCOMES.FAILED
+    });
   }
   if (context.syncOptions.syncAttachments === true) {
     await retainPostCreateAttachments({ orgId, localKey, remoteKey: remoteIssue.key,

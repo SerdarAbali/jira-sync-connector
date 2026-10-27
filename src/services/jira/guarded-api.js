@@ -94,6 +94,10 @@ export async function assertJiraSubmissionAllowed(path, options) {
     });
     throw permitRefusal(permit);
   }
+  // `permit.absent` means no maintenance permit exists at all. The write is
+  // ordinary, not a maintenance attempt, so it continues through the unchanged
+  // pause, authorization and lease chain below. A permit that exists but does
+  // not authorize this exact payload never reaches this point.
 
   await assertIssueLeaseMigrationReady();
   try {

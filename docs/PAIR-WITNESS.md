@@ -1,8 +1,10 @@
 # Pairing witness (Jira issue property)
 
-Read-only foundation for a Jira-side record that identifies a synchronized issue
-pair independently of Forge storage. Phase 1 ships the schema, the read path and
-an inspection preview. **No property is ever written in this build.**
+Jira-side record that identifies a synchronized issue pair independently of Forge
+storage. Phase 1 shipped the schema, the read path and an inspection preview.
+Phase 2 added the separately approved migration. **v2.2.1 enforces the witness in
+every normal issue-create path and establishes it for new pairs; see
+[PAIR-WITNESS-ENFORCEMENT.md](./PAIR-WITNESS-ENFORCEMENT.md).**
 
 Related: [Integration recovery snapshot](./RECOVERY-SNAPSHOT.md) covers the
 Forge-side backup; this document covers the Jira-side evidence that survives
@@ -180,10 +182,11 @@ current set.
 
 ## Limits of this phase
 
-- No property is written, no approval or apply resolver exists, and no create-path
-  guard is installed. The preview cannot improve resilience on its own.
+- v2.2.1 installs a create-path guard and writes witnesses for new pairs. The
+  preview, migration and adoption actions cannot repair every historical gap:
+  pairs that never carried a witness on both sides remain unprotected.
 - Only `org-<n>` organizations are supported; the legacy single-organization
-  storage namespace is not previewed.
+  storage namespace cannot carry a witness and is exempt from enforcement.
 - A witness is user-editable by anyone with `Edit issues` and is therefore
   evidence, not authority.
 - Project app access rules can make properties unreadable; those pairs are
@@ -191,12 +194,17 @@ current set.
 - Description-based evidence is not read here at all.
 
 
-## Controlled migration (implemented, not yet run)
+## Controlled migration (implemented; run in STAGING)
 
 The migration writes the witness for existing pairs while the connector stays
 paused and synchronization authorization stays blocked. It never resumes,
 never creates an issue, never updates a field or description, and never writes a
 mapping or create-ledger record.
+
+STAGING migration result: **21 established pairs, 21/21 witnessed on both Jira
+sides** (operator-recorded, 2026-10-27). Other environments require their own
+preview, approval and pause-bound migration; this document does not claim that
+any other environment is covered.
 
 ### The one authorized request
 

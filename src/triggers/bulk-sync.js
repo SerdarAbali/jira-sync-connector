@@ -1,11 +1,12 @@
 import api, { route, fetch } from '@forge/api';
 import * as kvsStore from '../services/storage/kvs.js';
-import { getRemoteKey, removeMapping, storeMapping } from '../services/storage/mappings.js';
+import { getRemoteKey } from '../services/storage/mappings.js';
 import { getFullIssue } from '../services/jira/local-client.js';
 import { createRemoteIssue, updateRemoteIssue } from '../services/sync/issue-sync.js';
 import { syncAttachments } from '../services/sync/attachment-sync.js';
 import { syncIssueLinks } from '../services/sync/link-sync.js';
 import { syncAllComments } from '../services/sync/comment-sync.js';
+import { recordSyncDecision, SYNC_DECISIONS } from '../services/sync/sync-observability.js';
 
 /**
  * Async event consumer for bulk sync operations.
@@ -55,6 +56,7 @@ async function runLegacyBulkSync(event, context) {
     let totalRecreated = 0;
     let totalUpdated = 0;
     let totalErrors = 0;
+    let totalUnverifiedMatches = 0;
 
     for (const org of orgsToScan) {
       console.log(`📋 Processing organization: ${org.id || 'organization'}`);
@@ -203,6 +205,7 @@ async function runLegacyBulkSync(event, context) {
                   updated: totalUpdated,
                   alreadySynced: totalAlreadySynced,
                   recreated: totalRecreated,
+                  unverifiedMatches: totalUnverifiedMatches,
                   errors: totalErrors
                 }
               });
@@ -220,6 +223,7 @@ async function runLegacyBulkSync(event, context) {
                     updated: totalUpdated,
                     alreadySynced: totalAlreadySynced,
                     recreated: totalRecreated,
+                    unverifiedMatches: totalUnverifiedMatches,
                     errors: totalErrors,
                     elapsedSeconds: elapsed,
                     stoppedEarly: true,
@@ -276,9 +280,20 @@ async function runLegacyBulkSync(event, context) {
                   }
                   
                   if (existingRemoteIssue) {
-                    console.log(`⚠️ ${localKey} already exists on remote as ${existingRemoteIssue.key} - storing mapping`);
-                    await storeMapping(localKey, existingRemoteIssue.key, orgWithToken.id);
-                    totalAlreadySynced++;
+                    // A summary match is not pairing evidence. Writing a mapping
+                    // from it would recreate trust for an unverified pair, and
+                    // creating afterwards could duplicate a witnessed pair. The
+                    // match is reported for administrator review only.
+                    console.warn(`⚠️ ${localKey} has a summary match (${existingRemoteIssue.key}); no mapping was written`);
+                    await recordSyncDecision({
+                      decision: SYNC_DECISIONS.CONFLICT,
+                      orgId: orgWithToken.id,
+                      localKey,
+                      remoteKey: existingRemoteIssue.key,
+                      direction: 'local-to-remote',
+                      reason: 'bulk-summary-match-unverified'
+                    });
+                    totalUnverifiedMatches++;
                   } else {
                     // Create the issue
                     const createResult = await createRemoteIssue(fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
@@ -331,34 +346,20 @@ async function runLegacyBulkSync(event, context) {
               }
               
               if (!remoteExists) {
-                // Remote was deleted - remove stale mapping and recreate
-                if (!effectiveSyncOptions.dryRun) {
-                  console.log(`🔄 Removing stale mapping and recreating ${localKey}`);
-                  await removeMapping(localKey, remoteKey, orgWithToken.id);
-                } else {
-                  console.log(`[DRY RUN] Would remove stale mapping for ${localKey}`);
-                }
-                
-                const fullIssue = await getFullIssue(localKey);
-                if (fullIssue) {
-                  const createResult = await createRemoteIssue(fullIssue, orgWithToken, mappings, null, effectiveSyncOptions);
-                  
-                  // Handle Dry Run Result
-                  if (effectiveSyncOptions.dryRun && createResult?.dryRun) {
-                    console.log(`[DRY RUN] Would recreate ${localKey}`);
-                    totalRecreated++;
-                  } else {
-                    const newRemoteKey = createResult?.key || createResult;
-                    
-                    if (newRemoteKey) {
-                      console.log(`✅ Recreated ${localKey} → ${newRemoteKey}`);
-                      totalRecreated++;
-                    } else {
-                      console.error(`❌ Failed to recreate ${localKey}`);
-                      totalErrors++;
-                    }
-                  }
-                }
+                // A 404 is not permission to create a replacement. The existing
+                // deleted-counterpart workflow (probe, explicit decision,
+                // pause-aware replacement) is the only path allowed to recreate
+                // a counterpart. Bulk sync only reports the deleted mapping.
+                console.warn(`⚠️ STALE MAPPING: ${localKey} → ${remoteKey}; replacement requires the recovery workflow`);
+                await recordSyncDecision({
+                  decision: SYNC_DECISIONS.CONFLICT,
+                  orgId: orgWithToken.id,
+                  localKey,
+                  remoteKey,
+                  direction: 'local-to-remote',
+                  reason: 'bulk-deleted-counterpart-requires-recovery'
+                });
+                totalUnverifiedMatches++;
               } else {
                 // Remote exists - count as already synced
                 totalAlreadySynced++;
@@ -422,7 +423,7 @@ async function runLegacyBulkSync(event, context) {
     }
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    const message = `Bulk sync complete: ${totalScanned} scanned, ${totalCreated} created, ${totalUpdated} updated, ${totalAlreadySynced} already synced, ${totalRecreated} recreated, ${totalErrors} errors (${elapsed}s)`;
+    const message = `Bulk sync complete: ${totalScanned} scanned, ${totalCreated} created, ${totalUpdated} updated, ${totalAlreadySynced} already synced, ${totalRecreated} recreated, ${totalUnverifiedMatches} unverified matches skipped, ${totalErrors} errors (${elapsed}s)`;
     console.log(`✅ ${message}`);
 
     // Store sync result for UI to poll
@@ -435,6 +436,7 @@ async function runLegacyBulkSync(event, context) {
         updated: totalUpdated,
         alreadySynced: totalAlreadySynced,
         recreated: totalRecreated,
+        unverifiedMatches: totalUnverifiedMatches,
         errors: totalErrors,
         elapsedSeconds: elapsed,
         dryRun

@@ -142,7 +142,13 @@ export const RESOLVER_POLICIES = Object.freeze({
   getPairWitnessMigrationStatus: 'ADMIN_READ',
   approvePairWitnessMigration: 'ADMIN_WRITE',
   applyPairWitnessMigration: 'ADMIN_WRITE',
-  cancelPairWitnessMigration: 'ADMIN_WRITE'
+  cancelPairWitnessMigration: 'ADMIN_WRITE',
+
+  // Explicit recovery of one missing mapping from a verified Jira-side pair.
+  // Preview is read-only; adoption writes only the Forge mapping, performs no
+  // Jira write, and is not an ordinary synchronization action.
+  previewWitnessedPairAdoption: 'ADMIN_READ',
+  adoptWitnessedPair: 'ADMIN_WRITE'
 });
 
 export function getResolverPolicy(resolverName) {
