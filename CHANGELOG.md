@@ -1,3 +1,14 @@
+# [2.2.0](https://github.com/SerdarAbali/jira-sync-connector/compare/v2.1.0...v2.2.0) (2026-10-27)
+
+### Administration and recovery
+
+- Redesigned the seven-page administration console with responsive navigation, scoped organization controls, and recorded analytics.
+- Added read-only recovery snapshots and restore preview, pairing-witness inspection and approved migration tooling, and maintenance-write audit records.
+- Preserved administrator confirmations and strengthened installation-wide pause and synchronization-authorization safeguards.
+- Expanded regression coverage across administration, authorization, recovery, and synchronization safety.
+
+Full snapshot restoration, automatic witness-based duplicate prevention, and diagnostic-report export are not implemented. Existing dependency audit advisories and synchronization limitations remain documented in [the v2.2.0 release notes](docs/RELEASE_NOTES_V2.2.0.md).
+
 # [2.1.0](https://github.com/SerdarAbali/jira-sync-connector/compare/v2.0.0...v2.1.0) (2026-10-23)
 
 ### Features

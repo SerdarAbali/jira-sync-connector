@@ -175,7 +175,7 @@ Then open **Jira Settings > Apps > Sync Connector** and use the guided setup wiz
 - [Staging preflight](docs/STAGING_PREFLIGHT.md): read-only staging readiness checks, private reports, and exit codes
 - [Staging E2E](docs/STAGING_E2E.md): opt-in, write-gated synchronization tests, plan/dry-run modes, and safety gates
 - [Architecture](docs/ARCHITECTURE.md): triggers, queues, storage, ledgers, leases, Custom UI
-- [Release notes for v2.1.0](docs/RELEASE_NOTES_V2.1.0.md)
+- [Release notes for v2.2.0](docs/RELEASE_NOTES_V2.2.0.md)
 
 ## Repository layout
 
@@ -213,7 +213,7 @@ cd static/admin-page && npm ci && npm run build
 
 ## Version
 
-The authoritative package version is `package.json` (`2.1.0`). The admin header displays `v2.1.0`.
+The authoritative package version is `package.json` (`2.2.0`). The admin header displays `v2.2.0`.
 
 ## License and support
 

@@ -312,12 +312,12 @@ Capabilities, roadmap, contact details and official documentation links remain.
 
 ### Version provenance
 
-The root `package.json` and root lockfile identify the application as `2.1.0`.
+The root `package.json` and root lockfile identify the application as `2.2.0` for the v2.2.0 release.
 The prior header duplicated that value as `ADMIN_UI_VERSION = 'v2.1.0'`. The UI
 package's `1.0.0` identifies its build package and is not displayed as the product
 version. `dashboard/version.js` now derives the application label from the root
 package; the existing exported `ADMIN_UI_VERSION` remains compatible with tests.
-The header explicitly says **Application v2.1.0** and About & Security repeats that value.
+The header explicitly says **Application v2.2.0** and About & Security repeats that value in the release build. The previously deployed STAGING 3.23.0 bundle was built from application version 2.1.0; publishing this release does not deploy the new version.
 
 The user-reported staging identifier `3.22.0` is not present in the local source or
 saved deployment evidence examined. Its exact deployment provenance and current

@@ -1,6 +1,6 @@
 # Operations
 
-This guide covers routine operation and recovery for SyncApp v2.1.0. It assumes the app is installed on the local Jira Cloud site and the remote organizations have already been configured.
+This guide covers routine operation and recovery for SyncApp v2.2.0. It assumes the app is installed on the local Jira Cloud site and the remote organizations have already been configured.
 
 ## Global pause and resume
 
