@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -14,15 +15,6 @@ import { token } from '@atlaskit/tokens';
  * writes a single connector storage record and never touches Jira, so it cannot
  * create, update or delete an issue. It also never changes the emergency pause.
  */
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  padding: token('space.300', '24px'),
-  marginBottom: token('space.200', '16px'),
-  ...overrides
-});
 
 const labelStyle = {
   fontSize: '11px',

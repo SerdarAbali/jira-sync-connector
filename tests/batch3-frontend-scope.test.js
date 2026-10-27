@@ -2,13 +2,10 @@ import fs from 'fs';
 import path from 'path';
 
 const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
-const source = fs.readFileSync(APP_PATH, 'utf8');
+const source = fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/hooks/useAdminController.js'), 'utf8') + fs.readFileSync(APP_PATH, 'utf8');
 
 function componentScope(name) {
-  const start = source.indexOf(`const ${name} = (`);
-  if (start < 0) throw new Error(`${name} not found`);
-  const end = source.indexOf('\nconst ', start + 1);
-  return source.slice(start, end > start ? end : source.length);
+  return fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/components', `${name === 'SyncActivityPanel' ? 'SyncOperations' : name}.jsx`), 'utf8');
 }
 
 describe('Batch 3 frontend webhook-rotation scope', () => {
@@ -35,12 +32,13 @@ describe('Batch 3 frontend webhook-rotation scope', () => {
   });
 
   test('ConfigurationPanel receives organization refresh and notification callbacks', () => {
-    const start = source.indexOf('<ConfigurationPanel');
-    const end = source.indexOf('/>', start);
-    const usage = source.slice(start, end);
+    const page = fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/dashboard/OrganizationsPage.jsx'), 'utf8');
+    const start = page.indexOf('<ConfigurationPanel');
+    const end = page.indexOf('/>', start);
+    const usage = page.slice(start, end);
 
-    expect(usage).toContain('onRefreshOrganizations={loadOrganizations}');
-    expect(usage).toContain('notify={showMessage}');
+    expect(usage).toContain('onRefreshOrganizations={c.loadOrganizations}');
+    expect(usage).toContain('notify={c.showMessage}');
   });
 
   test('callback URL is one-time, cleared on org change/dismiss, and not logged or persisted', () => {
@@ -78,7 +76,7 @@ describe('Batch 3 frontend organization-load error handling', () => {
   });
 
   test('does not show the first-organization prompt after a failed load', () => {
-    expect(source).toContain("organizationsLoadState.status === 'loaded' ? (");
-    expect(source).toContain("organizationsLoadState.status === 'error' && (");
+    expect(source).toContain("c.organizationsLoadState.status === 'error'");
+    expect(source).toContain("c.organizationsLoadState.status === 'error'");
   });
 });

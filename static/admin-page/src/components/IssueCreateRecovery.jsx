@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -10,14 +11,6 @@ import Select from '@atlaskit/select';
 import ModalDialog, { ModalTransition, ModalHeader, ModalTitle, ModalBody, ModalFooter } from '@atlaskit/modal-dialog';
 import { token } from '@atlaskit/tokens';
 
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  padding: token('space.300', '24px'),
-  ...overrides
-});
-
 const ISSUE_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 
 const summaryLabelStyle = {
@@ -26,7 +19,6 @@ const summaryLabelStyle = {
   letterSpacing: '0.08em',
   color: token('color.text.subtle', '#6B778C')
 };
-
 
 export const CREATE_DIRECTION_OPTIONS = [
   { label: 'Local → remote (local issue was created remotely)', value: 'local-to-remote' },
@@ -106,7 +98,6 @@ const lookupErrorText = code => {
   }
   return 'The create ledger could not be read. Nothing was changed.';
 };
-
 
 const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
   const orgId = selectedOrg?.id || null;
@@ -229,7 +220,7 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: token('space.200', '16px'), alignItems: 'flex-end' }}>
-          <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, minWidth: '320px' }}>
+          <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, minWidth: 'min(320px, 100%)', maxWidth: '100%', flex: '1 1 220px' }}>
             Direction
             <Select
               inputId="create-recovery-direction"
@@ -239,7 +230,7 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
               isDisabled={loading || reconciling}
             />
           </label>
-          <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, minWidth: '220px' }}>
+          <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, minWidth: 'min(220px, 100%)', maxWidth: '100%', flex: '1 1 220px' }}>
             Source issue key
             <TextField
               value={sourceKey}
@@ -285,7 +276,7 @@ const IssueCreateRecovery = ({ selectedOrg, showMessage }) => {
 
         {!loading && result && result.exists && operation && reconciliation && (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.150', '12px') }}>
+            <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.150', '12px') }}>
               <div>
                 <div style={summaryLabelStyle}>Operation state</div>
                 <div style={{ marginTop: '4px' }}>

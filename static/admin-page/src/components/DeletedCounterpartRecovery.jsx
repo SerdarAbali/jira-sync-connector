@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -7,14 +8,6 @@ import TextField from '@atlaskit/textfield';
 import Lozenge from '@atlaskit/lozenge';
 import ModalDialog, { ModalTransition, ModalHeader, ModalTitle, ModalBody, ModalFooter } from '@atlaskit/modal-dialog';
 import { token } from '@atlaskit/tokens';
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  padding: token('space.300', '24px'),
-  ...overrides
-});
 
 const STATUS_APPEARANCE = {
   confirmed_deleted: 'removed',

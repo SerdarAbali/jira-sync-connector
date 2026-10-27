@@ -1,16 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 
-const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
+const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/hooks/useAdminController.js');
 const RECOVERY_PATH = path.join(process.cwd(), 'docs/OPERATIONS.md');
 const source = fs.readFileSync(APP_PATH, 'utf8');
 const recovery = fs.readFileSync(RECOVERY_PATH, 'utf8');
 
-function componentScope(name) {
-  const start = source.indexOf(`const ${name} = (`);
-  if (start < 0) throw new Error(`${name} not found`);
-  const end = source.indexOf('\nconst ', start + 1);
-  return source.slice(start, end > start ? end : source.length);
+function componentScope() {
+  return fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/components/SyncOperations.jsx'), 'utf8');
 }
 
 describe('Batch 7 pilot pause UI controls', () => {

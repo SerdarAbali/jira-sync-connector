@@ -687,10 +687,7 @@ describe('Batch 8 attachment sync-option preservation', () => {
 
 
 describe('Batch 8 admin UI attachment controls', () => {
-  const source = require('fs').readFileSync(
-    require('path').join(process.cwd(), 'static/admin-page/src/App.jsx'),
-    'utf8'
-  );
+  const source = ['hooks/useAdminController.js', 'components/ConfigurationPanel.jsx', 'components/IssueImportModal.jsx'].map(file => require('fs').readFileSync(require('path').join(process.cwd(), 'static/admin-page/src', file), 'utf8')).join('\n');
 
   test('force re-create is removed and replaced with an explicit warning', () => {
     expect(source).not.toContain('forceRecreate');

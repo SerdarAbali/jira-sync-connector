@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -5,15 +6,6 @@ import Checkbox from '@atlaskit/checkbox';
 import SectionMessage from '@atlaskit/section-message';
 import Lozenge from '@atlaskit/lozenge';
 import { token } from '@atlaskit/tokens';
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  boxShadow: token('elevation.shadow.raised', '0 1px 2px rgba(9, 30, 66, 0.15)'),
-  padding: token('space.300', '24px'),
-  ...overrides
-});
 
 const metricCard = (color) => ({
   padding: token('space.150', '12px'),
@@ -202,7 +194,6 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
     : 0;
   const activeJob = status && (status.state === 'running' || status.state === 'paused');
 
-
   return (
     <div style={surfaceCard()} data-testid="initial-sync-panel">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: token('space.200', '16px'), flexWrap: 'wrap' }}>
@@ -262,7 +253,7 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
       {counts && (
         <div style={{ marginTop: token('space.200', '16px') }}>
           <h5 style={{ margin: '0 0 8px 0' }}>Read-only Preview</h5>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.150', '12px') }}>
+          <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.150', '12px') }}>
             <div style={metricCard('#0052CC')}><strong>{counts.eligible}</strong><div style={{ fontSize: '12px' }}>Eligible</div></div>
             <div style={metricCard('#00875A')}><strong>{counts.alreadyMapped}</strong><div style={{ fontSize: '12px' }}>Already mapped</div></div>
             <div style={metricCard('#FF991F')}><strong>{counts.blockedByValidation}</strong><div style={{ fontSize: '12px' }}>Blocked by validation</div></div>
@@ -293,7 +284,6 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
         </div>
       )}
 
-
       {status && status.state !== 'idle' && (
         <div style={{ marginTop: token('space.300', '24px'), borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: token('space.200', '16px') }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
@@ -309,7 +299,7 @@ const InitialSyncPanel = ({ selectedOrg, showMessage }) => {
           <div style={{ height: '8px', background: '#DFE1E6', borderRadius: '4px', overflow: 'hidden', marginTop: token('space.150', '12px') }}>
             <div style={{ width: `${progressPercent}%`, height: '100%', background: '#0052CC', transition: 'width 0.3s ease' }} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
+          <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
             <div style={metricCard('#00875A')}><strong>{jobCounts?.created || 0}</strong><div style={{ fontSize: '12px' }}>Created</div></div>
             <div style={metricCard('#36B37E')}><strong>{jobCounts?.alreadyMapped || 0}</strong><div style={{ fontSize: '12px' }}>Already mapped</div></div>
             <div style={metricCard('#6B778C')}><strong>{jobCounts?.skipped || 0}</strong><div style={{ fontSize: '12px' }}>Skipped</div></div>

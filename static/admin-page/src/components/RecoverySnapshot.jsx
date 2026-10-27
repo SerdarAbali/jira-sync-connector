@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -12,14 +13,6 @@ import { token } from '@atlaskit/tokens';
  * displays what the file contains. It never restores, adopts mappings or
  * changes the pause state.
  */
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  padding: token('space.300', '24px'),
-  ...overrides
-});
 
 const summaryLabelStyle = {
   fontSize: '11px',
@@ -105,7 +98,6 @@ export async function readFileText(file) {
   }
   throw new Error('File reading is unavailable');
 }
-
 
 function downloadSnapshot(result) {
   const blob = new Blob([result.content], { type: result.contentType || 'application/x-ndjson' });

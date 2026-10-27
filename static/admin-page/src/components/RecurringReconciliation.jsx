@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -8,14 +9,6 @@ import Spinner from '@atlaskit/spinner';
 import Lozenge from '@atlaskit/lozenge';
 import { token } from '@atlaskit/tokens';
 import { toReconciliationSavePayload } from '../reconciliation-save-payload';
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  padding: token('space.300', '24px'),
-  ...overrides
-});
 
 const metricCard = (color) => ({
   padding: token('space.150', '12px'),
@@ -212,7 +205,7 @@ const RecurringReconciliation = ({ selectedOrg, showMessage, onSettingsSaved }) 
         </SectionMessage>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.200', '16px'), marginTop: token('space.200', '16px') }}>
+      <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.200', '16px'), marginTop: token('space.200', '16px') }}>
         <div>
           <Checkbox
             label="Enable recurring local-to-remote source reconciliation"
@@ -298,7 +291,6 @@ const RecurringReconciliation = ({ selectedOrg, showMessage, onSettingsSaved }) 
         </div>
       )}
 
-
       {status && (
         <div style={{ marginTop: token('space.300', '24px'), borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: token('space.200', '16px') }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>
@@ -314,7 +306,7 @@ const RecurringReconciliation = ({ selectedOrg, showMessage, onSettingsSaved }) 
             </Lozenge>}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.150', '12px') }}>
+          <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.150', '12px') }}>
             <div style={metricCard('#00875A')}><strong>{job?.counts?.created || 0}</strong><div style={{ fontSize: '12px' }}>Created by this run</div></div>
             <div style={metricCard('#36B37E')}><strong>{job?.counts?.updated || 0}</strong><div style={{ fontSize: '12px' }}>Mapped issues updated</div></div>
             <div style={metricCard('#36B37E')}><strong>{job?.counts?.alreadyMapped || 0}</strong><div style={{ fontSize: '12px' }}>Already mapped</div></div>
@@ -336,7 +328,6 @@ const RecurringReconciliation = ({ selectedOrg, showMessage, onSettingsSaved }) 
           </p>
         </div>
       )}
-
 
       <div style={{ marginTop: token('space.300', '24px'), borderTop: `1px solid ${token('color.border', '#DFE1E6')}`, paddingTop: token('space.200', '16px') }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: token('space.150', '12px'), flexWrap: 'wrap' }}>

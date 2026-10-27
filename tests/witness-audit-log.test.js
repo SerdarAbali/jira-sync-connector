@@ -285,7 +285,7 @@ describe('read-only audit viewer', () => {
 
     expect(container.textContent).toContain(WITNESS_AUDIT_READ_FAILED_TEXT);
     expect(container.textContent).not.toContain(WITNESS_AUDIT_EMPTY_TEXT);
-    expect(showMessage).toHaveBeenCalledWith('error', WITNESS_AUDIT_READ_FAILED_TEXT);
+    expect(showMessage).toHaveBeenCalledWith(WITNESS_AUDIT_READ_FAILED_TEXT, 'error');
   });
 
   test('the viewer only ever calls the read resolver', async () => {

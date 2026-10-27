@@ -82,7 +82,7 @@ function denyAdmin() {
 
 describe('v2.1 RC2 final corrections', () => {
   const DIAGNOSTICS_PATH = path.join(process.cwd(), 'static/admin-page/src/components/Diagnostics.jsx');
-  const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
+  const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/hooks/useAdminController.js');
   const diagnosticsSrc = fs.readFileSync(DIAGNOSTICS_PATH, 'utf8');
   const appSrc = fs.readFileSync(APP_PATH, 'utf8');
 

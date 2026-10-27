@@ -63,7 +63,7 @@ jest.mock('@atlaskit/textfield', () => {
 }, { virtual: true });
 
 const ROOT = process.cwd();
-const APP_SOURCE = fs.readFileSync(path.join(ROOT, 'static/admin-page/src/App.jsx'), 'utf8');
+const APP_SOURCE = fs.readFileSync(path.join(ROOT, 'static/admin-page/src/dashboard/RecoveryPage.jsx'), 'utf8');
 const COMPONENT_SOURCE = fs.readFileSync(
   path.join(ROOT, 'static/admin-page/src/components/SyncAuthorization.jsx'),
   'utf8'
@@ -114,8 +114,8 @@ beforeEach(() => {
 
 describe('synchronization authorization UI wiring', () => {
   test('App mounts the authorization panel in the Recovery tab', () => {
-    expect(APP_SOURCE).toContain("import SyncAuthorization from './components/SyncAuthorization.jsx'");
-    expect(APP_SOURCE).toMatch(/<SyncAuthorization showMessage=\{showMessage\} \/>/);
+    expect(APP_SOURCE).toContain("import SyncAuthorization from '../components/SyncAuthorization.jsx'");
+    expect(APP_SOURCE).toMatch(/<SyncAuthorization showMessage=\{c.showMessage\} \/>/);
   });
 
   test('the panel only exposes the status read and the explicit authorization write', () => {

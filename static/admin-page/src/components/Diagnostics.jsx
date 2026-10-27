@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { invoke } from '@forge/bridge';
-import Button, { LoadingButton } from '@atlaskit/button';
+import { LoadingButton } from '@atlaskit/button';
 import SectionMessage from '@atlaskit/section-message';
 import Spinner from '@atlaskit/spinner';
 import TextField from '@atlaskit/textfield';
@@ -99,7 +99,7 @@ const Diagnostics = ({ selectedOrgId }) => {
   }
 
   return (
-    <div style={{ padding: '20px' }}>
+    <div className="dashboard-panel diagnostics-panel">
       <h3>Diagnostics & Health Check</h3>
       <p style={{ marginBottom: '20px' }}>Run checks to verify connectivity, permissions, and sync functionality.</p>
 
@@ -142,8 +142,8 @@ const Diagnostics = ({ selectedOrgId }) => {
 
       <div style={{ marginTop: '40px', borderTop: `1px solid ${token('color.border', '#eee')}`, paddingTop: '20px' }}>
         <h3>Issue Troubleshooting</h3>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end', marginBottom: '20px' }}>
-          <div style={{ flex: 1 }}>
+        <div className="diagnostic-actions">
+          <div className="diagnostic-issue-input">
             <label htmlFor="issue-key">Issue Key</label>
             <TextField 
               id="issue-key" 
@@ -178,7 +178,7 @@ const Diagnostics = ({ selectedOrgId }) => {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', marginBottom: '10px' }}>
                   <div style={{ marginRight: '10px' }}>{getIcon(verificationResult.discrepancies.length === 0 ? 'success' : 'warning')}</div>
-                  <strong>{verificationResult.discrepancies.length === 0 ? 'Sync Verified - 100% Match' : 'Discrepancies Found'}</strong>
+                  <strong>{verificationResult.discrepancies.length === 0 ? 'No discrepancies in checked fields' : 'Discrepancies Found'}</strong>
                 </div>
                 
                 {verificationResult.discrepancies.length > 0 && (

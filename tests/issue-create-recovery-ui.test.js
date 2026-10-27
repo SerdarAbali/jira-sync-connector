@@ -107,7 +107,7 @@ jest.mock('@atlaskit/modal-dialog', () => {
 }, { virtual: true });
 
 const ROOT = process.cwd();
-const APP_PATH = path.join(ROOT, 'static/admin-page/src/App.jsx');
+const APP_PATH = path.join(ROOT, 'static/admin-page/src/dashboard/RecoveryPage.jsx');
 const COMPONENT_PATH = path.join(ROOT, 'static/admin-page/src/components/IssueCreateRecovery.jsx');
 
 const app = fs.readFileSync(APP_PATH, 'utf8');
@@ -289,10 +289,10 @@ afterEach(async () => {
 
 describe('Issue create recovery wiring', () => {
   test('is rendered in the existing Recovery tab without replacing deletion recovery', () => {
-    expect(app).toContain("import IssueCreateRecovery from './components/IssueCreateRecovery'");
+    expect(app).toContain("import IssueCreateRecovery from '../components/IssueCreateRecovery'");
     expect(app).toContain('<IssueCreateRecovery');
 
-    const recoveryTabIndex = app.indexOf('<Tab>Recovery</Tab>');
+    const recoveryTabIndex = app.indexOf('RECOVERY_SECTIONS');
     const createRecoveryIndex = app.indexOf('<IssueCreateRecovery');
     const deletionRecoveryIndex = app.indexOf('<DeletedCounterpartRecovery');
 

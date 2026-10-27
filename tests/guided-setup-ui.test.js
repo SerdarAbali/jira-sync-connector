@@ -6,7 +6,7 @@ const WIZARD_PATH = path.join(ROOT, 'static/admin-page/src/components/GuidedSetu
 const APP_PATH = path.join(ROOT, 'static/admin-page/src/App.jsx');
 const RESOLVER_PATH = path.join(ROOT, 'src/resolvers/setup.js');
 const wizard = fs.readFileSync(WIZARD_PATH, 'utf8');
-const app = fs.readFileSync(APP_PATH, 'utf8');
+const app = fs.readFileSync(path.join(ROOT, 'static/admin-page/src/dashboard/OrganizationsPage.jsx'), 'utf8') + fs.readFileSync(path.join(ROOT, 'static/admin-page/src/hooks/useAdminController.js'), 'utf8') + fs.readFileSync(path.join(ROOT, 'static/admin-page/src/components/SyncOperations.jsx'), 'utf8');
 const resolver = fs.readFileSync(RESOLVER_PATH, 'utf8');
 
 describe('guided setup admin UI', () => {
@@ -25,20 +25,11 @@ describe('guided setup admin UI', () => {
       expect(wizard).toContain(label);
     }
 
-    for (const tab of [
-      'Sync Activity',
-      'Configuration',
-      'Guided Setup',
-      'Mappings',
-      'Diagnostics',
-      'Security & Info'
-    ]) {
-      expect(app).toContain(`<Tab>${tab}</Tab>`);
-    }
+    const navigation = fs.readFileSync(path.join(ROOT, 'static/admin-page/src/dashboard/navigation.js'), 'utf8');
+    for (const label of ['Overview', 'Organizations', 'Analytics', 'Activity', 'Diagnostics', 'Recovery', 'About & Security', 'Guided Setup', 'Mappings']) expect(navigation).toContain(label);
     expect(app).toContain('<GuidedSetupWizard');
-    expect(app).toContain('selected={activeTab}');
-    expect(app).toContain('onOpenAdministration={() => setActiveTab(1)}');
-    expect(app).toContain('setActiveTab(2);');
+    expect(app).toContain("onOpenAdministration={() => navigate('organizations', 'connection')}");
+    expect(app).toContain("navigate('organizations', 'setup');");
   });
 
   test('reuses existing organization, mapping, feature, webhook and initial-sync operations', () => {

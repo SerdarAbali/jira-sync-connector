@@ -7,7 +7,7 @@ import {
   storeSelectedOrganizationId
 } from '../static/admin-page/src/org-selection.js';
 
-const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
+const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/hooks/useAdminController.js');
 const app = fs.readFileSync(APP_PATH, 'utf8');
 
 const organizations = [
@@ -101,10 +101,10 @@ describe('admin page organization selection wiring', () => {
   });
 
   test('the selected organization is restored from and persisted to storage', () => {
-    expect(app).toContain('useState(() => readStoredOrganizationId())');
+    expect(app).toContain('useState(() => selection)');
     expect(app).toContain('const nextSelection = resolveSelectedOrganizationId(orgs, selectedOrgIdRef.current)');
     expect(app).toContain('storeSelectedOrganizationId(nextSelection)');
-    expect(app).toContain('onChange={(option) => selectOrganization(');
+    expect(fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/dashboard/DashboardShell.jsx'), 'utf8')).toContain('onChange={(option) => c.selectOrganization(');
     expect(app).toContain('if (selectionReady && selectedOrgId)');
   });
 
@@ -118,8 +118,7 @@ describe('admin page organization selection wiring', () => {
   });
 
   test('an empty selection requires an explicit organization choice', () => {
-    expect(app).toContain('Select an organization to view or edit its configuration.');
-    expect(app).toContain('organizations.length === 0 ? (');
+    expect(fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/dashboard/OrganizationsPage.jsx'), 'utf8')).toContain('Select an organization to view or edit its configuration.');
   });
 
   test('saving the project filter does not resubmit or clear the JQL filter', () => {

@@ -60,7 +60,7 @@ jest.mock('@atlaskit/lozenge', () => {
 
 const ROOT = process.cwd();
 const read = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8');
-const APP_SOURCE = read('static/admin-page/src/App.jsx');
+const APP_SOURCE = read('static/admin-page/src/dashboard/RecoveryPage.jsx');
 const COMPONENT_SOURCE = read('static/admin-page/src/components/PairWitnessMigration.jsx');
 
 const ORG = { id: 'org-1', name: 'Primary organization' };
@@ -128,7 +128,7 @@ beforeEach(() => {
 
 describe('pairing-witness UI wiring', () => {
   test('App mounts the panel in the Recovery tab', () => {
-    expect(APP_SOURCE).toContain("import PairWitnessMigration from './components/PairWitnessMigration.jsx'");
+    expect(APP_SOURCE).toContain("import PairWitnessMigration from '../components/PairWitnessMigration.jsx'");
     expect(APP_SOURCE).toContain('<PairWitnessMigration');
     expect(APP_SOURCE).toContain('selectedOrg={selectedOrg}');
   });
@@ -208,7 +208,8 @@ describe('pairing-witness UI wiring', () => {
       error: 'Pause synchronization before previewing pairing witnesses.'
     });
 
-    const { container } = render(<PairWitnessMigration selectedOrg={ORG} showMessage={jest.fn()} />);
+    const showMessage = jest.fn();
+    const { container } = render(<PairWitnessMigration selectedOrg={ORG} showMessage={showMessage} />);
     await flush();
     const button = [...container.querySelectorAll('button')]
       .find((node) => node.textContent === 'Run read-only preview');
@@ -221,6 +222,7 @@ describe('pairing-witness UI wiring', () => {
     expect(container.textContent)
       .toContain('Pause synchronization before previewing pairing witnesses.');
     expect(container.textContent).not.toContain('Pairs scanned');
+    expect(showMessage).toHaveBeenCalledWith('Pause synchronization before previewing pairing witnesses.', 'error');
   });
 });
 

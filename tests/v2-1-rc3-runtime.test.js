@@ -321,26 +321,29 @@ afterEach(async () => {
   delete global.IS_REACT_ACT_ENVIRONMENT;
 });
 
-describe('v2.1.0-rc3 admin runtime', () => {
-  test('renders the complete App and every tab without a Configuration scope crash', async () => {
-    await render(React.createElement(App));
+async function go(page, section) {
+  await act(async () => { findButton(page).click(); });
+  await flush();
+  if (section) { await act(async () => { findButton(section).click(); }); await flush(); }
+}
 
-    const text = container.textContent;
-    expect(text).toContain('Jira Sync Connector');
-    expect(text).toContain(ADMIN_UI_VERSION);
-    expect(text).toContain('Sync Activity');
-    expect(text).toContain('Configuration');
-    expect(text).toContain('Guided Setup');
-    expect(text).toContain('Mappings');
-    expect(text).toContain('Recovery');
-    expect(text).toContain('Diagnostics');
-    expect(text).toContain('Security & Info');
-    expect(text).toContain('Background Maintenance');
-    expect(text).not.toContain('v2.0.0');
+describe('v2.1.0-rc3 admin runtime', () => {
+  test('renders all seven pages and the complete organization and recovery navigation', async () => {
+    await render(React.createElement(App));
+    expect(container.textContent).toContain(ADMIN_UI_VERSION);
+    for (const page of ['Overview', 'Organizations', 'Analytics', 'Activity', 'Diagnostics', 'Recovery', 'About & Security']) {
+      await go(page);
+      expect(container.querySelector('h1')).toBeTruthy();
+    }
+    await go('Organizations');
+    for (const section of ['Connection', 'Scope & direction', 'Mappings', 'Sync options', 'Synchronization', 'Guided Setup', 'Configuration transfer']) expect(findButton(section)).toBeTruthy();
+    await go('Recovery');
+    for (const section of ['Write controls', 'Snapshots', 'Pairing witnesses', 'Ambiguous creates', 'Deleted counterparts', 'Targeted repair', 'Data transfer']) expect(findButton(section)).toBeTruthy();
   });
 
   test('uses only non-pilot write-control wording and displays Synchronization Write Control', async () => {
     await render(React.createElement(App));
+    await go('Recovery');
 
     const text = container.textContent;
     expect(text).toContain('Synchronization Write Control');
@@ -350,6 +353,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
 
   test('keeps both pause and resume resolvers wired to the renamed write controls', async () => {
     await render(React.createElement(App));
+    await go('Recovery');
 
     await act(async () => {
       findButton('Pause Synchronization').dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -398,13 +402,14 @@ describe('v2.1.0-rc3 admin runtime', () => {
 
   test('shows webhook statistics and one compact migration notice while legacy scheduling is active', async () => {
     await render(React.createElement(App));
+    await go('Organizations', 'Synchronization');
 
     const text = container.textContent;
-    expect(text).toContain('Webhook Sync Statistics (connector-wide)');
-    expect(text).toContain('Last webhook sync attempt');
-    expect(text).toContain('Last successful Jira write');
+    expect(invoke).toHaveBeenCalledWith('getWebhookSyncStats');
+    expect(invoke).toHaveBeenCalledWith('getWebhookSyncStats');
+    expect(invoke).toHaveBeenCalledWith('getWebhookSyncStats');
     expect(text).toContain('Legacy scheduled synchronization is active');
-    expect(text).toContain('continues unchanged');
+    expect(text).toContain('continues until');
     expect(text).not.toContain('Legacy Scheduled Sync Statistics');
     expect(text).not.toContain('Legacy Scheduled Sync Timeline');
     expect(text).not.toContain('Last scheduled sync attempt');
@@ -422,6 +427,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
       }
     };
     await render(React.createElement(App));
+    await go('Organizations', 'Synchronization');
 
     const text = container.textContent;
     expect(text).toContain('Recurring Source Reconciliation');
@@ -439,10 +445,11 @@ describe('v2.1.0-rc3 admin runtime', () => {
       lastRun: null
     };
     await render(React.createElement(App));
+    await go('Organizations', 'Synchronization');
 
     const text = container.textContent;
     expect(text).toContain('Automatic source reconciliation is disabled');
-    expect(text).toContain('Real-time webhook synchronization remains active');
+    expect(text).toContain('Real-time webhook handling is configured separately');
     expect(text).not.toContain('Legacy scheduled synchronization is active');
     expect(text).not.toContain('Legacy Scheduled Sync Statistics');
     expect(text).not.toContain('Legacy Scheduled Sync Timeline');
@@ -450,6 +457,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
 
   test('keeps Pending Links separate under Background Maintenance and retains all synchronization surfaces', async () => {
     await render(React.createElement(App));
+    await go('Recovery', 'Targeted repair');
 
     const text = container.textContent;
     expect(text.indexOf('Background Maintenance')).toBeGreaterThanOrEqual(0);
@@ -457,11 +465,12 @@ describe('v2.1.0-rc3 admin runtime', () => {
     expect(text).toContain('Hourly maintenance');
     expect(text).not.toContain('Auto hourly');
     expect(text).toContain('Manual Sync');
-    expect(text).toContain('Recurring Source Reconciliation');
-    expect(text).toContain('Synchronization Write Control');
-    expect(text).toContain('Pause Synchronization');
-    expect(text).toContain('Resume Synchronization');
-    expect(text).toContain('Webhook Sync Statistics (connector-wide)');
+    await go('Organizations', 'Synchronization');
+    expect(container.textContent).toContain('Recurring Source Reconciliation');
+    await go('Recovery', 'Write controls');
+    expect(container.textContent).toContain('Pause Synchronization');
+    expect(container.textContent).toContain('Resume Synchronization');
+    expect(invoke).toHaveBeenCalledWith('getWebhookSyncStats');
     expect(invoke).toHaveBeenCalledWith('getWebhookSyncStats');
     expect(invoke).toHaveBeenCalledWith('getPilotStatus');
     expect(invoke).toHaveBeenCalledWith('getRecurringReconciliationStatus', { orgId: ORG.id });
@@ -469,6 +478,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
 
   test('keeps attachment settings Off by default without a size control', async () => {
     await render(React.createElement(App));
+    await go('Organizations', 'Sync options');
 
     expect(container.textContent).not.toContain('Maximum attachment size (MB)');
   });
@@ -480,6 +490,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
       maxAttachmentSizeBytes: null
     };
     await render(React.createElement(App));
+    await go('Organizations', 'Sync options');
 
     expect(container.textContent).toContain('Maximum attachment size (MB)');
     expect(container.textContent).toContain('Configured maximum: Jira attachment settings');
@@ -493,6 +504,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
     };
     delete syncOptionsFixture.maxAttachmentSizeBytes;
     await render(React.createElement(App));
+    await go('Organizations', 'Sync options');
 
     expect(container.querySelector('input[name="maxAttachmentSizeBytes"]').value).toBe('');
     expect(container.textContent).toContain('Configured maximum: Jira attachment settings');
@@ -505,6 +517,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
       maxAttachmentSizeBytes: 5 * 1024 * 1024
     };
     await render(React.createElement(App));
+    await go('Organizations', 'Sync options');
 
     expect(container.querySelector('input[name="maxAttachmentSizeBytes"]').value).toBe('5');
     expect(container.textContent).toContain('Configured maximum: 5 MB');
@@ -562,6 +575,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
     window.localStorage.clear();
 
     await render(React.createElement(App));
+    await go('Organizations');
 
     const text = container.textContent;
     expect(text).toContain('Select an organization to view or edit its configuration.');
@@ -574,6 +588,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
     window.localStorage.setItem(SELECTED_ORGANIZATION_STORAGE_KEY, 'org-removed');
 
     await render(React.createElement(App));
+    await go('Organizations');
 
     const text = container.textContent;
     expect(text).toContain('Select an organization to view or edit its configuration.');
@@ -583,6 +598,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
 
   test('keeps the stored selection while that organization still exists', async () => {
     await render(React.createElement(App));
+    await go('Organizations');
 
     expect(container.textContent).toContain('Selected organization');
     expect(window.localStorage.getItem(SELECTED_ORGANIZATION_STORAGE_KEY)).toBe(ORG.id);
@@ -602,6 +618,7 @@ describe('v2.1.0-rc3 admin runtime', () => {
     });
 
     await render(React.createElement(App));
+    await go('Organizations', 'Scope & direction');
 
     const projectFilterHeader = Array.from(container.querySelectorAll('h4'))
       .find(heading => heading.textContent === 'Project Filter');

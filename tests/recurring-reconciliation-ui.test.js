@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/App.jsx');
+const APP_PATH = path.join(process.cwd(), 'static/admin-page/src/dashboard/OrganizationSynchronization.jsx');
 const PANEL_PATH = path.join(
   process.cwd(),
   'static/admin-page/src/components/RecurringReconciliation.jsx'
@@ -16,11 +16,11 @@ const documentation = fs.readFileSync(DOC_PATH, 'utf8');
 
 describe('Recurring reconciliation admin UI', () => {
   test('is rendered for the selected organization from Sync Activity', () => {
-    expect(app).toContain("import RecurringReconciliation from './components/RecurringReconciliation'");
+    expect(app).toContain("import RecurringReconciliation from '../components/RecurringReconciliation'");
     expect(app).toContain('<RecurringReconciliation');
     expect(app).toContain('selectedOrg={selectedOrg}');
     expect(app).toContain('showMessage={showMessage}');
-    expect(app).toContain('onSettingsSaved={() => setSchedulerRefreshToken(token => token + 1)}');
+    expect(app).toContain('onSettingsSaved={() => setRevision(value => value + 1)}');
   });
 
   test('labels the feature as local-to-remote only and not bidirectional', () => {

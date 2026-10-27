@@ -403,12 +403,12 @@ describe('configuration and administration boundaries', () => {
   });
 
   test('the recovery UI is wired and states that ending removes both mappings', () => {
-    const app = fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/App.jsx'), 'utf8');
+    const app = fs.readFileSync(path.join(process.cwd(), 'static/admin-page/src/dashboard/RecoveryPage.jsx'), 'utf8');
     const component = fs.readFileSync(
       path.join(process.cwd(), 'static/admin-page/src/components/DeletedCounterpartRecovery.jsx'),
       'utf8'
     );
-    expect(app).toContain('<Tab>Recovery</Tab>');
+    expect(app).toContain('RECOVERY_SECTIONS');
     expect(app).toContain('<DeletedCounterpartRecovery');
     expect(component).toContain("invoke('getDeletedCounterparts'");
     expect(component).toContain("'endDeletedCounterpartSync'");

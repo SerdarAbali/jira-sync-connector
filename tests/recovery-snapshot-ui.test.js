@@ -60,7 +60,7 @@ jest.mock('@atlaskit/lozenge', () => {
 }, { virtual: true });
 
 const ROOT = process.cwd();
-const APP_PATH = path.join(ROOT, 'static/admin-page/src/App.jsx');
+const APP_PATH = path.join(ROOT, 'static/admin-page/src/dashboard/RecoveryPage.jsx');
 const COMPONENT_PATH = path.join(ROOT, 'static/admin-page/src/components/RecoverySnapshot.jsx');
 const appSource = fs.readFileSync(APP_PATH, 'utf8');
 const componentSource = fs.readFileSync(COMPONENT_PATH, 'utf8');
@@ -95,8 +95,8 @@ const snapshotFixture = () => ({
 
 describe('recovery snapshot UI wiring', () => {
   test('App mounts the snapshot export in the Recovery tab', () => {
-    expect(appSource).toContain("import RecoverySnapshot from './components/RecoverySnapshot'");
-    expect(appSource).toMatch(/\{\/\* Recovery Tab \*\/\}[\s\S]*?<RecoverySnapshot[\s\S]*?\/>/);
+    expect(appSource).toContain("import RecoverySnapshot from '../components/RecoverySnapshot'");
+    expect(appSource).toMatch(/section === \'snapshots\'[\s\S]*?<RecoverySnapshot[\s\S]*?\/>/);
   });
 
   test('the component is read-only and labelled as a partial backup', () => {

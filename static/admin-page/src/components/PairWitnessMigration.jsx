@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -14,15 +15,6 @@ import { token } from '@atlaskit/tokens';
  * apply, approve or migrate control: Phase 1 ships the inspection only, and the
  * preview never writes a Jira property, creates an issue or changes the pause.
  */
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  padding: token('space.300', '24px'),
-  marginBottom: token('space.200', '16px'),
-  ...overrides
-});
 
 const labelStyle = {
   fontSize: '11px',
@@ -118,7 +110,7 @@ const PairWitnessMigration = ({ selectedOrg, showMessage }) => {
         setError(response?.error || 'The pairing-witness preview could not be completed.');
         setResult(null);
         if (typeof showMessage === 'function') {
-          showMessage('error', response?.error || 'Pairing-witness preview failed');
+          showMessage(response?.error || 'Pairing-witness preview failed', 'error');
         }
         return;
       }
@@ -202,7 +194,6 @@ const PairWitnessMigration = ({ selectedOrg, showMessage }) => {
             <Field label="Issues created" value={cost.jiraIssuesCreated ?? 0} />
             <Field label="Writes a later migration would need" value={cost.witnessWritesProjected ?? 0} />
           </div>
-
 
           {result.limits?.truncated && (
             <div style={{ marginBottom: token('space.200', '16px') }}>
@@ -346,7 +337,7 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
   const fail = useCallback((message) => {
     setError(message || 'The request was refused.');
     if (typeof showMessage === 'function') {
-      showMessage('error', message || 'Witness migration refused');
+      showMessage(message || 'Witness migration refused', 'error');
     }
   }, [showMessage]);
 
@@ -444,8 +435,8 @@ export function WitnessMigrationControls({ orgId, showMessage }) {
         ? ` · ${Math.round(timings.batchMs)} ms (local PUT ${Math.round(timings.totals?.localPutMs ?? 0)} ms, remote PUT ${Math.round(timings.totals?.remotePutMs ?? 0)} ms)`
         : '';
       showMessage(
-        response.remaining > 0 ? 'info' : 'success',
-        `Witness batch: ${response.writesPerformed} write(s), ${response.remaining} pair(s) remaining${detail}`
+        `Witness batch: ${response.writesPerformed} write(s), ${response.remaining} pair(s) remaining${detail}`,
+        response.remaining > 0 ? 'info' : 'success'
       );
     }
   }, [run, showMessage]);

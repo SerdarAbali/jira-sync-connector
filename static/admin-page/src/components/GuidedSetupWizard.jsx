@@ -1,3 +1,4 @@
+import { surfaceCard } from '../dashboard/presentation';
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import Button from '@atlaskit/button';
@@ -9,15 +10,6 @@ import Lozenge from '@atlaskit/lozenge';
 import Spinner from '@atlaskit/spinner';
 import { token } from '@atlaskit/tokens';
 import InitialSyncPanel from './InitialSyncPanel';
-
-const surfaceCard = (overrides = {}) => ({
-  background: token('color.background.neutral', '#FFFFFF'),
-  borderRadius: token('border.radius', '8px'),
-  border: `1px solid ${token('color.border', '#DFE1E6')}`,
-  boxShadow: token('elevation.shadow.raised', '0 1px 2px rgba(9, 30, 66, 0.15)'),
-  padding: token('space.300', '24px'),
-  ...overrides
-});
 
 const stepChipStyle = (active, completed) => ({
   border: `1px solid ${active || completed ? token('color.border.brand', '#4C9AFF') : token('color.border', '#DFE1E6')}`,
@@ -102,7 +94,7 @@ function StepHeader({ title, description }) {
 function ScopeCounts({ counts }) {
   if (!counts) return null;
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
+    <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
       <CountCard label="Matching" value={counts.matchingIssueCount || 0} color="#0052CC" />
       <CountCard label="Eligible" value={counts.eligible || 0} color="#00875A" />
       <CountCard label="Already mapped" value={counts.alreadyMapped || 0} color="#403294" />
@@ -200,7 +192,7 @@ function ConnectionStep({ org, saving, validation, onRefresh, onSaveStep, showMe
         title="1. Remote Jira connection"
         description="Connection details are saved through the existing organization configuration. The API token uses the existing write-only secret storage."
       />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: token('space.200', '16px'), marginTop: token('space.300', '24px') }}>
+      <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: token('space.200', '16px'), marginTop: token('space.300', '24px') }}>
         <label>
           <span style={fieldLabel}>Organization name</span>
           <TextField value={name} onChange={event => setName(event.target.value)} isDisabled={saving} />
@@ -332,7 +324,7 @@ function ScopeStep({ org, saving, validation, onRefresh, onSaveStep, showMessage
             Existing selections: {(org?.allowedProjects || []).join(', ') || 'none'}.
           </p>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.100', '8px'), marginTop: token('space.100', '8px') }}>
+          <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.100', '8px'), marginTop: token('space.100', '8px') }}>
             {projects.map(project => (
               <Checkbox
                 key={project.key}
@@ -505,7 +497,7 @@ function MappingsStep({ org, saving, validation, onSaveStep, showMessage, onOpen
         title="4. Mappings"
         description="The wizard reads the existing project, issue type, status, user, field and custom-field mappings. It does not create a second mapping store."
       />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.300', '24px') }}>
+      <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.300', '24px') }}>
         <CountCard label="Projects" value={displayed.projects} color="#0052CC" />
         <CountCard label="Issue types" value={displayed.issueTypes} color="#403294" />
         <CountCard label="Statuses" value={displayed.statuses} color="#00875A" />
@@ -876,7 +868,7 @@ function CommunicationStep({ org, saving, validation, onSaveStep, showMessage })
         onChange={event => setApproved(event.target.checked)}
         isDisabled={saving}
       />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
+      <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: token('space.150', '12px'), marginTop: token('space.200', '16px') }}>
         <div style={{ padding: token('space.150', '12px'), borderLeft: '3px solid #0052CC', background: '#F4F5F7' }}>
           <strong style={{ fontSize: '13px' }}>A → B connectivity/readiness preflight</strong>
           <div style={{ marginTop: '4px' }}><Lozenge appearance={summary?.aToB?.status === 'ready' ? 'success' : summary?.aToB?.status === 'not-ready' ? 'removed' : 'default'}>{summary?.aToB?.status || 'not run'}</Lozenge></div>
@@ -983,7 +975,7 @@ function InitialSyncStep({ org, saving, validation, onSaveStep, showMessage }) {
 
 function SummaryRow({ label, value }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: token('space.150', '12px'), padding: '6px 0', borderBottom: '1px solid #F4F5F7', fontSize: '13px' }}>
+    <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: token('space.150', '12px'), padding: '6px 0', borderBottom: '1px solid #F4F5F7', fontSize: '13px' }}>
       <strong>{label}</strong>
       <span>{value}</span>
     </div>
@@ -1083,7 +1075,7 @@ export default function GuidedSetupWizard({
   showMessage
 }) {
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeStep, setActiveStep] = useState('connection');
   const [lastResult, setLastResult] = useState(null);
@@ -1118,7 +1110,7 @@ export default function GuidedSetupWizard({
     setLastResult(null);
     setExistingValidation(null);
     setActiveStep('connection');
-    loadWizard();
+    setLoading(false);
   }, [selectedOrg?.id]);
 
   const start = async () => {
@@ -1215,6 +1207,18 @@ export default function GuidedSetupWizard({
 
   if (loading && !data) {
     return <div style={surfaceCard({ textAlign: 'center' })}><Spinner size="large" /></div>;
+  }
+
+  // setupWizard is write-audited even for its load action. Keep the complete
+  // workflow behind an explicit action rather than invoking it on navigation.
+  if (!data) {
+    return <div style={surfaceCard()}>
+      <h3>Guided Setup</h3>
+      <p>Load saved setup progress to resume the nine-step workflow or validate an existing configuration. This administrator action records a setup access audit entry.</p>
+      <Button appearance="primary" onClick={() => loadWizard()} isLoading={loading} isDisabled={loading}>Load Guided Setup</Button>
+      <Button appearance="subtle" onClick={onOpenAdministration}>Open Current Administration</Button>
+      {error && <SectionMessage appearance="error"><p>{error}</p></SectionMessage>}
+    </div>;
   }
 
   const state = data?.state || null;
@@ -1415,7 +1419,7 @@ export default function GuidedSetupWizard({
             {completed.size}/{steps.length} VALIDATED
           </Lozenge>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.100', '8px'), marginTop: token('space.200', '16px') }}>
+        <div className="workflow-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: token('space.100', '8px'), marginTop: token('space.200', '16px') }}>
           {steps.map(step => {
             const canOpen = completed.has(step.key) || step.key === state.currentStep;
             return (
