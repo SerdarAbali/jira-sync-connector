@@ -83,7 +83,7 @@ jest.mock('../src/services/jira/remote-client.js', () => ({
     jsdPublic: true,
     properties: [],
     ...(id === 'REMOTE-COMMENT-1' ? { parentId: 'REMOTE-PARENT-1' } : {}),
-    author: { displayName: 'Parent User' }
+    author: { displayName: id === 'REMOTE-PARENT-1' ? 'Parent User' : 'Remote User' }
   }))
 }));
 
@@ -170,6 +170,19 @@ beforeEach(() => {
 });
 
 describe('Batch 9 inbound threaded-comment safety', () => {
+  test('inbound comments use safe display attribution and verified reply context', async () => {
+    requestJira.mockResolvedValueOnce(okResponse());
+
+    const result = await processIncomingWebhook(payload, auth());
+
+    expect(result.status).toBe(200);
+    const body = JSON.parse(requestJira.mock.calls[0][1].body);
+    expect(body.body.content[0].content[0].text).toBe('[Comment from Remote Org - User: Remote User]:');
+    expect(body.body.content[1].content[0].text).toBe('Replying to Parent User: "parent body"');
+    expect(body.parent).toEqual({ id: 'LOCAL-PARENT-1' });
+    expect(JSON.stringify(body)).not.toContain('@example.invalid');
+  });
+
   test('falls back to one top-level POST only after a recognized parent-related 4xx', async () => {
     requestJira
       .mockResolvedValueOnce(errorResponse(400, { errors: { parent: 'Parent comment does not exist' } }))

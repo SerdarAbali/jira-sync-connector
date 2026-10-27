@@ -93,7 +93,7 @@ Issue-type and project mappings control the target issue type and, when configur
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `syncComments` | On | Human comments with attribution and duplicate guards |
+| `syncComments` | On | Human comments with display-name attribution, verified reply context and duplicate guards |
 | `syncLinks` | On | Pending links retained until both issues are mapped |
 | `syncAttachments` | Off | Secure attachment transfer when enabled |
 | `syncCrossReference` | On | Connector-owned cross-reference in descriptions |

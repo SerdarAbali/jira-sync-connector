@@ -55,7 +55,7 @@ import { markSyncing, isSyncing, clearSyncFlag, enqueuePendingChildIssue, consum
 import { recordRejectedFields } from '../storage/rejected-fields.js';
 import { logAuditEntry } from '../storage/stats.js';
 import { LOG_EMOJI } from '../../constants.js';
-import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText, stripCounterpartNoticeFromADF, isConnectorGeneratedComment } from '../../utils/adf.js';
+import { textToADF, buildSyncedCommentADF, extractTextFromADF, stripSyncPrefix, sanitizeCommentText, stripCounterpartNoticeFromADF, isConnectorGeneratedComment, commentAuthorName, commentAuthorDisplayName } from '../../utils/adf.js';
 import { getRemoteIssue, getRemoteComment } from '../jira/remote-client.js';
 import { getCommentConfidentiality, verifyCommentThread, commentParentId, withParentHints, verifyFreshCommentThread } from './comment-confidentiality.js';
 import { commentReadBudget } from '../jira/comment-read.js';
@@ -1317,7 +1317,7 @@ async function handleRemoteCommentCreated(payload, context) {
   comment = final.comment;
   if (comment.author?.accountType === 'app' || isConnectorGeneratedComment(comment.body)) return { status: 'COMMENT_IGNORED_CONNECTOR' };
 
-  const authorName = comment.author?.displayName || comment.author?.emailAddress || 'Unknown User';
+  const authorName = commentAuthorName(comment.author);
   let commentText = '';
   if (comment.body && typeof comment.body === 'object') {
     commentText = extractTextFromADF(comment.body);
@@ -1332,7 +1332,8 @@ async function handleRemoteCommentCreated(payload, context) {
     userName: authorName,
     parentAuthor: parentContext?.parentAuthor || null,
     parentSnippet: parentContext?.parentSnippet || null,
-    responseText: commentText
+    responseText: commentText,
+    responseBody: comment.body
   });
 
   let verifiedAncestry = final.ancestry;
@@ -1352,10 +1353,11 @@ async function handleRemoteCommentCreated(payload, context) {
         verifiedAncestry = fallback.ancestry;
         const parent = await resolveLocalParentForIncomingComment(fallback.parent, context);
         return buildSyncedCommentADF({ orgName: context.org.name,
-          userName: fallback.comment.author?.displayName || fallback.comment.author?.emailAddress || 'Unknown User',
+          userName: commentAuthorName(fallback.comment.author),
           parentAuthor: parent.parentAuthor, parentSnippet: parent.parentSnippet,
           responseText: sanitizeCommentText(stripSyncPrefix(typeof fallback.comment.body === 'object'
-            ? extractTextFromADF(fallback.comment.body) : fallback.comment.body || '')) });
+            ? extractTextFromADF(fallback.comment.body) : fallback.comment.body || '')),
+          responseBody: fallback.comment.body });
       });
     } catch (error) {
       if (isInboundScopeError(error) || error?.code === 'COMMENT_VERIFICATION_DEFERRED') {
@@ -1511,10 +1513,14 @@ async function resolveLocalParentForIncomingComment(parent, context) {
   if (!parent) return { remoteParentId: null, localParentId: null, parentAuthor: null, parentSnippet: null };
   const remoteParentId = String(parent.id);
   const localParentId = await getLocalCommentId(remoteParentId, context.orgId);
+  if (parent.author?.accountType === 'app' || isConnectorGeneratedComment(parent.body)) {
+    return { remoteParentId, localParentId: localParentId ? String(localParentId) : null,
+      parentAuthor: null, parentSnippet: null };
+  }
   return {
     remoteParentId,
     localParentId: localParentId ? String(localParentId) : null,
-    parentAuthor: parent.author?.displayName || parent.author?.emailAddress || null,
+    parentAuthor: commentAuthorDisplayName(parent.author),
     parentSnippet: extractPlainTextFromRemoteComment(parent)
   };
 }

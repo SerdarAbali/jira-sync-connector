@@ -145,7 +145,9 @@ export async function replaceMediaIdsInADF(adf, attachmentMapping) {
 }
 
 export function textToADFWithAuthor(text, orgName, userName) {
-  const prefix = `[Comment from ${orgName} - User: ${userName}]:\n\n`;
+  const safeOrgName = commentAuthorDisplayName({ displayName: orgName }) || 'Unknown Organization';
+  const safeUserName = commentAuthorName({ displayName: userName });
+  const prefix = `[Comment from ${safeOrgName} - User: ${safeUserName}]:\n\n`;
   const fullText = prefix + (text || '');
   
   return {
@@ -157,14 +159,138 @@ export function textToADFWithAuthor(text, orgName, userName) {
   };
 }
 
+/**
+ * Human-readable author attribution for synchronized comments.
+ *
+ * Only Jira's display name is safe for comment content. Email addresses and
+ * account identifiers are deliberately never used as a fallback: they are often
+ * absent for privacy/deleted users and would disclose unnecessary identity.
+ */
+export function commentAuthorDisplayName(author) {
+  const displayName = typeof author?.displayName === 'string'
+    ? author.displayName
+    : '';
+  const safe = Array.from(displayName)
+    .map((character) => {
+      const code = character.codePointAt(0);
+      return code < 32 || code === 127 || character === '[' || character === ']'
+        ? ' '
+        : character;
+    })
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  // Some tenants expose an email address as a display name. It is still
+  // unnecessary personal data and must not cross a site boundary.
+  return safe && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safe) ? safe : null;
+}
+
+export function commentAuthorName(author) {
+  return commentAuthorDisplayName(author) || 'Unknown User';
+}
+
+export function commentBodyContent(body) {
+  if (!isValidADFDocument(body)) return null;
+  const withoutNotice = stripCounterpartNoticeFromADF(body);
+  const withoutCrossReference = stripCrossReferenceFromADF(withoutNotice);
+  const sanitized = stripUnsafeCommentNodes(withoutCrossReference);
+  return Array.isArray(sanitized?.content)
+    ? stripGeneratedAttribution(sanitized.content)
+    : null;
+}
+
+function stripGeneratedAttribution(content) {
+  const first = content[0];
+  if (!isPlainObject(first) || first.type !== 'paragraph' || !Array.isArray(first.content)) {
+    return content;
+  }
+  const text = extractTextFromADF(first);
+  if (!hasSyncPrefix(text)) return content;
+  const nodes = first.content.map(node => ({ ...node }));
+  let removedHeaderText = false;
+  for (const node of nodes) {
+    if (node.type !== 'text' || typeof node.text !== 'string' || !hasSyncPrefix(node.text)) continue;
+    node.text = stripSyncPrefix(node.text);
+    removedHeaderText = true;
+  }
+  const remaining = nodes.filter(node => node.type !== 'text' || node.text.length > 0);
+  if (!remaining.length) return content.slice(1);
+  if (removedHeaderText) {
+    while (remaining[0]?.type === 'hardBreak') remaining.shift();
+    if (!remaining.length) return content.slice(1);
+  }
+  return removedHeaderText ? [{ ...first, content: remaining }, ...content.slice(1)] : content;
+}
+
+function hasSyncPrefix(text) {
+  return /^\[Comment from [^\]]+\]:/i.test(text);
+}
+
+function stripUnsafeCommentNodes(node) {
+  if (Array.isArray(node)) {
+    return node.map(stripUnsafeCommentNodes).filter((child) => child !== null);
+  }
+  if (!isPlainObject(node)) return null;
+  if (['media', 'mediaSingle', 'mediaGroup', 'mediaInline', 'inlineCard', 'blockCard', 'embedCard',
+    'extension', 'bodiedExtension', 'inlineExtension'].includes(node.type)) {
+    return null;
+  }
+  if (node.type === 'mention') {
+    const mention = typeof node.attrs?.text === 'string' ? node.attrs.text.trim() : '';
+    const match = /^@\s*(.+)$/.exec(mention);
+    const candidate = match ? sanitizeCommentText(match[1]) : '';
+    const safeName = candidate && !/(?:accountid:|~accountid)/i.test(candidate)
+      ? commentAuthorDisplayName({ displayName: candidate })
+      : null;
+    return safeName ? { type: 'text', text: `@${safeName}` } : null;
+  }
+  const next = { ...node };
+  if (Array.isArray(node.content)) {
+    next.content = node.content.map(stripUnsafeCommentNodes).filter((child) => child !== null);
+  }
+  if (Array.isArray(node.marks)) {
+    const marks = node.marks.map(sanitizeCommentMark).filter((mark) => mark !== null);
+    if (marks.length) next.marks = marks;
+    else delete next.marks;
+  }
+  if (isPlainObject(node.attrs)) {
+    // Mention account ids are removed above; never copy source-site account
+    // identifiers into the counterpart.
+    const attrs = { ...node.attrs };
+    delete attrs.accountId;
+    next.attrs = attrs;
+  }
+  return next;
+}
+
+function sanitizeCommentMark(mark) {
+  if (!isPlainObject(mark) || typeof mark.type !== 'string') return null;
+  if (mark.type === 'link') {
+    const href = typeof mark.attrs?.href === 'string' ? mark.attrs.href.trim() : '';
+    // Keep the destination but discard arbitrary link metadata. Only schemes
+    // that cannot execute script or read local content are copied.
+    if (!/^(https?:\/\/|mailto:|tel:|\/(?!\/))/i.test(href)) return null;
+    return { type: 'link', attrs: { href } };
+  }
+  const next = { ...mark };
+  if (isPlainObject(mark.attrs)) {
+    const attrs = { ...mark.attrs };
+    delete attrs.accountId;
+    next.attrs = attrs;
+  }
+  return next;
+}
+
 export function buildSyncedCommentADF({
   orgName,
   userName,
   parentAuthor,
   parentSnippet,
-  responseText
+  responseText,
+  responseBody = null
 }) {
-  const header = `[Comment from ${orgName} - User: ${userName}]:`;
+  const header = `[Comment from ${commentAuthorDisplayName({ displayName: orgName }) || 'Unknown Organization'} - User: ${commentAuthorName({ displayName: userName })}]:`;
   const snippetText = parentSnippet ? `: "${parentSnippet}"` : '';
   const replyLine = parentAuthor
     ? `Replying to ${parentAuthor}${snippetText}`.trim()
@@ -179,7 +305,12 @@ export function buildSyncedCommentADF({
     content.push({ type: 'rule' });
   }
 
-  content.push(buildParagraph(responseText || ''));
+  const preservedBody = commentBodyContent(responseBody);
+  if (preservedBody && preservedBody.length > 0) {
+    content.push(...preservedBody);
+  } else {
+    content.push(buildParagraph(responseText || ''));
+  }
 
   return {
     type: 'doc',
@@ -479,7 +610,8 @@ export function stripSyncPrefix(text) {
   if (!text) {
     return '';
   }
-  return text.replace(SYNC_PREFIX_REGEX, '').trimStart();
+  const match = text.match(SYNC_PREFIX_REGEX);
+  return match ? text.slice(match[0].length) : text;
 }
 
 export function sanitizeCommentText(text) {

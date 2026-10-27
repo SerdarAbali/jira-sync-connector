@@ -159,7 +159,7 @@ afterEach(() => spies.forEach(spy => spy.mockRestore()));
 const operations = [
   ['comment webhook', () => { mockStore.set('syncOptions:org-1', { syncComments: true }); return commentTrigger({ issue: issue('LOCAL-1'), comment: { id: '101' } }); }],
   ['reply', () => { mockStore.set('syncOptions:org-1', { syncComments: true }); getFullComment.mockImplementation(async (_, id) => ({ ...comment(id), ...(id === '101' ? { parentId: '100' } : {}) })); return syncComment({ issue: issue('LOCAL-1'), comment: { id: '101', parentId: '100' } }); }],
-  ['comment catch-up', () => syncAllComments('LOCAL-1', 'REMOTE-1', issue('LOCAL-1'), org, null, org.id)],
+  ['comment catch-up', () => { mockStore.set('syncOptions:org-1', { syncComments: true }); return syncAllComments('LOCAL-1', 'REMOTE-1', issue('LOCAL-1'), org, null, org.id); }],
   ['comment recovery', async () => { mockStore.set('syncOptions:org-1', { syncComments: true }); seedRecovery(); return recoveryHeartbeat(); }],
   ['attachment webhook', () => { mockStore.set('syncOptions:org-1', attachmentOpts); return attachmentTrigger({ eventType: 'avi:jira:created:attachment', attachment: { id: '42', issueId: '10001' } }); }],
   ['attachment continuation', () => { mockStore.set('syncOptions:org-1', attachmentOpts); return runAttachmentSyncQueue({ body: { orgId: org.id, direction: 'local-to-remote', localKey: 'LOCAL-1', remoteKey: 'REMOTE-1', attachmentIds: ['42'] } }); }],

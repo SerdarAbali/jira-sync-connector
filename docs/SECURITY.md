@@ -178,6 +178,15 @@ Jira writes are not blindly retried.
 - Pending links are retained until both issues are mapped.
 - Comment mappings and content markers prevent duplicate copying.
 - App-authored and connector-generated comments are skipped.
+- Copied comments identify the source site and display name; email addresses,
+  account IDs and integration-account identity are never substituted for a
+  missing or deleted source user. A `Replying to ...` line is emitted only from
+  verified parent metadata; it is not inferred from ordering, timing or quotes.
+  The parent's content is included only after the same confidentiality policy
+  accepts the whole thread.
+- Ordinary ADF formatting is retained. Source attachment/media nodes, card and
+  extension payloads, and account-bearing mention identifiers are removed rather
+  than copied to a different site.
 
 ### Comment confidentiality
 

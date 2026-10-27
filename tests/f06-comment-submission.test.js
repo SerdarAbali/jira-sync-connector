@@ -90,6 +90,71 @@ beforeEach(() => {
 });
 afterEach(() => spies.forEach(s => s.mockRestore()));
 
+test('mapped comments are never updated or deleted after a source edit', async () => {
+  getRemoteCommentId.mockResolvedValue('202');
+  await syncComment(event());
+  getFullComment.mockResolvedValue({ ...comment('101'), body: 'Edited source body' });
+  await syncComment(event());
+  expect(mockFetch.mock.calls.filter(([, options]) => ['PUT', 'DELETE'].includes(options?.method)))
+    .toHaveLength(0);
+});
+
+test('comment catch-up respects the Sync Comments setting', async () => {
+  store.set('syncOptions:org-1', { syncComments: false });
+  await syncAllComments('LOCAL-1', 'REMOTE-1', issue, org, null, 'org-1');
+  expect(posts()).toHaveLength(0);
+});
+
+test('outbound comments use display-name attribution, preserve formatting and verified reply context', async () => {
+  const source = {
+    id: '101',
+    body: {
+      type: 'doc',
+      version: 1,
+      content: [{
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: 'Bold ', marks: [{ type: 'strong' }] },
+          { type: 'text', text: 'body', marks: [{ type: 'em' }] }
+        ]
+      }]
+    },
+    jsdPublic: true,
+    parentId: '100',
+    properties: [],
+    author: { displayName: 'Ada Lovelace', emailAddress: 'ada@example.invalid' }
+  };
+  const parent = {
+    id: '100',
+    body: 'Earlier decision',
+    jsdPublic: true,
+    properties: [],
+    author: { displayName: 'Grace Hopper', emailAddress: 'grace@example.invalid' }
+  };
+  getFullComment.mockImplementation(async (_, id) => id === '100' ? parent : source);
+  await syncComment(event());
+
+  const payload = JSON.parse(posts()[0][1].body);
+  expect(payload.body.content[0].content[0].text).toBe('[Comment from Local - User: Ada Lovelace]:');
+  expect(payload.body.content[1].content[0].text).toBe('Replying to Grace Hopper: "Earlier decision"');
+  expect(payload.body.content[3].content[0].marks).toEqual([{ type: 'strong' }]);
+  expect(JSON.stringify(payload)).not.toContain('ada@example.invalid');
+  expect(JSON.stringify(payload)).not.toContain('grace@example.invalid');
+});
+
+test('outbound missing or deleted authors fall back without leaking email', async () => {
+  const source = {
+    id: '101', body: 'Customer text', jsdPublic: true, properties: [],
+    author: { emailAddress: 'private@example.invalid' }
+  };
+  getFullComment.mockImplementation(async (_, id) => id === '101' ? source : null);
+  await syncComment(event());
+
+  const payload = JSON.parse(posts()[0][1].body);
+  expect(payload.body.content[0].content[0].text).toBe('[Comment from Local - User: Unknown User]:');
+  expect(JSON.stringify(payload)).not.toContain('private@example.invalid');
+});
+
 test('concurrent realtime deliveries create once', async () => {
   await Promise.all([syncComment(event()), syncComment(event())]);
   expect(posts()).toHaveLength(1);

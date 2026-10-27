@@ -149,8 +149,12 @@ reviewer can read is not automatically safe to disclose to another Jira site.
   whole, and nothing about a rejected thread is copied.
 - JSM comments require explicit public evidence; unknown project types fail
   closed.
-- Copied comments carry a `[Comment from <site> - User: <name>]:` header and are
-  visible under normal vendor project permissions.
+- Copied comments carry a `[Comment from <site> - User: <name>]:` header using
+  the source display name only. Email addresses and account identifiers are not
+  copied. When Jira returns verified reply metadata and the parent passes the same
+  confidentiality checks, a restrained `Replying to ...` line may quote a short
+  parent snippet; ordering or quoted text alone is never treated as a reply.
+- Comments are visible under normal vendor project permissions.
 - Verification happens immediately before submission but is not atomic. A
   restriction added between verification and submission can still be copied,
   and later restrictions are neither detected nor propagated. Earlier copies are

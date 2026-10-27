@@ -2,7 +2,7 @@ import api, { route } from '../jira/guarded-api.js';
 import * as kvsStore from '../storage/kvs.js';
 import { LOG_EMOJI } from '../../constants.js';
 import { executeWriteOnce } from '../../utils/retry.js';
-import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText, isConnectorGeneratedComment } from '../../utils/adf.js';
+import { extractTextFromADF, buildSyncedCommentADF, stripSyncPrefix, sanitizeCommentText, isConnectorGeneratedComment, commentAuthorName, commentAuthorDisplayName } from '../../utils/adf.js';
 import { getRemoteKey, getOrganizationsWithTokens, getRemoteCommentId } from '../storage/mappings.js';
 import { getFullIssue, getFullComment, getOrgName } from '../jira/local-client.js';
 import { trackWebhookSync } from '../storage/stats.js';
@@ -25,6 +25,12 @@ import { isOutboundScopeError } from './outbound-scope.js';
  */
 export async function syncAllComments(localKey, remoteKey, issue, org, syncResult = null, orgId = null) {
   orgId = (orgId || org.id) === 'legacy' ? null : (orgId || org.id || null);
+  const syncOptionsKey = orgId ? `syncOptions:${orgId}` : 'syncOptions';
+  const syncOptions = await kvsStore.get(syncOptionsKey) || { syncComments: true };
+  if (!syncOptions.syncComments) {
+    console.log(`⏭️ Comment catch-up skipped for ${org.id || 'organization'}: disabled in sync options`);
+    return { synced: 0, skipped: 0, failed: 0 };
+  }
   const auth = Buffer.from(`${org.remoteEmail}:${org.remoteApiToken}`).toString('base64');
   const orgName = await getOrgName();
   
@@ -230,13 +236,13 @@ export async function syncComment(event, recoveryOrgId = null) {
       reason: 'app-authored',
       commentId,
       projectKey,
-      author: fullComment.author?.displayName || 'SyncApp'
+      author: commentAuthorName(fullComment.author)
     });
     return { status: 'COMMENT_IGNORED_CONNECTOR' };
   }
 
   const orgName = await getOrgName();
-  const userName = fullComment.author?.displayName || fullComment.author?.emailAddress || 'Unknown User';
+  const userName = commentAuthorName(fullComment.author);
 
   const parentContext = verifiedParentContext(verification.parent);
   const parentLocalId = parentContext?.parentId || null;
@@ -356,10 +362,12 @@ export async function syncComment(event, recoveryOrgId = null) {
 }
 
 function verifiedParentContext(parentComment) {
-  if (!parentComment) return null;
+  if (!parentComment
+      || parentComment.author?.accountType === 'app'
+      || isConnectorGeneratedComment(parentComment.body)) return null;
   return {
     parentId: String(parentComment.id),
-    parentAuthor: parentComment.author?.displayName || parentComment.author?.emailAddress || null,
+    parentAuthor: commentAuthorDisplayName(parentComment.author),
     parentSnippet: extractPlainTextFromComment(parentComment)
   };
 }
@@ -370,11 +378,11 @@ function extractPlainTextFromComment(comment) {
   }
 
   if (comment.body && typeof comment.body === 'object') {
-    return summarizeText(extractTextFromADF(comment.body));
+    return summarizeText(sanitizeCommentText(stripSyncPrefix(extractTextFromADF(comment.body))));
   }
 
   if (typeof comment.body === 'string') {
-    return summarizeText(comment.body);
+    return summarizeText(sanitizeCommentText(stripSyncPrefix(comment.body)));
   }
 
   return '';
@@ -398,7 +406,8 @@ function verifiedCommentBody(comment, parent, orgName) {
   const context = verifiedParentContext(parent);
   const text = typeof comment.body === 'object' ? extractTextFromADF(comment.body) : comment.body || '';
   return buildSyncedCommentADF({ orgName,
-    userName: comment.author?.displayName || comment.author?.emailAddress || 'Unknown User',
+    userName: commentAuthorName(comment.author),
     parentAuthor: context?.parentAuthor || null, parentSnippet: context?.parentSnippet || null,
-    responseText: sanitizeCommentText(stripSyncPrefix(text)) || '' });
+    responseText: sanitizeCommentText(stripSyncPrefix(text)) || '',
+    responseBody: comment.body });
 }
