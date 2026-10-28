@@ -84,24 +84,48 @@ export async function addLocalIssueComment(issueKey, body) {
   }
 }
 
+// The local site name is display-only. It is not an authorization decision, so a
+// short TTL cache is safe and avoids one `/serverInfo` request per synchronized
+// issue/comment while still allowing a renamed site to refresh.
+const ORG_NAME_CACHE_TTL_MS = 5 * 60 * 1000;
+let orgNameCache = { value: null, expiresAt: 0 };
+let pendingOrgName = null;
+
 export async function getOrgName() {
-  try {
-    const response = await api.asApp().requestJira(
-      route`/rest/api/3/serverInfo`
-    );
-    if (!response.ok) {
-      console.error(`Failed to fetch server info: ${response.status}`);
+  const now = Date.now();
+  if (orgNameCache.value && orgNameCache.expiresAt > now) {
+    return orgNameCache.value;
+  }
+  if (pendingOrgName) {
+    return pendingOrgName;
+  }
+
+  pendingOrgName = (async () => {
+    try {
+      const response = await api.asApp().requestJira(
+        route`/rest/api/3/serverInfo`
+      );
+      if (!response.ok) {
+        console.error(`Failed to fetch server info: ${response.status}`);
+        return 'Jira';
+      }
+      const serverInfo = await response.json();
+      const match = serverInfo.baseUrl.match(/https?:\/\/([^.]+)/);
+      if (match && match[1]) {
+        orgNameCache = { value: match[1], expiresAt: Date.now() + ORG_NAME_CACHE_TTL_MS };
+        return match[1];
+      }
+      return 'Jira';
+    } catch (error) {
+      console.error('Error fetching org name:', error);
       return 'Jira';
     }
-    const serverInfo = await response.json();
-    const match = serverInfo.baseUrl.match(/https?:\/\/([^.]+)/);
-    if (match && match[1]) {
-      return match[1];
-    }
-    return 'Jira';
-  } catch (error) {
-    console.error('Error fetching org name:', error);
-    return 'Jira';
+  })();
+
+  try {
+    return await pendingOrgName;
+  } finally {
+    pendingOrgName = null;
   }
 }
 
