@@ -24,6 +24,10 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
+      - name: Install admin UI dependencies
+        working-directory: static/admin-page
+        run: npm ci
+
       - name: Run tests
         run: npm test -- --runInBand
 
@@ -38,10 +42,6 @@ jobs:
 
       - name: Secret and repository hygiene scan
         run: npm run check:secrets
-
-      - name: Install admin UI dependencies
-        working-directory: static/admin-page
-        run: npm ci
 
       - name: Audit admin production dependencies
         working-directory: static/admin-page
